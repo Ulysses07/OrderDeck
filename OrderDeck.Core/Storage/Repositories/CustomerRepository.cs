@@ -1556,8 +1556,9 @@ public sealed class CustomerRepository
     /// kimliğin bütün yerel etiketlerinde — bu satırlara bağlı (<c>CustomerId</c>),
     /// kendi ve başka bilgisayardan inmiş, her oturumda — takma ad ve yorum
     /// boşaltılır (<see cref="ScrubPurgedLabelTextSql"/>). Ayar işlem içinde,
-    /// yazının <c>WHERE</c>'inde okunur. Varsayılan ve üretim değeri 0 (sahip
-    /// kararı, §11): etiketlere bugünkü gibi dokunulmaz.</para>
+    /// yazının <c>WHERE</c>'inde okunur. Yerel varsayılan 0 (sunucudan ilk
+    /// <c>sales/state</c> gelene kadar etiketlere dokunulmaz); sunucunun
+    /// varsayılanı açık (sahip kararı 8, 2026-10-23).</para>
     /// </summary>
     /// <returns>Boşaltılan yerel satır sayısı; satır yoksa 0 — karar yine de yazılmıştır.</returns>
     public int RecordPurge(string platform, string username, long purgedAtUnix)
@@ -1657,8 +1658,8 @@ public sealed class CustomerRepository
     /// <c>MessageText = ''</c>). Satır, CustomerId, kullanıcı adı, kod ve fiyat mali kayıt olarak kalır.
     ///
     /// <para><b>Ayar yazının <c>WHERE</c>'inde:</b> <c>SalesSyncState.ScrubOrderText</c> silmenin işleminde okunur
-    /// (BEGIN IMMEDIATE — okuma ile yazma arasına başka yazıcı giremez). 0 iken (varsayılan, §11) hiçbir satır
-    /// eşleşmez: bugünkü politika.</para>
+    /// (BEGIN IMMEDIATE — okuma ile yazma arasına başka yazıcı giremez). 0 iken (yerel varsayılan) hiçbir satır
+    /// eşleşmez: etiketlere dokunulmaz.</para>
     ///
     /// <para><b>Kilit altında, gönderilmez:</b> <see cref="RecordPurge(string, string, long, out bool, out int)"/>'un
     /// <see cref="SyncApplyScope"/>'unda koşar — devredilmiş (<c>Authority = 'server'</c>) oturumun etiketinde

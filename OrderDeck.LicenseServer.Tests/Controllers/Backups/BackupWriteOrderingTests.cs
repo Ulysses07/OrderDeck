@@ -165,6 +165,66 @@ public class BackupWriteOrderingTests
             "birden çok hayalet yedek oluşur");
     }
 
+    /// <summary>
+    /// Süresi dolan aylık yedeğin silmesi (karar 7) kırpmayla aynı yoldan geçer:
+    /// satır silinemezse dosyası da, imha kaydı da kalmamalı. Tarihler gerçek
+    /// saate göre (DI'daki servis sistem saatini kullanır).
+    /// </summary>
+    [Fact]
+    public async Task Aylik_yedek_suresi_satir_yazmasi_patlarsa_blob_ve_imha_kaydi_kalmaz()
+    {
+        using var factory = new FailBackupDeleteApiFactory();
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var storage = scope.ServiceProvider
+            .GetRequiredService<OrderDeck.LicenseServer.Services.Backup.BackupStorageService>();
+        var retention = scope.ServiceProvider
+            .GetRequiredService<OrderDeck.LicenseServer.Services.Backup.BackupRetentionService>();
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            Email = $"monthly-order-{Guid.NewGuid():N}@example.test",
+            Name = "T",
+            PasswordHash = "x",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Customers.Add(customer);
+        await db.SaveChangesAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        var paths = new List<string>();
+        var newestId = Guid.Empty;
+        foreach (var (createdAt, monthly) in new[] { (now.AddMonths(-14), true), (now.AddMonths(-13), true), (now, false) })
+        {
+            var (envelope, _) = storage.Encrypt(new byte[] { 1, 2, 3 });
+            var path = await storage.WriteBlobAsync(customer.Id, envelope);
+            paths.Add(path);
+            var row = new CustomerBackup
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                BlobPath = path,
+                SizeBytes = new FileInfo(path).Length,
+                ChecksumSha256 = new string('0', 64),
+                CreatedAt = createdAt,
+                IsMonthlyMilestone = monthly,
+            };
+            db.CustomerBackups.Add(row);
+            newestId = row.Id;
+        }
+        await db.SaveChangesAsync();
+
+        await retention.Invoking(r => r.EnforceAfterInsertAsync(customer.Id, newestId))
+            .Should().ThrowAsync<InvalidOperationException>();
+
+        db.ChangeTracker.Clear();
+        (await db.CustomerBackups.CountAsync(b => b.CustomerId == customer.Id)).Should().Be(3);
+        paths.Should().OnlyContain(p => File.Exists(p), "satır duruyorsa blob da durmalı");
+        (await db.DataDestructionRecords.CountAsync(r => r.SubjectId == customer.Id))
+            .Should().Be(0, "imha kaydı silmeyle aynı SaveChanges'te: silme olmadıysa kayıt da yok");
+    }
+
     /// <summary>Yeni bir <see cref="CustomerBackup"/> satırı yazılmaya
     /// çalışıldığında kaydetmeyi patlatır.</summary>
     private sealed class FailOnBackupInsertInterceptor : SaveChangesInterceptor

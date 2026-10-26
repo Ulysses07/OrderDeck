@@ -1698,6 +1698,47 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("Licenses");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseMediaPurgeTask", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId")
+                        .IsUnique();
+
+                    b.HasIndex("CompletedAt", "NextAttemptAt");
+
+                    b.ToTable("LicenseMediaPurgeTasks");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", b =>
                 {
                     b.Property<Guid>("LicenseId")
@@ -1800,7 +1841,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("BrandCode")
-                        .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
 

@@ -3,13 +3,17 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Services.ShopperPayments;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 using OrderDeck.LicenseServer.Tests.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -134,6 +138,100 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
         (await verifyDb.DataDestructionRecords.AsNoTracking()
                 .Where(r => r.SubjectId == customerId && r.Target == "DataControllerProfileVersions").SumAsync(r => r.RowCount))
             .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Lisans_dosyalari_silme_gorevi_sql_serverda_satirlarla_yazilir_kuyrugu_kapatir_is_tamamlar()
+    {
+        // KVKK karar 5/6 ve 23.10.2026: silme niyeti lisans satırlarıyla aynı SaveChanges'te kalıcı (LicenseMediaPurgeTasks; göç
+        // ve tekil indeks gerçek şemada). Müşteri silmesinden kuyrukta bekleyen dekontu bu silme silerse satırı önekle (LIKE)
+        // bulunup kapanır; silinemeyenin satırına dokunulmaz (ikinci satır da açılmaz, kuyruk anahtarı tekil). İşin zaman sorgusu
+        // (DateTimeOffset karşılaştırması ve sıralaması) SQL Server'a çevrilir.
+        using var factory = new MediaRelationalApiFactory(_cs);
+        var (client, customerId, email) = await SeedCustomerAsync(factory);
+        var licenseId = Guid.NewGuid();
+        // Üretimdeki dekont biçimi, bilerek sabit metin (gerekçesi CustomerPurgeMediaTests'te).
+        var stuck = $"payments/{licenseId:N}/{Guid.NewGuid():N}.pdf";
+        var deletable = $"payments/{licenseId:N}/{Guid.NewGuid():N}.pdf";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Licenses.Add(new License
+            {
+                Id = licenseId, CustomerId = customerId, LicenseKey = "LDK-P-" + Guid.NewGuid().ToString("N")[..12],
+                SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+            });
+            foreach (var key in new[] { stuck, deletable })
+                db.OrphanedMediaObjects.Add(new OrphanedMediaObject
+                {
+                    Id = Guid.NewGuid(), ObjectKey = key, ShopperId = Guid.NewGuid(), AttemptCount = 1, LastError = "eski hata",
+                    CreatedAt = DateTimeOffset.UtcNow.AddDays(-1), LastAttemptAt = DateTimeOffset.UtcNow.AddDays(-1),
+                });
+            await db.SaveChangesAsync();
+        }
+        foreach (var key in new[] { stuck, deletable }) await factory.Payments.UploadAsync(key, new byte[] { 1 }, "application/pdf");
+        factory.Payments.FailingKeys[stuck] = 0;
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        using (var verify = factory.Services.CreateScope())
+        {
+            var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var task = await verifyDb.LicenseMediaPurgeTasks.AsNoTracking().SingleAsync(t => t.LicenseId == licenseId);
+            task.SubjectId.Should().Be(customerId);
+            task.CompletedAt.Should().BeNull();
+            task.LastError.Should().Contain("kilitli");
+            var rows = await verifyDb.OrphanedMediaObjects.AsNoTracking()
+                .Where(o => o.ObjectKey == stuck || o.ObjectKey == deletable).ToListAsync();
+            rows.Should().HaveCount(2);
+            rows.Single(o => o.ObjectKey == stuck).Should().BeEquivalentTo(new { AttemptCount = 1, DeletedAt = (DateTimeOffset?)null });
+            rows.Single(o => o.ObjectKey == deletable).DeletedAt.Should().NotBeNull();
+            factory.Payments.Inner.Contains(deletable).Should().BeFalse();
+            (await verifyDb.DataDestructionRecords.AsNoTracking()
+                    .SingleAsync(r => r.SubjectId == customerId && r.Target == "ShopperPaymentMedia"))
+                .Should().BeEquivalentTo(new { LicenseId = (Guid?)licenseId, RowCount = 1 });
+        }
+
+        // Depo düzeldi, yeniden deneme ve geç yazım penceresi geçti: iş kalanı siler, sonraki turda öneki boş görüp kapatır.
+        factory.Payments.FailingKeys.Clear();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var task = await db.LicenseMediaPurgeTasks.SingleAsync(t => t.LicenseId == licenseId);
+            task.CreatedAt = task.CreatedAt.AddHours(-2);
+            task.NextAttemptAt = task.NextAttemptAt.AddHours(-2);
+            await db.SaveChangesAsync();
+        }
+        using (var scope = factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<LicenseMediaPurgeJob>().RunAsync(default)).Should().Be(1);
+        using (var scope = factory.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<LicenseMediaPurgeJob>().RunAsync(default);
+
+        factory.Payments.Inner.Contains(stuck).Should().BeFalse();
+        using var final = factory.Services.CreateScope();
+        (await final.ServiceProvider.GetRequiredService<LicenseDbContext>().LicenseMediaPurgeTasks.AsNoTracking()
+            .SingleAsync(t => t.LicenseId == licenseId)).CompletedAt.Should().NotBeNull();
+    }
+
+    /// <summary>Dekont ve WhatsApp depoları <see cref="CustomerPurgeMediaTests"/>'in hata üretebilen sahteleriyle.</summary>
+    private sealed class MediaRelationalApiFactory(string cs) : RelationalApiFactory(cs)
+    {
+        public CustomerPurgeMediaTests.FlakyPaymentStorage Payments { get; } = new();
+        public CustomerPurgeMediaTests.FlakyWhatsAppStore WhatsApp { get; } = new();
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IShopperPaymentStorage>();
+                services.AddSingleton<IShopperPaymentStorage>(Payments);
+                services.RemoveAll<IWhatsAppMediaStore>();
+                services.AddSingleton<IWhatsAppMediaStore>(WhatsApp);
+            });
+        }
     }
 
     /// <summary>Silmenin veri sorumlusu bilgisini okuyan sorgusunun okuyucusu kapanırken AYRI bağlamda o müşteriye ilk kez bilgi

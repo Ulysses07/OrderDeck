@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 
 namespace OrderDeck.LicenseServer.Services.ShopperPayments;
 
@@ -20,6 +21,19 @@ public sealed class StubShopperPaymentStorage : IShopperPaymentStorage
     {
         _store.TryRemove(objectKey, out _);
         return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+    {
+        var prefix = ShopperPaymentKeys.LicensePrefix(licenseId);
+        return Task.FromResult<IReadOnlyList<string>>(
+            _store.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList());
+    }
+
+    public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+    {
+        foreach (var key in keys) _store.TryRemove(key, out _);
+        return Task.FromResult<IReadOnlyList<MediaDeleteFailure>>([]);
     }
 
     /// <summary>Test inspection only.</summary>

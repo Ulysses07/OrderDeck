@@ -65,6 +65,14 @@ public sealed class BackupOptions
     /// limit against unbounded growth). 0 disables the check.</summary>
     public long PerCustomerQuotaMb { get; set; } = 5_000;  // 5 GB default
 
+    /// <summary>
+    /// Aylık yedeğin (<c>IsMonthlyMilestone</c>, ayın ilk yedeği) alındığı andan (<c>CreatedAt</c>) kaç ay saklanacağı;
+    /// süresi dolan <see cref="BackupRetentionService"/>'te satırıyla ve dosyasıyla silinir, imha kaydı bırakır. Müşterinin en
+    /// yeni yedeği bu kuralla silinmez. Son 5 yedek kuralı (aylık olmayanlar) bundan bağımsız, değişmedi. 0 = süresiz (eski
+    /// davranış). Karar 7 (23.10.2026): 12 ay. Gizlilik politikasına yazılırsa bu değerle aynı kalmalı.
+    /// </summary>
+    public int MonthlyRetentionMonths { get; set; } = 12;
+
     // Buradaki `S3` bölümü silindi. Saha dışı kopyalama artık VPS'te gecelik
     // cron ile yapılıyor (deploy/scripts/backup-blobs-to-r2.sh). Ayarın
     // kalması, "açılabilir" görünen ama R2'de çalışmayan bir tuzak olurdu.

@@ -2,7 +2,8 @@ namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// Phase 5a: client-uploaded SQLite DB backup, AES-256-GCM encrypted at rest on server filesystem.
-/// Retention: last 5 non-milestone + first-of-month milestones (preserved indefinitely).
+/// Retention: last 5 non-milestone + first-of-month milestones; aylık yedek alındığı andan
+/// <c>Backup:MonthlyRetentionMonths</c> ay (varsayılan 12) sonra silinir, en yeni yedek hariç (BackupRetentionService).
 /// </summary>
 public sealed class CustomerBackup
 {
@@ -19,7 +20,8 @@ public sealed class CustomerBackup
     /// <summary>SHA256 of plaintext zip (pre-encrypt) — for client integrity check on download.</summary>
     public string ChecksumSha256 { get; set; } = "";
 
-    /// <summary>True if first backup of its calendar month — preserved across retention runs.</summary>
+    /// <summary>True if first backup of its calendar month — son-5 kırpmasından muaf; alındığı andan
+    /// <c>Backup:MonthlyRetentionMonths</c> ay sonra silinir (en yeni yedek hariç).</summary>
     public bool IsMonthlyMilestone { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
