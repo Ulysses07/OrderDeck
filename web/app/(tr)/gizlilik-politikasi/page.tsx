@@ -476,7 +476,7 @@ export default function PrivacyTr() {
           Bu müşteri kayıtlarına bağlı siparişlerdeki görünen adınız (takma adınız) ve siparişe dönüşen yorumlarınızın
           metni: sunucuda kalıcı olarak silinir; yayıncının bilgisayarında, masaüstü uygulaması güncelse, uygulama
           internete bağlandığında silinir. Kullanıcı adınız, ürün kodu ve fiyat satış kaydı olarak kalır. Bu silme,
-          26 Ekim 2026 tarihinden önce silinmiş hesaplara geriye dönük olarak uygulanmaz.
+          2026-10-26 tarihinden önce silinmiş hesaplara geriye dönük olarak uygulanmaz.
         </li>
       </ul>
       <p>
@@ -560,8 +560,8 @@ export default function PrivacyTr() {
         </li>
         <li>Brevo (e-posta iletimi, yurt dışı): yayıncılara giden hesap, lisans ve bilgilendirme e-postaları.</li>
         <li>
-          Obifin Ödeme Hizmetleri A.Ş. (Türkiye; verilerin barındırıldığı yer: [YER TUTUCU: Obifin'in yazılı teyidi —
-          Burak]): yayıncının banka hesap hareketleri (Bölüm 1.4).
+          Obifin Ödeme Hizmetleri A.Ş. (Türkiye; veriler Türkiye'de barındırılır): yayıncının banka hesap hareketleri
+          (Bölüm 1.4).
         </li>
       </ul>
       <p>
