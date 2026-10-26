@@ -88,8 +88,11 @@ export default function PrivacyTr() {
           Yayıncının panelde eklediği personel hesapları: personelin e-posta adresi, adı, rolü, parolasını doğrulamaya
           yarayan özeti (parolanın kendisi saklanmaz), hesabın eklendiği ve son giriş yapıldığı zaman. Bu bilgiler yayıncı
           personel hesabını kaldırana ya da yayıncının hesabı silinene kadar saklanır; personel ekleme ve silme
-          kayıtlarındaki e-posta adresi ve ad için Bölüm 5. [YER TUTUCU: personel hesaplarının veri sorumlusu ve hukuki
-          sebebi — avukat, Burak]
+          kayıtlarındaki e-posta adresi ve ad için Bölüm 5. [YER TUTUCU: avukat onayı — önerimiz: bu hesapların veri
+          sorumlusu personeli ekleyen yayıncıdır, {BRAND} bunları yayıncı adına işler; hukuki sebep, yayıncının panel
+          erişimini yetkilendirdiği kişilerle sınırlama ve hesabının güvenliğini sağlama konusundaki meşru menfaati (KVKK m.
+          5/2-f); giriş güvenliği kayıtlarını ve personel ekleme ve silme kayıtlarını {BRAND} kendi adına, hizmetin
+          güvenliğini sağlama konusundaki meşru menfaatine dayanarak (KVKK m. 5/2-f) tutar (12-listesi madde 2)]
         </li>
       </ul>
 
@@ -147,15 +150,16 @@ export default function PrivacyTr() {
       <p>
         <strong>Veri sorumlusu ve hukuki sebepler.</strong> Bu kayıtların veri sorumlusu yayıncıdır; {BRAND} bunları
         yayıncı adına barındırır ve işler. Bölüm 1.4'te anlatılan doğruluk ölçümünde ise {BRAND} bu kayıtlardaki kullanıcı
-        adlarını ve adları kendi adına kullanır. Hukuki sebepler: [YER TUTUCU: hukuki sebep — avukat 08/19; öneri: kayıtların
+        adlarını ve adları kendi adına kullanır. Hukuki sebepler: [YER TUTUCU: avukat onayı — önerimiz: kayıtların
         eşitlenmesi ve gösterilmesi ile sipariş, ödeme ve kargo kayıtları için müşteri ile yayıncı arasındaki satış
         sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c); yayıncının notları, engelleme bilgisi, kayıtların birleştirilmesi
         ve sohbet etiketleri için yayıncının meşru menfaati (KVKK m. 5/2-f); T.C. kimlik numarası ve SMS izinleri için
-        Bölüm 1.3'teki dayanaklar; havale eşleştirmesi ve doğruluk ölçümü için Bölüm 1.4].
+        Bölüm 1.3'teki dayanaklar; havale eşleştirmesi ve doğruluk ölçümü için Bölüm 1.4 (12-listesi madde 5)].
       </p>
       <p>
-        <strong>Saklama.</strong> Bu kayıtlar yayıncının {BRAND} hesabı silinene kadar saklanır [YER TUTUCU: saklama süresi
-        — avukat 08/15]. Bir kaydın silinmesini yayıncıdan ya da Bölüm 6'daki yollarla bizden isteyebilirsiniz. Müşteri
+        <strong>Saklama.</strong> Bu kayıtlar yayıncının {BRAND} hesabı silinene kadar saklanır [YER TUTUCU: avukat onayı
+        — önerimiz: yayıncının hesabı silinene kadar, sonra sunucu yedeklerinde en çok 30 gün; azami bir süre gerekirse
+        kodla uygulanır (12-listesi madde 9)]. Bir kaydın silinmesini yayıncıdan ya da Bölüm 6'daki yollarla bizden isteyebilirsiniz. Müşteri
         uygulaması hesabını silen kişinin bu kayıtlardaki kişisel bilgileri Bölüm 1.5'te anlatıldığı gibi silinir. Yayıncının
         masaüstü uygulamasının sunucuya yüklediği yedekler için Bölüm 5.
       </p>
@@ -201,7 +205,8 @@ export default function PrivacyTr() {
           Facebook ile) doğrulanması: alıcı ile yayıncı arasındaki satış sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c).
         </li>
         <li>
-          Fatura için T.C. kimlik numarası: [YER TUTUCU: dayanak mevzuat — avukat 08/19] uyarınca yayıncının hukuki
+          Fatura için T.C. kimlik numarası: [YER TUTUCU: avukat onayı — önerimiz: 213 sayılı Vergi Usul Kanunu ve
+          e-Arşiv fatura düzenlemeleri; ilgili maddeyi avukat belirtir (12-listesi madde 7)] uyarınca yayıncının hukuki
           yükümlülüğü (KVKK m. 5/2-ç).
         </li>
         <li>
@@ -211,9 +216,9 @@ export default function PrivacyTr() {
           5/2-ç).
         </li>
         <li>
-          Form kaydındaki IP adresi ve tarayıcı bilgisi ile gösterilen metin sürümleri: [YER TUTUCU: hukuki sebep —
-          avukat 08/19; öneri: formun kötüye kullanılmasının önlenmesi ve bilgilendirmenin yapıldığının ispatı için
-          yayıncının ve {BRAND}'in meşru menfaati (KVKK m. 5/2-f)].
+          Form kaydındaki IP adresi ve tarayıcı bilgisi ile gösterilen metin sürümleri: [YER TUTUCU: avukat onayı —
+          önerimiz: formun kötüye kullanılmasının önlenmesi ve bilgilendirmenin yapıldığının ispatı için
+          yayıncının ve {BRAND}'in meşru menfaati (KVKK m. 5/2-f); IP adresi ve tarayıcı bilgisi 90 gün (12-listesi madde 6)].
         </li>
         <li>Havale eşleştirmesi ve doğruluk ölçümü: Bölüm 1.4.</li>
       </ul>
@@ -411,7 +416,8 @@ export default function PrivacyTr() {
       <p>
         <strong>Veri sorumlusu.</strong> Sipariş, ödeme, dekont ve kargo bilgilerinin veri sorumlusu ilgili yayıncıdır;
         {' '}{BRAND} bunları yayıncı adına işler. Hesabın kendisi (giriş, telefon doğrulama, bildirimler) için veri
-        sorumlusu {BRAND}'tir [YER TUTUCU: avukat 08/10; müşteri uygulamasının kayıt ekranı metniyle aynı karar]. Bölüm
+        sorumlusu {BRAND}'tir [YER TUTUCU: avukat onayı — önerimiz: hesabın kendisinin (giriş, SMS kodu, bildirim) veri
+        sorumlusu {BRAND}; müşteri uygulamasının kayıt ekranı metni de aynı karara çekilir (12-listesi madde 3)]. Bölüm
         1.4'teki doğruluk ölçümünde ve yukarıdaki yayıncılar arası mükerrer dekont denetiminde {BRAND} kendi adına işler.
       </p>
       <p>Hukuki sebepler:</p>
@@ -427,8 +433,10 @@ export default function PrivacyTr() {
           m. 5/2-f); yayıncılar arası mükerrer dekont denetiminde yalnızca {BRAND}'in meşru menfaati.
         </li>
         <li>
-          T.C. kimlik numarası (fatura için ve 9.990 TL'yi aşan bir ödemenin dekontunda): [YER TUTUCU: dayanak mevzuat —
-          avukat 08/19] uyarınca hukuki yükümlülük (KVKK m. 5/2-ç).
+          T.C. kimlik numarası (fatura için ve 9.990 TL'yi aşan bir ödemenin dekontunda): [YER TUTUCU: avukat onayı —
+          önerimiz: fatura için 213 sayılı Vergi Usul Kanunu ve e-Arşiv fatura düzenlemeleri; 9.990 TL'yi aşan dekonttaki
+          zorunluluğun dayanağını ve doğru eşiği avukat belirtir, dayanak yoksa bu zorunluluk kaldırılır ve bu satırdan
+          çıkar (12-listesi madde 7)] uyarınca hukuki yükümlülük (KVKK m. 5/2-ç).
         </li>
         <li>
           Bildirimler: hesabınız ve siparişlerinizle ilgili bilgilendirme olarak kullanım ilişkisinin ifası (KVKK m.
@@ -460,8 +468,10 @@ export default function PrivacyTr() {
         satış kaydı olarak kalır. Sipariş metnindeki bu silme, uygulanmaya başladığı tarihten önce silinmiş hesaplara
         geriye dönük olarak uygulanmaz. Silmeden sonra ödemelerinizin tutarı, tarihi ve banka
         referansı, dekontlarınızın özeti ve bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme
-        itirazları ve aynı dekontun yeniden kullanılmasının önlenmesi için, [YER TUTUCU: hukuki sebep, örneğin KVKK m.
-        5/2-e — avukat 08/8] nedeniyle [YER TUTUCU: süre — avukat 08/8, 08/15] saklanır. Şunlar bu silmeyle silinmez;
+        itirazları ve aynı dekontun yeniden kullanılmasının önlenmesi için [YER TUTUCU: avukat onayı — önerimiz: hukuki
+        sebep KVKK m. 5/2-e; süre ödeme tarihinden 5 yıl (TBK m. 147) mı, 10 yıl (TBK m. 146) mı? Bugün bu bilgiler
+        yayıncının hesabı silinene kadar kalıyor; seçilen süre kodla uygulanacak (12-listesi madde 10)] saklanır. Şunlar bu
+        silmeyle silinmez;
         bunlar için yayıncıya ya da Bölüm 6'daki yollarla bize başvurabilirsiniz: hesabınızın bağlanamadığı (telefon
         numaranız eşleşmediği için bağlantısı beklemede kalan) müşteri kayıtları; yayıncının müşteri kayıtlarında (sunucuda
         ve yayıncının bilgisayarında) kalan platform kullanıcı adınız, yayıncının sizinle ilgili notları ve engelleme
@@ -523,8 +533,10 @@ export default function PrivacyTr() {
       </ul>
       <p>
         [YER TUTUCU: sağlayıcıların sözleşme tarafı tüzel kişileri ve verinin işlendiği ülkeler (Google, Meta, Brevo,
-        Cloudflare R2 kova konumu) — avukat paketi 06 §7; yurt dışına aktarımın dayanağı ve bu bölümün ara metni — avukat
-        08/4]
+        Cloudflare R2 kova konumu) — Burak, avukat paketi 06 §7] [YER TUTUCU: avukat onayı — önerimiz: standart sözleşmeler
+        imzalanıp Kurul'a bildirilene kadar bu bölüm yalnız olguyu (hangi sağlayıcı, hangi ülke) yazar ve aktarımın
+        dayanağına ilişkin bir cümle içermez; imzadan sonra aktarımların KVKK m. 9/4 uyarınca Kurul'un ilan ettiği standart
+        sözleşmelere dayandığı cümlesi eklenir (12-listesi madde 19)]
       </p>
 
       <h3>1.7. WhatsApp yazışmaları</h3>
@@ -564,7 +576,9 @@ export default function PrivacyTr() {
       <p>
         <strong>Saklama.</strong> Yazışmalar (bağlantıdan önceki geçmiş sohbetler dahil), rehberden alınan adlar ve
         dekontlardan okunan bilgiler için bugün ayrı bir saklama süresi yoktur; yayıncının {BRAND} hesabı silinene kadar
-        saklanır [YER TUTUCU: saklama süresi — avukat 08/15]. Gönderilen ve alınan dosyalar (Cloudflare R2'de) da yayıncının
+        saklanır [YER TUTUCU: avukat onayı — önerimiz: yazışmalar ve dosyaları yayıncının hesabı silinene kadar, sonra
+        sunucu yedeklerinde en çok 30 gün; azami bir süre gerekirse kodla uygulanır (12-listesi madde 9, 15)]. Gönderilen ve
+        alınan dosyalar (Cloudflare R2'de) da yayıncının
         hesabı silinene kadar saklanır ve hesapla birlikte silinir; o an silinemeyen dosyalar için silme, başarılı olana
         kadar yeniden denenir. Mesaj gönderimlerinin teknik deneme kayıtları 30 gün sonra silinir. Bu verilerin silinmesini yayıncıdan ya da Bölüm 6'daki yollarla bizden isteyebilirsiniz.
       </p>
@@ -698,12 +712,14 @@ export default function PrivacyTr() {
         </li>
         <li>
           Yayıncının müşteri ve satış kayıtlarının sunucudaki kopyası (Bölüm 1.2a): yayıncının hesabı silinene kadar [YER
-          TUTUCU: saklama süresi — avukat 08/15]; müşteri uygulaması hesabını silen kişinin, hesabının bağlandığı
+          TUTUCU: avukat onayı — önerimiz: yayıncının hesabı silinene kadar, sonra sunucu yedeklerinde en çok 30 gün
+          (12-listesi madde 9)]; müşteri uygulaması hesabını silen kişinin, hesabının bağlandığı
           kayıtlardaki kişisel bilgileri silme talebinden itibaren en geç 30 gün içinde (Bölüm 1.5)
         </li>
         <li>
           Kayıt formu ile toplanan alıcı bilgileri: form kaydı sunucuda yayıncının hesabı silinene kadar [YER TUTUCU:
-          saklama süresi — avukat 08/15]; yayıncının müşteri kayıtlarına aktarılan kopyası Bölüm 1.2a'daki, masaüstü
+          avukat onayı — önerimiz: yayıncının hesabı silinene kadar, sonra sunucu yedeklerinde en çok 30 gün (12-listesi
+          madde 9)]; yayıncının müşteri kayıtlarına aktarılan kopyası Bölüm 1.2a'daki, masaüstü
           uygulamasının sunucuya yüklediği yedeklerdeki kopyası aşağıdaki masaüstü yedekleri satırındaki süreyle
         </li>
         <li>
@@ -718,12 +734,15 @@ export default function PrivacyTr() {
           numarası, izin ya da ret, tarihi ve kaynağı, izni veren ya da geri çeken isteğin IP adresi ve tarayıcı bilgisi)
           yayıncı ayrılana kadar ve ayrıldıktan sonra 3 yıl saklanır (6563 sayılı Kanun, m. 13). Yayıncının SMS gönderimi
           için doğrulanmış bir markası yokken müşteri uygulamasından verilen ya da geri çekilen iznin ispat kaydı ise
-          yayıncının lisansı silinene kadar ve silindikten sonra 3 yıl saklanır
+          yayıncının lisansı silinene kadar ve silindikten sonra 3 yıl saklanır [YER TUTUCU: avukat onayı — önerimiz: ispat
+          kayıtları ayrılıştan, markası olmayan yayıncıda lisansın silinmesinden sonra 3 yıl; dayanak 6563 sayılı Kanun
+          m. 13 mü, Ticari İletişim ve Ticari İletiler Hakkında Yönetmelik mi? (12-listesi madde 11)]
         </li>
         <li>
           WhatsApp yazışmaları (bağlantıdan önceki geçmiş sohbetler dahil), rehberden alınan adlar ve WhatsApp'tan gelen
-          dekontlardan okunan bilgiler (Bölüm 1.7): yayıncının hesabı silinene kadar [YER TUTUCU: saklama süresi — avukat
-          08/15]; yazışmalardaki dosyalar: yayıncının hesabı silinene kadar, hesapla birlikte silinir; rehberden gelip
+          dekontlardan okunan bilgiler (Bölüm 1.7): yayıncının hesabı silinene kadar [YER TUTUCU: avukat onayı — önerimiz:
+          yayıncının hesabı silinene kadar, sonra sunucu yedeklerinde en çok 30 gün (12-listesi madde 9, 15)];
+          yazışmalardaki dosyalar: yayıncının hesabı silinene kadar, hesapla birlikte silinir; rehberden gelip
           kaydedilmeyen kişi
           bilgileri: iş kuyruğunda 1 gün; mesaj gönderimlerinin teknik deneme kayıtları: 30 gün
         </li>
@@ -753,7 +772,8 @@ export default function PrivacyTr() {
         </li>
         <li>
           Banka veri talepleri ve müşteri uygulamasından gelen silme talepleri: talebin kaydı (tarihi ve sonucu) [YER
-          TUTUCU: süre — avukat, plan karar 22] saklanır; banka veri talebindeki IBAN tanıma kodu talep kapanınca, kısaltılmış IBAN talep kapandıktan 30 gün sonra, silme
+          TUTUCU: avukat onayı — önerimiz: talebin kapanışından itibaren 3 yıl; bugün kodda bu kayıtlar için süre yok,
+          onaylanan süre kodla uygulanacak (12-listesi madde 12)] saklanır; banka veri talebindeki IBAN tanıma kodu talep kapanınca, kısaltılmış IBAN talep kapandıktan 30 gün sonra, silme
           talebindeki telefon numarası talep işlendikten 30 gün sonra silinir
         </li>
         <li>
@@ -836,10 +856,12 @@ export default function PrivacyTr() {
       <p>
         Silme talebiniz kabul edildiğinde sizinle ilişkilendirilmiş IBAN bağı silinir; ilgili havalelerin açıklaması ve
         bankanın kaydının kopyası silinir ve eşleştirme kayıtlarındaki sizinle bağ kaldırılır.
-        Havalelerin tutarı, tarihi, kısaltılmış IBAN'ı ve tanıma kodu [YER TUTUCU: saklama sebebi — avukat 08/8, plan
-        karar 6] nedeniyle Bölüm 5'teki süre dolana kadar kalır. Havaleye bağlı bir dekont kaydı varsa (ödeyenin adı,
-        dekont dosyası ve gönderimden 30 güne kadar dekonttan okunan tam metin), bu kayıt [YER TUTUCU: saklama sebebi —
-        avukat, plan karar 33] nedeniyle bu silmeyle silinmez; bunu size gerekçesiyle yazılı olarak bildiririz. Bir alanın
+        Havalelerin tutarı, tarihi, kısaltılmış IBAN'ı ve tanıma kodu [YER TUTUCU: avukat onayı — önerimiz: eşleştirmenin
+        doğruluğu ve mükerrer kaydın önlenmesi konusundaki meşru menfaat (KVKK m. 5/2-f) (12-listesi madde 17)] nedeniyle
+        Bölüm 5'teki süre dolana kadar kalır. Havaleye bağlı bir dekont kaydı varsa (ödeyenin adı, dekont dosyası ve
+        gönderimden 30 güne kadar dekonttan okunan tam metin), bu kayıt [YER TUTUCU: avukat onayı — önerimiz: ödemenin
+        ispatı için KVKK m. 5/2-e; bu kaydın veri sorumlusu yayıncı olduğundan talebin bu kısmı yayıncıya iletilir
+        (12-listesi madde 18)] nedeniyle bu silmeyle silinmez; bunu size gerekçesiyle yazılı olarak bildiririz. Bir alanın
         saklanmasını gerektiren hukuki bir sebep sürüyorsa (örneğin devam eden bir ödeme itirazı), hangi alanın, hangi
         sebeple ve ne zamana kadar saklanacağını size yazılı olarak bildiririz. Obifin'deki kopyanın silinmesini
         gerektiğinde Obifin'den isteriz. Bankaların kendi kayıtları bankaların sorumluluğundadır; {BRAND} bu kayıtları
