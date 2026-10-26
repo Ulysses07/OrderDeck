@@ -267,7 +267,8 @@ export default function PrivacyEn() {
         <li>
           Account data (email, license): until the account is deleted; after deletion, the email address remains in audit
           records (records of sign-ins, session renewals and sign-outs, data exports, adding and removing panel staff,
-          license issuance and account deletion) for at most 24 months from the date of each record. The email address
+          license issuance and account deletion) for at most 24 months from the date of each record and is then deleted
+          automatically. The email address
           and name of staff the broadcaster added in the panel likewise remain in the staff add/remove records for the
           same period
         </li>
@@ -280,12 +281,16 @@ export default function PrivacyEn() {
           SMS consents (Section 1.3): the current consent record is deleted 30 days after the broadcaster leaves the
           platform; proof of consent actions (phone number, consent or refusal, its date and source, and the IP address
           and browser details of the request) is kept until the broadcaster leaves and for 3 years afterwards (Law No.
-          6563, Art. 13). For consents given or withdrawn in the customer app, see Section 5 of the Turkish version
+          6563, Art. 13). Proof of a consent given or withdrawn in the customer app while the broadcaster had no
+          verified SMS brand is kept until the broadcaster&apos;s license is deleted and for 3 years afterwards
         </li>
         <li>
           Backups the desktop application uploads to the server (the encrypted copy of the customer, order, label, stream
-          and giveaway records on the broadcaster&apos;s computer): retention as set out in Section 5 of the Turkish
-          version. These backups are used for restores and restore drills; in addition, {BRAND}&apos;s authorised
+          and giveaway records on the broadcaster&apos;s computer): the last 5 backups and the first backup of each month
+          are kept for each broadcaster. The last 5 are rotated as new backups arrive; the first backup of each month is
+          deleted 12 months after it was taken. The broadcaster&apos;s newest backup is not deleted even if it is older
+          than 12 months, and if the broadcaster stops uploading backups, their last backups remain until the
+          broadcaster&apos;s account is deleted. These backups are used for restores and restore drills; in addition, {BRAND}&apos;s authorised
           administrator may view the contents of a backup (customer, label, giveaway and stream records) in the admin
           panel for support purposes. For viewing, the backup is opened in a temporary copy on the server, which is
           deleted once the page has been shown; every view is written to the audit log

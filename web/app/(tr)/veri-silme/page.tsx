@@ -57,11 +57,12 @@ export default function DataDeletionTr() {
           hesabınızın ve ilişkili verilerin silinmesi için{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine yazın.
           Talebinizi, bize ulaştığı tarihten itibaren <strong>en geç 30 gün içinde</strong>{' '}
-          sonuçlandırırız. Hesabınız silindiğinde şu dosyalar (Cloudflare R2&apos;de) bugün otomatik olarak
-          silinmez: WhatsApp hattınızı {BRAND}&apos;e bağladıysanız yazışmalardaki fotoğraf, ses, video ve
-          belgeler (Gizlilik Politikası, Bölüm 1.7); müşterilerinizin müşteri uygulamasından size yüklediği
-          dekont dosyaları (Gizlilik Politikası, Bölüm 1.5); yayın paylaşımlarınızdaki ve ürün
-          kataloğunuzdaki fotoğraflar.</li>
+          sonuçlandırırız. Hesabınız silindiğinde Cloudflare R2&apos;deki şu dosyalar da silinir: WhatsApp
+          hattınızı {BRAND}&apos;e bağladıysanız yazışmalardaki fotoğraf, ses, video ve belgeler (Gizlilik
+          Politikası, Bölüm 1.7); müşterilerinizin müşteri uygulamasından size yüklediği dekont dosyaları
+          (Gizlilik Politikası, Bölüm 1.5); yayın paylaşımlarınızdaki fotoğraf ve videolar ile ürün
+          kataloğunuzdaki fotoğraflar. O an silinemeyen dosyalar için silme, başarılı olana kadar yeniden
+          denenir.</li>
       </ul>
 
       <h2>3. İzleyici / yorumcuysanız</h2>

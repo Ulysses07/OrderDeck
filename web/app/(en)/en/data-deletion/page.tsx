@@ -54,11 +54,12 @@ export default function DataDeletionEn() {
         <li>To permanently delete specific customer/order records, or your entire
           account and associated data, email{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. We conclude your request{' '}
-          <strong>within 30 days</strong> of receiving it. When your account is deleted, the following files (in
-          Cloudflare R2) are currently not deleted automatically: if you connected your WhatsApp line to {BRAND},
-          the photos, audio, video and documents in those conversations (Privacy Policy, Section 1.7, in Turkish);
-          the payment receipts your customers uploaded to you from the customer app (Privacy Policy, Section 1.5, in
-          Turkish); the photos in your broadcast posts and product catalogue.</li>
+          <strong>within 30 days</strong> of receiving it. When your account is deleted, the following files in
+          Cloudflare R2 are deleted as well: if you connected your WhatsApp line to {BRAND}, the photos, audio,
+          video and documents in those conversations (Privacy Policy, Section 1.7, in Turkish); the payment
+          receipts your customers uploaded to you from the customer app (Privacy Policy, Section 1.5, in Turkish);
+          the photos and videos in your broadcast posts and the photos in your product catalogue. Files that
+          cannot be deleted at that moment are retried until the deletion succeeds.</li>
       </ul>
 
       <h2>3. If you are a viewer / commenter</h2>
