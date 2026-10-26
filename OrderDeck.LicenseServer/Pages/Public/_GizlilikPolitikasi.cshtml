@@ -252,7 +252,6 @@
         telefon numarası) kayda alınırken maskelenir; bazı yazımlar (örneğin bölünerek ya da hatalı yazılmış
         numaralar) maskelenmeyebilir.
     </li>
-    <li>Bankanın iletmesi hâlinde gönderenin adı. [YER TUTUCU: bu alanın bugünkü amacı — Burak, plan karar 24]</li>
     <li>
         Gönderen hesabın IBAN'ı: IBAN'ın kendisi ayrı bir alanda saklanmaz. Yalnızca ilk 4 ve son 3 karakteri görünen
         kısaltılmış hâli ile, aynı IBAN'dan yeniden ödeme geldiğinde bunu tanımaya yarayan ve gizli bir anahtarla
@@ -262,7 +261,7 @@
     </li>
     <li>
         Bankanın hareket için gönderdiği kaydın kopyası, yalnızca teknik arızaların incelenmesi için ve yalnızca şu
-        alanlarla: açıklama, işlem açıklaması, gönderen adı, gönderen banka, işlem kodu, referans ve makbuz numarası.
+        alanlarla: açıklama, işlem açıklaması, gönderen banka, işlem kodu, referans ve makbuz numarası.
         Bu kopyadaki açıklamalar da aynı biçimde maskelenir.
     </li>
 </ul>
@@ -270,7 +269,7 @@
     <strong>Müşteri ödemesi olmayan hareketler.</strong> Hesaba gelen havaleler yalnızca müşterilerden gelmez;
     örneğin pazaryeri ödemeleri, iadeler, yayıncının kendi hesaplarından ya da yakınlarından gelen aktarımlar da
     okunur. Bir müşteriyle eşleştirilmemiş (dekont onayıyla ya da OrderDeck'in yetkili yöneticisinin elle
-    eşlemesiyle bir müşteriye bağlanmamış) havalelerin açıklaması ve gönderen adı işlem tarihinden 30 gün sonra
+    eşlemesiyle bir müşteriye bağlanmamış) havalelerin açıklaması işlem tarihinden 30 gün sonra
     silinir; tutar, tarih ve banka referansı Bölüm 5'teki süre kadar kalır. Yayıncının hesabından giden hareketler ve
     tutarı sıfır olan hareketler Obifin'in gönderdiği listede yer alır; OrderDeck bunları kaydetmeden atar. POS
     tahsilatı olarak tanımlanan hareketler otomatik eşleştirmede kullanılmaz ve bunlardan IBAN öğrenilmez.
@@ -716,7 +715,7 @@
         kuyruğunda 1 gün
     </li>
     <li>
-        Banka hesap hareketleri (Bölüm 1.4): bankanın gönderdiği kaydın kopyası 30 gün; açıklama metni, gönderen adı ve
+        Banka hesap hareketleri (Bölüm 1.4): bankanın gönderdiği kaydın kopyası 30 gün; açıklama metni ve
         eşleştirmenin gerekçe metni 180 gün, bir müşteriyle eşleştirilmemiş havalelerde 30 gün; tutar, tarih, işlem
         kodu ve tipi, banka referans numarası, kısaltılmış IBAN, IBAN tanıma kodu ve eşleştirme kaydı 180 gün. Süreler
         havalenin işlem tarihinden işler; geç işlenen bir hareket OrderDeck'e alındıktan sonra en az 7 gün kalır.
@@ -816,8 +815,8 @@
     ek bilgi ve belge isteyebiliriz.
 </p>
 <p>
-    Silme talebiniz kabul edildiğinde sizinle ilişkilendirilmiş IBAN bağı silinir; ilgili havalelerin açıklaması,
-    gönderen adı ve bankanın kaydının kopyası silinir ve eşleştirme kayıtlarındaki sizinle bağ kaldırılır.
+    Silme talebiniz kabul edildiğinde sizinle ilişkilendirilmiş IBAN bağı silinir; ilgili havalelerin açıklaması ve
+    bankanın kaydının kopyası silinir ve eşleştirme kayıtlarındaki sizinle bağ kaldırılır.
     Havalelerin tutarı, tarihi, kısaltılmış IBAN'ı ve tanıma kodu [YER TUTUCU: saklama sebebi — avukat 08/8, plan
     karar 6] nedeniyle Bölüm 5'teki süre dolana kadar kalır. Havaleye bağlı bir dekont kaydı varsa (ödeyenin adı,
     dekont dosyası ve gönderimden 30 güne kadar dekonttan okunan tam metin), bu kayıt [YER TUTUCU: saklama sebebi —
