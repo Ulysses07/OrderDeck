@@ -202,7 +202,7 @@ export const landingCopy = {
     },
     footer: {
       tagline: 'Türk mezat yayıncıları için tek pencerede sohbet, etiket ve çekiliş.',
-      contact: 'Musa Sevinç · support@orderdeckapp.com',
+      contact: 'Musa Sevinç · musa@emarglobal.com',
       colProduct: 'Ürün',
       product: [['#ozellikler','Özellikler'],['#fiyat','Fiyatlandırma'],['#sss','SSS'],['/blog/','Blog']],
       colLegal: 'Yasal',
@@ -427,7 +427,7 @@ export const landingCopy = {
     },
     footer: {
       tagline: 'Chat, labels and giveaways in one window for Turkish live-auction sellers.',
-      contact: 'Musa Sevinç · support@orderdeckapp.com',
+      contact: 'Musa Sevinç · musa@emarglobal.com',
       colProduct: 'Product',
       product: [['#ozellikler','Features'],['#fiyat','Pricing'],['#sss','FAQ'],['/en/blog/','Blog']],
       colLegal: 'Legal',

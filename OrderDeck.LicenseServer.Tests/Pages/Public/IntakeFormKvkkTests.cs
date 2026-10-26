@@ -580,7 +580,7 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         boxText.Should().Contain("1. Toplanan veriler")
             .And.Contain("1.3. Kayıt formu ile toplanan alıcı bilgileri")
             .And.Contain("10. İletişim");
-        boxText.Should().Contain("support@orderdeckapp.com", "at-işareti &#64; ile yazılı, tarayıcıda @ görünmeli");
+        boxText.Should().Contain("musa@emarglobal.com", "at-işareti &#64; ile yazılı, tarayıcıda @ görünmeli");
 
         // Eski davranış geri gelmesin.
         html.Should().NotContain(PolicyPagePath, "politika sayfasına giden bağlantı kalmadı");

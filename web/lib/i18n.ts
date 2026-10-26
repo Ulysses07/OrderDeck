@@ -31,7 +31,7 @@ export const ROUTE_MAP: Record<string, { tr: string; en: string }> = {
 };
 
 export const SITE_URL = 'https://orderdeckapp.com';
-export const CONTACT_EMAIL = 'support@orderdeckapp.com';
+export const CONTACT_EMAIL = 'musa@emarglobal.com';
 export const LEGAL_NAME = 'Musa Sevinç';
 export const BRAND = 'OrderDeck';
 

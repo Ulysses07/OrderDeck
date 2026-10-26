@@ -28,8 +28,7 @@ export default function PrivacyEn() {
         <strong>Note:</strong> This English text is a convenience translation. The Turkish version at{' '}
         <a href="/gizlilik-politikasi/">orderdeckapp.com/gizlilik-politikasi</a>, effective {TURKISH_EFFECTIVE_DATE},
         prevails. It currently contains sections not yet reflected here, including its wider scope (broadcaster panel,
-        customer app and registration form), the data controller&apos;s postal address, the legal grounds for the
-        registration form, Section 1.2a on the broadcaster&apos;s customer and sales records held on the server, Section
+        customer app and registration form), the legal grounds for the registration form, Section 1.2a on the broadcaster&apos;s customer and sales records held on the server, Section
         1.4 on the processing of broadcasters&apos; bank account transactions, Section 1.5 on
         the customer app and payment receipts, Section 1.6 on service providers and transfers abroad, Section 1.7 on
         WhatsApp conversations, and the updated retention periods, rights, application channels, data security and
@@ -41,7 +40,8 @@ export default function PrivacyEn() {
         store and share personal data.
       </p>
       <p>
-        <strong>Data controller:</strong> {LEGAL_NAME} (sole proprietor). Contact:{' '}
+        <strong>Data controller:</strong> {LEGAL_NAME} (sole proprietor). Postal address: Gazi Mah. Yeşilırmak Cad.
+        No:172/A Kepez/ANTALYA, Türkiye. Registered electronic mail (KEP): emarglobal@hs01.kep.tr. Contact:{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
       </p>
 

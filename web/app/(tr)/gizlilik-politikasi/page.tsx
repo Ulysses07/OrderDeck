@@ -51,8 +51,8 @@ export default function PrivacyTr() {
         sitesinin kişisel verileri nasıl topladığını, işlediğini, sakladığını ve paylaştığını açıklar.
       </p>
       <p>
-        <strong>Veri sorumlusu:</strong> {LEGAL_NAME} (şahıs). Posta adresi: [YER TUTUCU: posta adresi ve varsa KEP
-        adresi — avukat 08/2, 08/9]. İletişim:{' '}
+        <strong>Veri sorumlusu:</strong> {LEGAL_NAME} (şahıs). Posta adresi: Gazi Mah. Yeşilırmak Cad. No:172/A
+        Kepez/ANTALYA. KEP adresi: emarglobal@hs01.kep.tr. İletişim:{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
       </p>
       <p>
@@ -805,8 +805,8 @@ export default function PrivacyTr() {
       </ul>
       <p>GDPR kapsamındaki kişiler ayrıca veri taşınabilirliği hakkına sahiptir.</p>
       <p>
-        <strong>Başvuru yolları.</strong> Başvurunuzu yazılı olarak [YER TUTUCU: posta adresi — avukat 08/2, 08/9]
-        adresine, [YER TUTUCU: varsa KEP adresi] kayıtlı elektronik posta adresimize, güvenli elektronik imza veya mobil
+        <strong>Başvuru yolları.</strong> Başvurunuzu yazılı olarak Gazi Mah. Yeşilırmak Cad. No:172/A Kepez/ANTALYA
+        adresine, emarglobal@hs01.kep.tr kayıtlı elektronik posta adresimize, güvenli elektronik imza veya mobil
         imza ile ya da bize daha önce bildirdiğiniz ve sistemimizde kayıtlı e-posta adresinizden{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>{' '}
         adresine iletebilirsiniz. Başvurunuzda ad soyadınızı, yazılı başvuruda imzanızı, T.C. kimlik numaranızı (yabancılar için uyruk ve pasaport
