@@ -711,8 +711,8 @@ export default function PrivacyTr() {
           hesabı silinene kadar
         </li>
         <li>
-          Yayıncının müşteri ve satış kayıtlarının sunucudaki kopyası (Bölüm 1.2a): yayıncının hesabı silinene kadar [YER
-          TUTUCU: avukat onayı — önerimiz: yayıncının hesabı silinene kadar, sonra sunucu yedeklerinde en çok 30 gün
+          Yayıncının müşteri ve satış kayıtlarının sunucudaki kopyası (Bölüm 1.2a): yayıncının hesabı silinene kadar
+          [YER TUTUCU: avukat onayı — önerimiz: yayıncının hesabı silinene kadar, sonra sunucu yedeklerinde en çok 30 gün
           (12-listesi madde 9)]; müşteri uygulaması hesabını silen kişinin, hesabının bağlandığı
           kayıtlardaki kişisel bilgileri silme talebinden itibaren en geç 30 gün içinde (Bölüm 1.5)
         </li>
@@ -771,8 +771,8 @@ export default function PrivacyTr() {
           kadar kalır
         </li>
         <li>
-          Banka veri talepleri ve müşteri uygulamasından gelen silme talepleri: talebin kaydı (tarihi ve sonucu) [YER
-          TUTUCU: avukat onayı — önerimiz: talebin kapanışından itibaren 3 yıl; bugün kodda bu kayıtlar için süre yok,
+          Banka veri talepleri ve müşteri uygulamasından gelen silme talepleri: talebin kaydı (tarihi ve sonucu)
+          [YER TUTUCU: avukat onayı — önerimiz: talebin kapanışından itibaren 3 yıl; bugün kodda bu kayıtlar için süre yok,
           onaylanan süre kodla uygulanacak (12-listesi madde 12)] saklanır; banka veri talebindeki IBAN tanıma kodu talep kapanınca, kısaltılmış IBAN talep kapandıktan 30 gün sonra, silme
           talebindeki telefon numarası talep işlendikten 30 gün sonra silinir
         </li>
