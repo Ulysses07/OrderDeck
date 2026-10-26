@@ -53,9 +53,19 @@ concurrency:
 jobs:
   deploy:
     # Skip if upstream build-test failed; allow workflow_dispatch unconditionally.
+    #
+    # Fork koruması: `head_branch` yalnız dal ADI, hangi depodan geldiğini
+    # söylemez. Fork'unun `master` dalından PR açan biri, build-test yeşil
+    # olunca (hem yukarıdaki `branches` süzgeci hem bu koşul aynı alana
+    # bakıyor) bu işi sırlarla tetikler: fork'un sha'sı checkout edilir,
+    # `latest` olarak GHCR'a basılır, fork'un compose'u ve script'leri VPS'e
+    # kopyalanıp çalıştırılır — yani prod'da kod çalıştırma. Bu yüzden
+    # workflow_run yolu yalnız BU depodaki bir push'tan gelirse geçer.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     timeout-minutes: 20
