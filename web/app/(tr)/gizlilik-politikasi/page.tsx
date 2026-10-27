@@ -37,7 +37,8 @@ export default function PrivacyTr() {
         <strong>Son değişiklik (2026-10-21):</strong> Yayıncının banka hesap hareketlerinin işlenmesi (Bölüm 1.4)
         düzeltildi ve genişletildi; yayıncının müşteri ve satış kayıtları (Bölüm 1.2a), müşteri uygulaması ve dekontlar
         (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri
-        eklendi; veri sorumlusunun posta adresi ve KEP adresi eklendi, iletişim e-posta adresi değişti; politikanın kapsamı ve veri
+        eklendi; veri sorumlusu şahıs yerine şirket olarak yazıldı, posta adresi ve KEP adresi eklendi, iletişim e-posta adresi
+        değişti; politikanın kapsamı ve veri
         sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı, müşteri kayıtlarına
         giren yorumcular) ve kayıt formu
         bilgileri (Bölüm 1.1–1.3), YouTube API kullanımı ve tarayıcı eklentisi (Bölüm 2–3), saklama süreleri, haklarınız
@@ -51,7 +52,7 @@ export default function PrivacyTr() {
         sitesinin kişisel verileri nasıl topladığını, işlediğini, sakladığını ve paylaştığını açıklar.
       </p>
       <p>
-        <strong>Veri sorumlusu:</strong> {LEGAL_NAME} (şahıs). Posta adresi: Gazi Mah. Yeşilırmak Cad. No:172/A
+        <strong>Veri sorumlusu:</strong> {LEGAL_NAME}. Posta adresi: Gazi Mah. Yeşilırmak Cad. No:172/A
         Kepez/ANTALYA. KEP adresi: emarglobal@hs01.kep.tr. İletişim:{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
       </p>

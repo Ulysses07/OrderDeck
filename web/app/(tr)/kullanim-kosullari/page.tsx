@@ -85,7 +85,7 @@ export default function TermsTr() {
 
       <h2>4. Fikri mülkiyet</h2>
       <p>
-        {BRAND} markası, logosu, tasarımı, kaynak kodu ve dökümantasyonu {LEGAL_NAME}'ın
+        {BRAND} markası, logosu, tasarımı, kaynak kodu ve dökümantasyonu {LEGAL_NAME}'nin
         mülkiyetindedir. Lisans, size lisans kapsamı içinde uygulamayı kullanma
         hakkı verir; kaynak kod sahipliğini değil.
       </p>
@@ -115,10 +115,10 @@ export default function TermsTr() {
 
       <h2>7. Sorumluluğun sınırlandırılması</h2>
       <p>
-        Yasaların izin verdiği azami ölçüde, {LEGAL_NAME}'ın bu hizmetten kaynaklanan her
+        Yasaların izin verdiği azami ölçüde, {LEGAL_NAME}'nin bu hizmetten kaynaklanan her
         türlü dolaylı, arızi, özel veya cezai zarardan (kâr kaybı, veri kaybı, iş kesintisi
         dahil) sorumlu olmayacağı kabul edilir. Doğrudan zararlar için toplam sorumluluk,
-        son 12 ay içinde tarafınızdan {LEGAL_NAME}'a ödenen toplam tutarı aşamaz.
+        son 12 ay içinde tarafınızdan {LEGAL_NAME}'ne ödenen toplam tutarı aşamaz.
       </p>
 
       <h2>8. Hesap askıya alma ve fesih</h2>

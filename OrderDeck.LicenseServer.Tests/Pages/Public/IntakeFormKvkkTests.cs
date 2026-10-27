@@ -706,8 +706,8 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     {
         const string ExpectedVersion = "kvkk-2026-10-21";
         const string ExpectedFormSha256 = "4457F355669947E438D13F053F6A9263C2576F14EA06B3D05DC35E4435BD297E";
-        const string ExpectedPolicyBoxSha256 = "C959E4D1EDC0D8DE639EC64AC28ABFBD9D9EC4D6687D360E4D3E69C28BC0FEDB";
-        const string ExpectedPolicySourceSha256 = "895EE64724188E859E20A9A5473B5F183BF7F712A27C44A4A1A07689F137883C";
+        const string ExpectedPolicyBoxSha256 = "7F1D31DFE1EEFD72B5FA99B37D1ADD6AC3C79941CE600275522D530A5D34F47E";
+        const string ExpectedPolicySourceSha256 = "F9F6033F8D1D62E2F0A106A14C38C796C8D32FC42FF51C99B4C88C77A72CAA95";
 
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();

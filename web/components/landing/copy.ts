@@ -3,6 +3,8 @@
  * bileşenler) buradan beslenir. messages/{tr,en}.ts'ten ayrı tutuldu (oradaki
  * Messages tipi paritesi eski sayfa yapısına bağlı; landing kopyası bağımsız).
  */
+import { LEGAL_NAME_SHORT } from '@/lib/i18n';
+
 export type LandingLocale = 'tr' | 'en';
 
 export const landingCopy = {
@@ -202,12 +204,12 @@ export const landingCopy = {
     },
     footer: {
       tagline: 'Türk mezat yayıncıları için tek pencerede sohbet, etiket ve çekiliş.',
-      contact: 'Musa Sevinç · musa@emarglobal.com',
+      contact: `${LEGAL_NAME_SHORT} · musa@emarglobal.com`,
       colProduct: 'Ürün',
       product: [['#ozellikler','Özellikler'],['#fiyat','Fiyatlandırma'],['#sss','SSS'],['/blog/','Blog']],
       colLegal: 'Yasal',
       legal: [['/gizlilik-politikasi/','Gizlilik Politikası'],['/kullanim-kosullari/','Kullanım Koşulları'],['/iletisim/','İletişim']],
-      rights: '© 2026 Musa Sevinç. Tüm hakları saklıdır.',
+      rights: `© 2026 ${LEGAL_NAME_SHORT} Tüm hakları saklıdır.`,
     },
     chatPool: [
       { p: 'ig', u: 'ayse34', m: 'aldım 250', buy: true, price: 250, item: 'kırmızı 38' },
@@ -427,12 +429,12 @@ export const landingCopy = {
     },
     footer: {
       tagline: 'Chat, labels and giveaways in one window for Turkish live-auction sellers.',
-      contact: 'Musa Sevinç · musa@emarglobal.com',
+      contact: `${LEGAL_NAME_SHORT} · musa@emarglobal.com`,
       colProduct: 'Product',
       product: [['#ozellikler','Features'],['#fiyat','Pricing'],['#sss','FAQ'],['/en/blog/','Blog']],
       colLegal: 'Legal',
       legal: [['/en/privacy-policy/','Privacy Policy'],['/en/terms-of-service/','Terms of Service'],['/en/contact/','Contact']],
-      rights: '© 2026 Musa Sevinç. All rights reserved.',
+      rights: `© 2026 ${LEGAL_NAME_SHORT} All rights reserved.`,
     },
     chatPool: [
       { p: 'ig', u: 'ayse34', m: 'sold 250', buy: true, price: 250, item: 'red 38' },

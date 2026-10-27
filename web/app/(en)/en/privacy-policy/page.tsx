@@ -40,8 +40,9 @@ export default function PrivacyEn() {
         store and share personal data.
       </p>
       <p>
-        <strong>Data controller:</strong> {LEGAL_NAME} (sole proprietor). Postal address: Gazi Mah. Yeşilırmak Cad.
-        No:172/A Kepez/ANTALYA, Türkiye. Registered electronic mail (KEP): emarglobal@hs01.kep.tr. Contact:{' '}
+        <strong>Data controller:</strong> {LEGAL_NAME}, a limited liability company registered in Türkiye. Postal
+        address: Gazi Mah. Yeşilırmak Cad. No:172/A Kepez/ANTALYA, Türkiye. Registered electronic mail (KEP):
+        emarglobal@hs01.kep.tr. Contact:{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
       </p>
 
