@@ -31,6 +31,9 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// gösterilir, karar yazan her POST <see cref="BankHasher.DisabledMessage"/> ile döner ve hiçbir şey yazmaz (müşteri araması
 /// salt okur, açık kalır). Bağdaştırıcı, eşleştirici ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri
 /// sayfayı düşürmez.</para>
+/// <para><b>Elle eşlemenin bildirimi</b> IBAN'ın öğrenilip öğrenilmediğini (öğrenilmediyse nedenini: IBAN yok ya da maskeli,
+/// 22.10 kesmesinden önce çekilmiş, dışlanan kod, başka müşteriye kayıtlı) ve öğrenildiyse aynı IBAN'dan kaç kararsız havalenin
+/// bu müşteriye önerildiğini söyler (<see cref="ManualMatchedMessage"/>). Yalnız "Eşlendi." görünmezlikti (27.10).</para>
 /// <para><b>Elle eşle kutusu müşteri aramasıdır</b> (<see cref="OnPostCustomerSearchAsync"/>, istemci
 /// <c>wwwroot/js/banka-eslestirme.js</c>): seçilen müşterinin kimliği formda <see cref="CustomerId"/> olarak gider. Arama
 /// POST'tur: sorgu (ad parçası) URL'ye, dolayısıyla Caddy erişim günlüğüne girmez.</para></summary>
@@ -50,6 +53,32 @@ public class IndexModel : PageModel
     /// "@a" ya da "z." tek harftir, lisansın yarısını getirirdi.</summary>
     public const int CustomerSearchMinLength = 2;
     public const int CustomerSearchMaxResults = 10;
+
+    // Elle eşlemenin bildirimi (ManualMatchedMessage): karar her durumda yazılır; bildirim IBAN'ın öğrenilip öğrenilmediğini ve
+    // nedenini söyler. Gölge mod: aynı IBAN'ın öbür havaleleri karar değil ÖNERİ alır (Öneri sütunu); her biri yine elle eşlenir.
+    public const string MatchedNoIbanMessage = "Eşlendi. IBAN öğrenilmedi: banka bu havalenin karşı IBAN'ını göndermemiş ya da maskeli göndermiş.";
+    public const string MatchedLegacyIbanMessage = "Eşlendi. IBAN öğrenilmedi: havale 22.10.2026'dan önce çekildi, o zamanki IBAN özeti öğretmek için güvenilir değil. Kişinin daha yeni bir havalesini eşleyin; aynı IBAN'dan gelen eski havaleler de o zaman önerilir.";
+    public const string MatchedExcludedMessage = "Eşlendi. IBAN öğrenilmedi: dışlanan işlem kodlu hareket (POS tahsilatı vb.), karşı IBAN müşterinin değil.";
+    public const string MatchedIbanConflictMessage = "Eşlendi. IBAN öğrenilmedi: bu IBAN başka bir müşteriye kayıtlı; öneriler değişmedi.";
+    public const string MatchedIbanRefreshedMessage = "Eşlendi. Bu IBAN zaten bu müşteriye kayıtlıydı (süresi tazelendi); aynı IBAN'dan gelen havaleler bu müşteriye önerilir.";
+    public const string MatchedReevaluationFailedMessage = "Eşlendi. IBAN öğrenildi, ama aynı IBAN'dan gelen havaleler şimdi yeniden değerlendirilemedi; saatlik tarama bir saat içinde tamamlar.";
+
+    /// <summary>Elle eşlemenin başarı bildirimi (<see cref="PaymentMatchReconciler.ManualMatchAsync"/>'in sonucu).</summary>
+    public static string ManualMatchedMessage(ManualMatchResult r) => r.Iban switch
+    {
+        ManualMatchIbanOutcome.NoValidIban => MatchedNoIbanMessage,
+        ManualMatchIbanOutcome.LegacyHash => MatchedLegacyIbanMessage,
+        ManualMatchIbanOutcome.Excluded => MatchedExcludedMessage,
+        ManualMatchIbanOutcome.ConflictOtherCustomer => MatchedIbanConflictMessage,
+        ManualMatchIbanOutcome.Refreshed => MatchedIbanRefreshedMessage,
+        _ when r.ReevaluationFailed => MatchedReevaluationFailedMessage,
+        _ when r.Reevaluated == 0 => "Eşlendi. IBAN öğrenildi; son 30 günde aynı IBAN'dan bekleyen başka havale yok.",
+        _ => $"Eşlendi. IBAN öğrenildi: aynı IBAN'dan gelen {r.ProposedToCustomer} havale bu müşteriye önerildi (Öneri sütunu)."
+            + (r.Reevaluated > r.ProposedToCustomer
+                ? $" {r.Reevaluated - r.ProposedToCustomer} havalenin açıklamasındaki kullanıcı adı başka bir müşteriyi gösterdiği ya da belirsiz olduğu için öneri yok."
+                : "")
+            + (r.More ? " Kalanlar saatlik taramayla önerilir." : ""),
+    };
 
     public const string UnmatchedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü, öneri yeniden hesaplandı.";
 
@@ -188,9 +217,10 @@ public class IndexModel : PageModel
             }
             customerId = customerIds[0];
         }
+        ManualMatchResult result;
         try
         {
-            await _reconciler.ManualMatchAsync(LicenseId, TransactionId, customerId, CancellationToken.None);
+            result = await _reconciler.ManualMatchAsync(LicenseId, TransactionId, customerId, CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -202,7 +232,7 @@ public class IndexModel : PageModel
         // durur). Biçim BankSubjectScrub.ManualMatchAuditDetails'inkiyle aynı: KVKK silmesi kişinin satırını onunla bulup boşaltır.
         await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(),
             new { wpfCustomerId = customerId }, CancellationToken.None);
-        TempData["Success"] = "Eşlendi.";
+        TempData["Success"] = ManualMatchedMessage(result);
         return Back();
     }
 

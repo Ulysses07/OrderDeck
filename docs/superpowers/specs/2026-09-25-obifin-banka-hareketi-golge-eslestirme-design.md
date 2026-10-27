@@ -344,6 +344,14 @@ alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
 - Kaldırma (admin onayıyla): bu hareketten öğrenilen IBAN satırı silinir (denetim kopyası tutulmaz); dekonta bağlı
   satırda dekont açık gap'e döner (`UnlinkedByAdmin` ya da çözülmüş gap'i yeniden açılır); öneri, kaldırma
   kaydedildikten sonra yeniden hesaplanır.
+- IBAN hafızası değişince (2026-10-27): insan kararı olmayan satırın önerisi hafızanın güncel haliyle hesaplanmış
+  olmalı. Elle eşleme YENİ bir bağ yazınca ya da kaldırma bir bağı silince, aynı lisans ve IBAN özetinin kararsız
+  satırları (öneri / öneri yok, karar ve dekont boş; son 30 gün; açıklaması silinmemiş; dışlanmamış; kesmeden önce
+  çekilmiş özetliler dahil) eşleştiriciyle yeniden hesaplanır; tetik başına ≤100. Sonuç yalnız öneridir (kanıt `;reeval`
+  ekiyle), zincirleme öğrenme yok; kararın kaydından sonra koşar, düşerse kararı geri almaz. Telafisi ve geriye dönük
+  doldurma telafi taramasının 2. aşaması: bağdan önce hesaplanmış satır (bağın özeti lisansta geçerli özetli bir
+  harekette görünüyorsa) ya da `iban-memory` kanıtlı, bağı silinmiş satır. Dekont onayıyla öğrenilen bağ taramayla
+  (≤1 saat) uygulanır. Sayfa bildirimi IBAN'ın neden öğrenilmediğini ya da kaç havalenin önerildiğini söyler.
 - `PaymentMatch.UpdatedAt` eşzamanlılık jetonudur ve kayıtta merkezi damgalanır; çakışmada taze satırla bir kez
   yeniden denenir, ikincide iş yolu uyarıyla vazgeçer, admin yolu "çakışma" mesajı verir.
 - KVKK silmesi müşterinin IBAN hafızasını siler, ona ait kanıt metinlerini boşaltır; eşleşme satırı ölçüm için kalır.
@@ -368,7 +376,8 @@ alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
   için ad katmanının kaldıracı.
 - Eşleştiricinin çekim anında düştüğü ve 30 günden eski hareket (ilk 90 günlük geri doldurmanın başı) önerisiz kalır:
   tarama onu görmez.
-- Kaldırmadan sonraki yeniden hesap düşerse satır "öneri yok" kalır: tarama satırı olan hareketi taramaz; admin yine
-  elle eşleyebilir.
+- Kaldırmadan sonraki yeniden hesap düşerse satır "öneri yok" kalır: tarama satırı olan hareketi yalnız IBAN hafızası
+  değiştiyse yeniden hesaplar; admin yine elle eşleyebilir.
+- IBAN bağından sonra hesaplanmış ama o an müşteri projeksiyonu henüz gelmemiş satır yeniden değerlendirilmez.
 - Sonucu belirsiz banka eklemesinin audit satırı yok; Obifin'de açılmış bir banka kaydını yerel bağlantıya bağlayan
   arayüz de yok (etiket günlükte ve bildirimde).

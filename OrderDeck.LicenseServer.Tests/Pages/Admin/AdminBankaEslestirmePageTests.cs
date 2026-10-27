@@ -421,7 +421,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var post = await PostAsync(client, "ManualMatch", lic, txId, "iki_platform_x · tiktok", customerId: tiktok);
 
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ToastAsync(client, PathFor(lic), "success")).Should().Be("Eşlendi.");
+        (await ToastAsync(client, PathFor(lic), "success")).Should().Be(IndexModel.MatchedNoIbanMessage, "hareketin karşı IBAN'ı yok");
         var m = (await MatchAsync(txId))!;
         m.ActualWpfCustomerId.Should().Be(tiktok); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
         using var scope = _factory.Services.CreateScope();
@@ -470,9 +470,40 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var post = await client.PostAsync(action, new FormUrlEncodedContent(fields));
 
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ToastAsync(client, PathFor(lic), "success")).Should().Be("Eşlendi.");
+        (await ToastAsync(client, PathFor(lic), "success")).Should().Be(IndexModel.MatchedNoIbanMessage);
         var m = (await MatchAsync(txId))!;
         m.ActualWpfCustomerId.Should().Be(wpfId); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+    }
+
+    [Fact]
+    public async Task Elle_esleme_IBAN_ogrenince_ayni_IBANdan_kac_havalenin_bu_musteriye_onerildigini_soyler()
+    {
+        // 27.10 şikâyetinin yarısı görünmezlikti: sayfa her durumda yalnız "Eşlendi." diyordu. Öğrenilen IBAN aynı IBAN'ın
+        // kararsız havalelerine uygulanır ve bildirim kaç havalenin bu müşteriye önerildiğini söyler (gölge mod: öneri, karar değil).
+        var (lic, txId, wpfId) = await SeedAsync();
+        var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        var older = Tx(lic, 80m, "EFT GELEN", DateTimeOffset.UtcNow.AddDays(-3));
+        // KVKK Ö-7 kesmesinden sonraki çekim: özetler geçerli IBAN'dan.
+        older.CounterpartyIbanHash = hash; older.CounterpartyIbanHashValid = true;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankTransactions.Add(older);
+            var tx = await db.BankTransactions.SingleAsync(t => t.Id == txId);
+            tx.CounterpartyIbanHash = hash; tx.CounterpartyIbanHashValid = true;
+            await db.SaveChangesAsync();
+            await scope.ServiceProvider.GetRequiredService<PaymentMatcher>().MatchAsync(older, CancellationToken.None);
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        (await PostAsync(client, "ManualMatch", lic, txId, customerId: wpfId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var expected = IndexModel.ManualMatchedMessage(new ManualMatchResult(ManualMatchIbanOutcome.Learned, Reevaluated: 1, ProposedToCustomer: 1));
+        expected.Should().Contain("1 havale bu müşteriye önerildi");
+        (await ToastAsync(client, PathFor(lic), "success")).Should().Be(expected);
+        var row = (await PageAsync(client, PathFor(lic))).QuerySelector($"tr[data-tx='{older.Id}']")!;
+        row.QuerySelector("[data-cell='proposed']")!.TextContent.Should().Contain("ornek_musteri34").And.Contain("IbanMemory");
+        row.QuerySelector("[data-cell='actual']")!.TextContent.Trim().Should().BeEmpty("otomatik karar yok");
     }
 
     [Fact]

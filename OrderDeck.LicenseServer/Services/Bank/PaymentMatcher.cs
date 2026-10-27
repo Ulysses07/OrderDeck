@@ -22,7 +22,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <see cref="BankDataRetentionJob"/>) yalnız katman adı ve kullanıcı adı anahtarı
 /// taşır; ham açıklama, IBAN, VKN, hash ya da müşterinin adı yazılmaz. Ad kişisel veridir ve kanıta hiç girmez; ad
 /// katmanı yalnız eşleşen token sayısını yazar ("name:2"), ad gerekirse önerilen müşteriden okunur — silinmişse orada
-/// da yoktur. Kullanıcı adı anahtarı taşıyan kanıtı KVKK silmesi (ShopperPurgeService) boşaltır.</para>
+/// da yoktur. Kullanıcı adı anahtarı taşıyan kanıtı KVKK silmesi (ShopperPurgeService) boşaltır. Çekimden sonra IBAN hafızası
+/// değişince yeniden hesaplanan satırın kanıtı <see cref="ReevaluationEvidenceSuffix"/> eki taşır (<see cref="ReevaluateAsync"/>).</para>
 /// <para>Kapsamının scoped DbContext'inde koşar: sink'in kendi alt kapsamı (çekim işinin bağlamı DEĞİL), tarama işinin
 /// kapsamı, dekont onayı sonrası bağdaştırma işi (<see cref="PaymentMatchReconcileJob"/>) ya da admin isteği. Kapsamı
 /// başkasıyla paylaşabileceği için kaydedemediği öneriyi izlemede bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu
@@ -71,18 +72,31 @@ public sealed class PaymentMatcher
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    public async Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct)
+    /// <summary>Yeniden değerlendirmenin (<see cref="ReevaluateAsync"/>) kanıta eklediği ek: öneri çekim anında değil, sonradan
+    /// (IBAN hafızası değişince) üretildi. Faz 2 ölçümü isterse bununla ayrıştırır. ';' ile başlar: KVKK silmesinin kullanıcı adı
+    /// araması (anahtardan sonra son, ';' ya da ',') bozulmaz.</summary>
+    public const string ReevaluationEvidenceSuffix = ";reeval";
+
+    public Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct) => MatchCoreAsync(tx, null, ct);
+
+    /// <summary><see cref="MatchAsync"/>'in aynısı (aynı katmanlar, aynı insan kararı kilidi, aynı jeton), yalnız kanıta
+    /// <see cref="ReevaluationEvidenceSuffix"/> eklenir. Çekimden sonra IBAN hafızası değişince var olan kararsız satırı yeniden
+    /// hesaplamak için (<c>PaymentMatchReconciler.ReevaluateUndecidedAsync</c>). Dışlama kararı hafızadan bağımsızdır, eki
+    /// almaz.</summary>
+    public Task<PaymentMatch> ReevaluateAsync(BankTransaction tx, CancellationToken ct) => MatchCoreAsync(tx, ReevaluationEvidenceSuffix, ct);
+
+    private async Task<PaymentMatch> MatchCoreAsync(BankTransaction tx, string? evidenceSuffix, CancellationToken ct)
     {
         try
         {
-            return await MatchOnceAsync(tx, ct);
+            return await MatchOnceAsync(tx, evidenceSuffix, ct);
         }
         catch (DbUpdateConcurrencyException)
         {
             // SaveAsync satırı DB'deki haliyle tazeledi; insan kararıysa MatchOnceAsync onu dokunmadan döner.
             _log.LogInformation("Gölge eşleştirme: hareket={BankTransactionId} önerisi okunduktan sonra değişti; taze satırla "
                 + "yeniden hesaplanıyor", tx.Id);
-            return await MatchOnceAsync(tx, ct);
+            return await MatchOnceAsync(tx, evidenceSuffix, ct);
         }
     }
 
@@ -102,7 +116,7 @@ public sealed class PaymentMatcher
             : null;
     }
 
-    private async Task<PaymentMatch> MatchOnceAsync(BankTransaction tx, CancellationToken ct)
+    private async Task<PaymentMatch> MatchOnceAsync(BankTransaction tx, string? evidenceSuffix, CancellationToken ct)
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct)
             ?? new PaymentMatch { Id = Guid.NewGuid(), LicenseId = tx.LicenseId, BankTransactionId = tx.Id, CreatedAt = DateTimeOffset.UtcNow };
@@ -117,6 +131,8 @@ public sealed class PaymentMatcher
             Set(match, null, PaymentMatchLayer.None, 0m, $"excluded:{exclusion}", PaymentMatchStatus.NoProposal);
             return await SaveAsync(match, ct);
         }
+        // Buradan sonraki her sonuç IBAN hafızasının o anki haline bağlı olabilir: yeniden değerlendirmede ek alır.
+        var suffix = evidenceSuffix ?? "";
 
         var candidates = await CandidatesAsync(tx.LicenseId, ct);
         var text = BankTextNormalizer.Tokenize(tx.Description);
@@ -147,27 +163,27 @@ public sealed class PaymentMatcher
 
         if (byUsername.Count > 1)
         {
-            Set(match, null, PaymentMatchLayer.None, 0m, $"ambiguous:{byUsername.Count}", PaymentMatchStatus.NoProposal);
+            Set(match, null, PaymentMatchLayer.None, 0m, $"ambiguous:{byUsername.Count}{suffix}", PaymentMatchStatus.NoProposal);
             return await SaveAsync(match, ct);
         }
         if (byUsername.Count == 1)
         {
             var id = byUsername[0].Id; var key = byUsername[0].Key;
             // Kanıttaki kullanıcı adı biçimleri KVKK silmesinde (ShopperPurgeService 3b) tam anahtarla aranır: anahtardan sonra
-            // son, ';' ya da ','. Biçim değişirse orası da değişir.
+            // son, ';' ya da ','. Biçim değişirse orası da değişir. Yeniden değerlendirme eki ';' ile başlar.
             if (byIban is { } ib && ib != id)
             {
-                Set(match, null, PaymentMatchLayer.None, 0m, $"conflict:username={key},iban-memory", PaymentMatchStatus.NoProposal);
+                Set(match, null, PaymentMatchLayer.None, 0m, $"conflict:username={key},iban-memory{suffix}", PaymentMatchStatus.NoProposal);
                 return await SaveAsync(match, ct);
             }
             var both = byIban == id;
             Set(match, id, PaymentMatchLayer.UsernameInDescription, both ? BothConfidence : UsernameConfidence,
-                both ? $"username={key};iban-memory" : $"username={key}", PaymentMatchStatus.Proposed);
+                (both ? $"username={key};iban-memory" : $"username={key}") + suffix, PaymentMatchStatus.Proposed);
             return await SaveAsync(match, ct);
         }
         if (byIban is { } ibanCustomer)
         {
-            Set(match, ibanCustomer, PaymentMatchLayer.IbanMemory, IbanConfidence, "iban-memory", PaymentMatchStatus.Proposed);
+            Set(match, ibanCustomer, PaymentMatchLayer.IbanMemory, IbanConfidence, "iban-memory" + suffix, PaymentMatchStatus.Proposed);
             return await SaveAsync(match, ct);
         }
 
@@ -179,10 +195,11 @@ public sealed class PaymentMatcher
         {
             // Ad kanıta yazılmaz (kişisel veri, silme yolunun dışında kalırdı): yalnız eşleşen token sayısı.
             Set(match, nameHits[0].Id, PaymentMatchLayer.NameAmount, NameConfidence,
-                $"name:{nameHits[0].NameTokens.Count}", PaymentMatchStatus.Proposed);
+                $"name:{nameHits[0].NameTokens.Count}{suffix}", PaymentMatchStatus.Proposed);
             return await SaveAsync(match, ct);
         }
-        Set(match, null, PaymentMatchLayer.None, 0m, nameHits.Count > 1 ? $"ambiguous-name:{nameHits.Count}" : "no-signal", PaymentMatchStatus.NoProposal);
+        Set(match, null, PaymentMatchLayer.None, 0m,
+            (nameHits.Count > 1 ? $"ambiguous-name:{nameHits.Count}" : "no-signal") + suffix, PaymentMatchStatus.NoProposal);
         return await SaveAsync(match, ct);
     }
 

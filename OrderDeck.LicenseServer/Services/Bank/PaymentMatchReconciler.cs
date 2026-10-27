@@ -70,11 +70,27 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// audit'ini düşürürdü.</para>
 /// <para>Düşen deneme izleyicide iz bırakmaz (bu üç tablonun izlenen satırları ve denemenin eklediği imha kaydı ayrılır):
 /// kapsamın sonraki SaveChanges'i onu yeniden denemez. Hareketler izlenmeden okunur.</para>
+/// <para><b>IBAN hafızası eski havalelere de uygulanır.</b> Eşleştirici hafızayı yalnız hesap anında okur. Elle eşleme YENİ bir
+/// bağ yazınca ya da kaldırma bir bağı silince (öğretilmiş satır ya da süre geri çekmesinin silmesi), aynı lisans ve IBAN
+/// özetinin kararsız satırları hafızanın güncel haliyle yeniden hesaplanır (<see cref="ReevaluateUndecidedAsync"/>). Kararsız:
+/// öneri ya da öneri yok, karar anı ve dekont boş; son <see cref="BankMatchSweepJob.LookbackDays"/> gün, açıklaması silinmemiş,
+/// dışlanmamış. Tazeleme tetiklemez: bağ değişmez, ondan sonra hesaplanan satırlar onu zaten gördü. Özeti KVKK Ö-7 kesmesinden
+/// önce çekilmiş satır (HashValid=false) da hedeftir: geçerli bir bağın özetine eşitlik aynı tam IBAN demektir; öneri alır,
+/// öğretmez. Sonuç yalnız öneridir: karar, dekont ya da yeni bağ yazılmaz (zincirleme öğrenme yok, öğrenme yalnız insan
+/// kararından). Açıklamadaki kullanıcı adı başka müşteriyi gösteriyorsa eşleştiricinin kuralı geçerlidir: öneri yok. Kanıt
+/// <see cref="PaymentMatcher.ReevaluationEvidenceSuffix"/> ekini taşır. Kararın kaydından SONRA, denemenin dışında koşar
+/// (kaldırmanın yeniden hesabıyla aynı kalıp); düşerse karar geri alınmaz (<see cref="ManualMatchResult.ReevaluationFailed"/>).
+/// Tetik başına en çok <see cref="MaxReevaluationsPerTrigger"/> satır. Telafisi, dekont onayı yollarının bağları ve düzeltmeden
+/// önceki kararların geriye dönük doldurması <see cref="BankMatchSweepJob"/>'ın 2. aşamasıdır. KVKK K-6: durdurulmuş bağlantıda
+/// koşmaz.</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
 /// </summary>
 public sealed class PaymentMatchReconciler
 {
     public static readonly TimeSpan CandidateWindow = TimeSpan.FromDays(2);
+
+    /// <summary>Bir elle eşlemenin ya da kaldırmanın yeniden değerlendirdiği en çok satır; kalanını telafi taraması yapar.</summary>
+    public const int MaxReevaluationsPerTrigger = 100;
 
     /// <summary>Admin yolunda ikinci çakışmanın mesajı.</summary>
     public const string ConflictMessage = "Eşleşme bu sırada başka bir işlemle değişti; sayfayı yenileyip yeniden deneyin.";
@@ -118,18 +134,30 @@ public sealed class PaymentMatchReconciler
                 + "çakıştı; vazgeçildi", tx.Id);
     }
 
-    /// <exception cref="ObifinValidationException">Hareket ya da müşteri bu lisansta yok; ya da iki denemede de çakışma.</exception>
-    public async Task ManualMatchAsync(Guid licenseId, Guid transactionId, Guid wpfCustomerId, CancellationToken ct)
+    /// <returns>Hareketin IBAN'ının öğrenilip öğrenilmediği; öğrenildiyse aynı IBAN'ın yeniden değerlendirilen kararsız
+    /// satırları (sınıf özeti, "IBAN hafızası eski havalelere de uygulanır").</returns>
+    /// <exception cref="ObifinValidationException">Hareket ya da müşteri bu lisansta yok; ya da iki denemede de çakışma. Yeniden
+    /// değerlendirme düşerse fırlatılmaz: karar kaydedildi.</exception>
+    public async Task<ManualMatchResult> ManualMatchAsync(Guid licenseId, Guid transactionId, Guid wpfCustomerId, CancellationToken ct)
     {
-        if (!await RetryOnceAsync(() => ManualMatchOnceAsync(licenseId, transactionId, wpfCustomerId, ct), ct))
+        var attempt = new ManualMatchAttempt();
+        if (!await RetryOnceAsync(() => ManualMatchOnceAsync(licenseId, transactionId, wpfCustomerId, attempt, ct), ct))
             throw new ObifinValidationException(ConflictMessage);
+        // Karar kaydedildi. Yalnız YENİ bağ tetikler (sınıf özeti).
+        if (attempt.Outcome != ManualMatchIbanOutcome.Learned || attempt.IbanHash is not { } hash)
+            return new ManualMatchResult(attempt.Outcome);
+        var r = await TryReevaluateSameIbanAsync(licenseId, hash, transactionId, wpfCustomerId, ct);
+        return r is null
+            ? new ManualMatchResult(attempt.Outcome, ReevaluationFailed: true)
+            : new ManualMatchResult(attempt.Outcome, r.Reevaluated, r.ProposedToCustomer, r.More);
     }
 
     /// <param name="actor">Kaldırma IBAN bağını silerse (<see cref="RewindIbanConfirmationAsync"/>) imha kaydının yapanı: yönetici
     /// sayfası <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın).
     /// Boşsa <see cref="DataDestruction.AdminActor"/>.</param>
     /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu); false: kaldırma kaydedildi, öneri yeniden
-    /// hesaplanmadı — hesap düştü ya da bağlantı eşleştirmeye kapalı (sınıf özeti).</returns>
+    /// hesaplanmadı — hesap düştü ya da bağlantı eşleştirmeye kapalı (sınıf özeti). Kaldırma bir IBAN bağını sildiyse o bağdan
+    /// gelen öneriler de geri alınır; bunun düşmesi dönüşü değiştirmez (telafi taraması tamamlar).</returns>
     /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; iki denemede de çakışma; ya da yeniden denemede
     /// satırın insan kararı ilk denemenin gördüğünden farklı. Kaldırma kaydedildiyse fırlatılmaz.</exception>
     public async Task<bool> UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct, string? actor = null)
@@ -138,7 +166,18 @@ public sealed class PaymentMatchReconciler
         var by = string.IsNullOrWhiteSpace(actor) ? DataDestruction.AdminActor : actor;
         if (!await RetryOnceAsync(() => UnmatchOnceAsync(licenseId, transactionId, by, attempts, ct), ct))
             throw new ObifinValidationException(ConflictMessage);
-        if (attempts.Recompute is not { } tx) return true;
+        var recomputed = attempts.Recompute is not { } tx || await RecomputeAfterUnmatchAsync(licenseId, tx, ct);
+        // Kaldırma bir bağı sildiyse o bağdan gelen öneriler geri alınır (sınıf özeti). Durdurulmuş bağlantıda koşmaz; düşerse
+        // telafi taraması ("iban-memory" kanıtlı, bağı olmayan satır) tamamlar.
+        foreach (var hash in attempts.DeletedBonds)
+            await TryReevaluateSameIbanAsync(licenseId, hash, transactionId, null, ct);
+        return recomputed;
+    }
+
+    /// <summary>Kaldırılan hareketin önerisini yeniden hesaplar (sınıf özeti, "Kaldırmanın ardından yeniden hesap denemenin
+    /// parçası değildir").</summary>
+    private async Task<bool> RecomputeAfterUnmatchAsync(Guid licenseId, BankTransaction tx, CancellationToken ct)
+    {
         // Kaldırma kaydedildi. Yalnız eşleştirici: gap çözümü bu hareketle koşsaydı az önce kaldırılan bağı hemen geri kurardı.
         try
         {
@@ -228,7 +267,8 @@ public sealed class PaymentMatchReconciler
         await _db.SaveChangesAsync(ct);
     }
 
-    private async Task ManualMatchOnceAsync(Guid licenseId, Guid transactionId, Guid wpfCustomerId, CancellationToken ct)
+    private async Task ManualMatchOnceAsync(Guid licenseId, Guid transactionId, Guid wpfCustomerId, ManualMatchAttempt attempt,
+        CancellationToken ct)
     {
         // KVKK K-6: elle eşleme de IBAN öğretir ve LastConfirmedAt'i tazeler; durdurulmuş bağlantıda kural delinmesin (sınıf
         // özeti). RetryOnceAsync bu istisnayı yeniden denemeden yukarı verir.
@@ -249,7 +289,11 @@ public sealed class PaymentMatchReconciler
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now; match.UpdatedAt = now;
         match.Status = match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.ManualOnly;
         // Dışlanan hareketin (POS tahsilatı vb.) karşı IBAN'ı müşterinin değildir (sınıf özeti): karar yazılır, öğretilmez.
-        if (!Matcher.IsExcluded(tx)) await LearnIbanAsync(match, tx, wpfCustomerId, IbanMemorySource.ManualMatch, ct);
+        // Yeniden denemede sonuç bu denemeninkiyle değişir (ör. eşzamanlı bir karar aynı bağı öğrettiyse tazeleme olur).
+        attempt.Outcome = Matcher.IsExcluded(tx)
+            ? ManualMatchIbanOutcome.Excluded
+            : await LearnIbanAsync(match, tx, wpfCustomerId, IbanMemorySource.ManualMatch, ct);
+        attempt.IbanHash = tx.CounterpartyIbanHash;
         await _db.SaveChangesAsync(ct);
     }
 
@@ -265,16 +309,22 @@ public sealed class PaymentMatchReconciler
         if (attempts.Seen is null) attempts.Seen = decision;
         else if (attempts.Seen != decision) throw new ObifinValidationException(ConflictMessage);
 
+        // Bu denemenin sildiği bağlar (öğretilmiş satır ya da süre geri çekmesinin silmesi): kaydedilirse UnmatchAsync onların
+        // önerilerini geri alır. Yeniden deneme baştan sayar.
+        attempts.DeletedBonds.Clear();
         var learned = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId && m.SourceBankTransactionId == tx.Id).ToListAsync(ct);
         _db.CustomerIbanMemories.RemoveRange(learned); // spec §3: iptal bayrağı değil, silme
+        attempts.DeletedBonds.UnionWith(learned.Select(m => m.IbanHash));
         // KVKK K-6: kaldırılan karar başka bir havalenin öğrettiği bağı tazelemiş olabilir; süresi artık doğrulanmış sayılmayan
         // havalede kalmasın. Bağı doğrulamamış karar (işaretsiz: doğrulanmamış dekont bağı, dışlanan hareket, çatışma) süreyi
         // taşımadı, kaldırılması da değiştirmez.
-        if (match is { ActualWpfCustomerId: { } decidedFor, IbanConfirmedAt: { } confirmed } && !Matcher.IsExcluded(tx))
+        if (match is { ActualWpfCustomerId: { } decidedFor, IbanConfirmedAt: { } confirmed } && !Matcher.IsExcluded(tx)
+            && tx.CounterpartyIbanHash is { } hash)
         {
             var removedId = tx.Id;
-            await RewindIbanConfirmationAsync(tx, decidedFor, confirmed, t => t.Id == removedId, "kaldırma",
-                DataDestruction.Triggers.Retention, actor, ct);
+            if (await RewindIbanConfirmationAsync(tx, decidedFor, confirmed, t => t.Id == removedId, "kaldırma",
+                    DataDestruction.Triggers.Retention, actor, ct))
+                attempts.DeletedBonds.Add(hash);
         }
         if (match is not null)
         {
@@ -396,13 +446,15 @@ public sealed class PaymentMatchReconciler
     /// (<see cref="PaymentMatch.IbanConfirmedAt"/>): kaldırmada bağın süresi yalnız işaretli kararlardan geri hesaplanır.
     /// IBAN'sız hareket ve başka müşteriye kayıtlı bağ doğrulama değildir, işaretlenmez. Özeti geçerli IBAN'dan üretilmemiş
     /// hareket (<see cref="BankTransaction.CounterpartyIbanHashValid"/> false: KVKK Ö-7 kesme anından önce çekilmiş) ne öğretir ne
-    /// tazeler.</summary>
-    private async Task LearnIbanAsync(PaymentMatch match, BankTransaction tx, Guid wpfCustomerId, IbanMemorySource source,
-        CancellationToken ct)
+    /// tazeler. Sonucu döner (elle eşlemenin bildirimi; dekont onayı yolu kullanmaz).</summary>
+    private async Task<ManualMatchIbanOutcome> LearnIbanAsync(PaymentMatch match, BankTransaction tx, Guid wpfCustomerId,
+        IbanMemorySource source, CancellationToken ct)
     {
+        // Banka karşı IBAN'ı boş ya da maskeli gönderdi: özet yok (ObifinPollJob, BankHasher.NormalizeIban).
+        if (tx.CounterpartyIbanHash is null) return ManualMatchIbanOutcome.NoValidIban;
         // KVKK Ö-7: yalnız geçerli IBAN'dan üretilmiş özet öğretir. Kesme anından (Görev 11) önce çekilen hareketin özeti maskeli
         // IBAN'dan olabilir; --reset-iban-memory hafızayı silse de o özet buradan geri gelirdi.
-        if (tx.CounterpartyIbanHash is null || !tx.CounterpartyIbanHashValid) return;
+        if (!tx.CounterpartyIbanHashValid) return ManualMatchIbanOutcome.LegacyHash;
         var now = DateTimeOffset.UtcNow;
         var confirmedAt = ConfirmedAt(tx, now);
         var existing = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == tx.LicenseId && m.IbanHash == tx.CounterpartyIbanHash, ct);
@@ -411,14 +463,14 @@ public sealed class PaymentMatchReconciler
             if (existing.WpfCustomerId != wpfCustomerId)
             {
                 _log.LogWarning("IBAN hafızası çelişkisi: hareket {TransactionId} başka müşteriye kayıtlı IBAN'dan geldi", tx.Id);
-                return;
+                return ManualMatchIbanOutcome.ConflictOtherCustomer;
             }
             // Aynı müşteriye her doğrulama süreyi tazeler. Saklamanın başlangıcı (LastConfirmedAt, yoksa CreatedAt; saklama işiyle
             // aynı ifade) yalnız ileri gider: daha eski bir havalenin geç doğrulanması onu geri çekmez. Karar yine de
             // işaretlenir: daha yeni doğrulama kaldırılırsa bu havale kalan doğrulamadır.
             if ((existing.LastConfirmedAt ?? existing.CreatedAt) < confirmedAt) existing.LastConfirmedAt = confirmedAt;
             match.IbanConfirmedAt = confirmedAt;
-            return;
+            return ManualMatchIbanOutcome.Refreshed;
         }
         _db.CustomerIbanMemories.Add(new CustomerIbanMemory
         {
@@ -427,6 +479,93 @@ public sealed class PaymentMatchReconciler
             LastConfirmedAt = confirmedAt,
         });
         match.IbanConfirmedAt = confirmedAt;
+        return ManualMatchIbanOutcome.Learned;
+    }
+
+    /// <summary>Kararsız satırı IBAN hafızasının güncel haliyle yeniden hesaplar (sınıf özeti): yalnız eşleştirici
+    /// (<see cref="PaymentMatcher.ReevaluateAsync"/>). Gap çözümü koşmaz: tutar/zaman kuralı hafızadan bağımsızdır, kaldırılan bağı
+    /// da geri kurmasın. Sonuç yalnız öneri ya da öneri yok olur; insan kararına, dekonta ve hafızaya dokunmaz. Eşleştirici satırı
+    /// izlenerek taze okur, insan kararı kilidini yeniden denetler ve jetonla yazar; çakışmada taze satırla bir kez yeniden
+    /// hesaplar (araya insan kararı girdiyse dokunmaz). İkinci çakışmada satır atlanır: karşı yazan, bağ kaydedildikten sonra
+    /// okuduğu için doğru hesapladı. Hareket seçimden sonra taze okunur: bu arada açıklaması silindiyse (saklama, KVKK silmesi,
+    /// veri talebi) ya da hareket silindiyse dokunulmaz — seçimdeki açıklamayla hesaplanan öneri silinmiş metnin izini kanıta
+    /// geri taşırdı. Telafi taraması (<see cref="BankMatchSweepJob"/>) da bunu kullanır.</summary>
+    /// <returns>Eşleştiricinin döndürdüğü satır (insan kararlıysa dokunulmamış); null: atlandı (iki çakışma, açıklaması silinmiş
+    /// ya da silinmiş hareket).</returns>
+    public async Task<PaymentMatch?> ReevaluateUndecidedAsync(BankTransaction tx, CancellationToken ct)
+    {
+        var fresh = await _db.BankTransactions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tx.Id, ct);
+        if (fresh is null || fresh.DescriptionPurgedAt is not null) return null;
+        // Satır bu bağlamda okunmuş haliyle izleniyorsa izleyen sorgu onu DB'den tazelemez (kimlik çözümlemesi): ayrılır, eşleştirici
+        // taze okur. Yalnız bekleyen yazısı olmayan girdi.
+        foreach (var entry in _db.ChangeTracker.Entries<PaymentMatch>()
+                     .Where(e => e.Entity.BankTransactionId == fresh.Id && e.State == EntityState.Unchanged).ToList())
+            entry.State = EntityState.Detached;
+        try
+        {
+            return await Matcher.ReevaluateAsync(fresh, ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            _log.LogInformation("Gölge bağdaştırma: hareket {TransactionId} yeniden değerlendirmesi iki denemede de eşzamanlı bir "
+                + "yazıyla çakıştı; atlandı", tx.Id);
+            return null;
+        }
+    }
+
+    /// <summary>Aynı lisans ve IBAN özetinin kararsız satırlarını yeniden değerlendirir (sınıf özeti): son
+    /// <see cref="BankMatchSweepJob.LookbackDays"/> gün, gelen, açıklaması silinmemiş, dışlanmamış; tetikleyen hareket
+    /// (<paramref name="triggerTransactionId"/>) hariç; en yeniden başlayarak en çok <see cref="MaxReevaluationsPerTrigger"/> satır.
+    /// Seçim izlenmeden. KVKK K-6: bağlantı eşleştirmeye kapalıysa koşmaz. <paramref name="customer"/> verilirse ona öneri alan
+    /// satırlar sayılır.</summary>
+    private async Task<IbanReevaluation> ReevaluateSameIbanAsync(Guid licenseId, string ibanHash, Guid triggerTransactionId,
+        Guid? customer, CancellationToken ct)
+    {
+        if (await ObifinConnectionService.MatchingStateAsync(_db, licenseId, ct) == false) return new IbanReevaluation(0, 0, false);
+        var since = DateTimeOffset.UtcNow.AddDays(-BankMatchSweepJob.LookbackDays);
+        var targets = await (from t in _db.BankTransactions.AsNoTracking()
+                             join m in _db.PaymentMatches.AsNoTracking() on t.Id equals m.BankTransactionId
+                             where t.LicenseId == licenseId && t.CounterpartyIbanHash == ibanHash && t.Id != triggerTransactionId
+                                   && t.Direction == BankTransactionDirection.Incoming && t.Amount != 0 && t.OccurredAt >= since
+                                   && t.DescriptionPurgedAt == null
+                                   && (m.Status == PaymentMatchStatus.Proposed || m.Status == PaymentMatchStatus.NoProposal)
+                                   && m.DecidedAt == null && m.PaymentId == null
+                             orderby t.OccurredAt descending, t.Id
+                             select t)
+            .Take(MaxReevaluationsPerTrigger + 1)
+            .ToListAsync(ct);
+        int reevaluated = 0, proposed = 0;
+        foreach (var tx in targets.Take(MaxReevaluationsPerTrigger))
+        {
+            if (Matcher.IsExcluded(tx)) continue;
+            var row = await ReevaluateUndecidedAsync(tx, ct);
+            // Araya insan kararı girdiyse eşleştirici satıra dokunmadan döndü: yeniden değerlendirilmiş sayılmaz.
+            if (row is null || row.Status is not (PaymentMatchStatus.Proposed or PaymentMatchStatus.NoProposal)) continue;
+            reevaluated++;
+            if (customer is not null && row.Status == PaymentMatchStatus.Proposed && row.ProposedWpfCustomerId == customer) proposed++;
+        }
+        return new IbanReevaluation(reevaluated, proposed, targets.Count > MaxReevaluationsPerTrigger);
+    }
+
+    /// <summary><see cref="ReevaluateSameIbanAsync"/>; düşerse (iptal, DB hatası, programlama hatası) kararı ya da kaldırmayı geri
+    /// almaz: izi atar, günlüğe tetikleyen hareketin kimliği, istisna türü ve yığın izi yazılır (mesaj değil: SQL parametresi
+    /// taşıyabilir), null döner. Telafi taraması tamamlar.</summary>
+    private async Task<IbanReevaluation?> TryReevaluateSameIbanAsync(Guid licenseId, string ibanHash, Guid triggerTransactionId,
+        Guid? customer, CancellationToken ct)
+    {
+        try
+        {
+            return await ReevaluateSameIbanAsync(licenseId, ibanHash, triggerTransactionId, customer, ct);
+        }
+        catch (Exception ex)
+        {
+            // Eşleştirici kaydedemediğini izlemede bırakmaz; yine de kapsamın sonraki kaydına (audit) iz taşınmasın.
+            Discard();
+            _log.LogWarning("Gölge bağdaştırma: hareket {TransactionId} eşlemesi değişti ama aynı IBAN'ın kararsız satırları yeniden "
+                + "değerlendirilemedi ({ErrorType}); telafi taraması tamamlar. Yığın: {StackTrace}", triggerTransactionId,
+                ex.GetType().Name, ex.StackTrace);
+            return null;
+        }
     }
 
     /// <summary>Doğrulamanın saklama başlangıcı: havalenin işlem tarihi, ileri tarihliyse (valör) şimdiye kırpılır.</summary>
@@ -573,13 +712,25 @@ public sealed class PaymentMatchReconciler
     /// <summary>Satırın insan kararı: dekont bağı, gerçek müşteri, karar anı. Satır yoksa üçü de boş.</summary>
     private readonly record struct HumanDecision(Guid? PaymentId, Guid? ActualWpfCustomerId, DateTimeOffset? DecidedAt);
 
-    /// <summary>Kaldırmanın denemeleri arasında taşınan durum: ilk denemenin gördüğü insan kararı ve kaydedilen denemenin
-    /// yeniden hesaplatacağı hareket (satırı yoksa null).</summary>
+    /// <summary>Kaldırmanın denemeleri arasında taşınan durum: ilk denemenin gördüğü insan kararı, kaydedilen denemenin
+    /// yeniden hesaplatacağı hareket (satırı yoksa null) ve sildiği IBAN bağlarının özetleri.</summary>
     private sealed class UnmatchAttempts
     {
         public HumanDecision? Seen { get; set; }
         public BankTransaction? Recompute { get; set; }
+        public HashSet<string> DeletedBonds { get; } = new(StringComparer.Ordinal);
     }
+
+    /// <summary>Elle eşlemenin kaydedilen denemesinin IBAN sonucu ve hareketin özeti (yeniden deneme üzerine yazar).</summary>
+    private sealed class ManualMatchAttempt
+    {
+        public ManualMatchIbanOutcome Outcome { get; set; }
+        public string? IbanHash { get; set; }
+    }
+
+    /// <summary>Bir tetiğin yeniden değerlendirmesi: yeniden hesaplanan kararsız satır, bunlardan müşteriye öneri alan ve sınıra
+    /// takılıp takılmadığı.</summary>
+    private sealed record IbanReevaluation(int Reevaluated, int ProposedToCustomer, bool More);
 
     /// <summary>Seçilen aday, seçim sorgusuyla satırın izlenerek okunması arasında başka bir karara bağlandı. Jetonun
     /// yakaladığı çakışma gibi işlenir: iz atılır, seçim taze satırlarla bir kez yeniden yapılır.</summary>
