@@ -28,11 +28,21 @@ public sealed record PlatformStat(string Platform, int Confirmed, int Contradict
 /// sonradan iliştirilen dekont da öyle: bağımsız kanıttır. Sayfadaki elle eşleme ise öneriye bakarak verilir, öneriye eşit
 /// elle eşleme doğrulandı sayılır (çapalı). Faz 2 (otomatik onay) kararı bağımsız kanıta dayanmalı: eşik yalnız dekont onaylı
 /// kararlardan hesaplanır (<see cref="MeetsPhase2Threshold"/>), sayfa kararları ayrı gösterilir, ne örnekleme ne orana
-/// girer.</para></summary>
+/// girer.</para>
+/// <para><b>Sonradan üretilen öneri.</b> IBAN hafızası değişince yeniden hesaplanan önerinin (kanıtı
+/// <see cref="PaymentMatcher.ReevaluationEvidenceSuffix"/> ekli) dekont kararı <see cref="ReceiptConfirmed"/> /
+/// <see cref="ReceiptContradicted"/>'e girmez, <see cref="ReevaluatedReceiptConfirmed"/> /
+/// <see cref="ReevaluatedReceiptContradicted"/>'te ayrı gösterilir (sayfa kararı da sayılmaz). O öneri çekim anında yoktu: Faz 2'nin
+/// otomatik onayı çekim anında çalışacaksa o satırlar "öneri yok" olurdu; eşik otomatikleştirilecek nüfusu ölçmeli, IBAN katmanının
+/// yüksek isabeti de çelişki oranını aşağı çekip 200'e erken ulaştırırdı. Dekont bağı kanıta dokunmaz, bağlı satırın kanıtı
+/// açıklamasıyla (180 güne kadar) kalır: pencere içinde ek güvenilir. Bilinen sınır: KVKK silmesi kişiye bağlı satırın kanıtını
+/// boşaltır, o satırın eki kaybolur. Genel sayımlar, katman ve platform isabeti değişmez. <see cref="ReevaluatedPending"/>
+/// bekleyen önerilerin sonradan üretilenidir (telafi taramasının geriye dönük doldurması "Bekleyen öneri"yi sıçratır).</para></summary>
 public sealed record PaymentMatchSummary(
     int Incoming, int Excluded, int Proposed, int Confirmed, int Contradicted, int ManualOnly,
     int ReceiptConfirmed, int ReceiptContradicted, int PendingProposals, int NoProposal, int OpenGaps, decimal? ContradictionRate,
-    TimeSpan? LagMedian, TimeSpan? LagMax, IReadOnlyList<LayerStat> Layers, IReadOnlyList<PlatformStat> Platforms)
+    TimeSpan? LagMedian, TimeSpan? LagMax, IReadOnlyList<LayerStat> Layers, IReadOnlyList<PlatformStat> Platforms,
+    int ReevaluatedReceiptConfirmed = 0, int ReevaluatedReceiptContradicted = 0, int ReevaluatedPending = 0)
 {
     /// <summary>Faz 2 eşiğinin örneklemi: en az bu kadar dekont onaylı öneri kararı.</summary>
     public const int Phase2MinReceiptDecisions = 200;
@@ -42,12 +52,16 @@ public sealed record PaymentMatchSummary(
 
     public int Linked => Confirmed + Contradicted + ManualOnly;
 
-    /// <summary>Dekont onaylı öneri kararları: Faz 2 eşiğinin örneklemi.</summary>
+    /// <summary>Dekont onaylı öneri kararları (çekim anındaki önerilerin): Faz 2 eşiğinin örneklemi.</summary>
     public int ReceiptDecisions => ReceiptConfirmed + ReceiptContradicted;
 
+    /// <summary>Sonradan (IBAN hafızası değişince) üretilmiş önerilere verilen dekont kararları; gösterilir, eşiğe girmez (sınıf
+    /// özeti).</summary>
+    public int ReevaluatedReceiptDecisions => ReevaluatedReceiptConfirmed + ReevaluatedReceiptContradicted;
+
     /// <summary>Yalnız sayfada verilmiş (dekontsuz) öneri kararları; gösterilir, eşiğe girmez.</summary>
-    public int PageConfirmed => Confirmed - ReceiptConfirmed;
-    public int PageContradicted => Contradicted - ReceiptContradicted;
+    public int PageConfirmed => Confirmed - ReceiptConfirmed - ReevaluatedReceiptConfirmed;
+    public int PageContradicted => Contradicted - ReceiptContradicted - ReevaluatedReceiptContradicted;
 
     /// <summary>Dekont onaylı kararların çelişki oranı; yalnız gösterim (<see cref="PaymentMatchMetrics.Rate"/>).</summary>
     public decimal? ReceiptContradictionRate => PaymentMatchMetrics.Rate(ReceiptContradicted, ReceiptDecisions);
@@ -104,6 +118,7 @@ public sealed class PaymentMatchMetrics
                           {
                               m.BankTransactionId, m.Status, m.Layer, HasProposal = m.ProposedWpfCustomerId != null,
                               HasReceipt = m.PaymentId != null,
+                              Reevaluated = m.Evidence != null && m.Evidence.EndsWith(PaymentMatcher.ReevaluationEvidenceSuffix),
                               ActualPlatform = _db.WpfCustomerProjections
                                   .Where(c => c.Id == m.ActualWpfCustomerId && c.LicenseId == licenseId && c.PurgedAt == null)
                                   .Select(c => c.Platform).FirstOrDefault(),
@@ -111,12 +126,14 @@ public sealed class PaymentMatchMetrics
             .ToListAsync(ct);
         var decisions = rows.Where(r => !excluded.Contains(r.BankTransactionId))
             .Select(r => new Decision(Classify(r.Status, r.HasProposal), r.Layer,
-                string.IsNullOrWhiteSpace(r.ActualPlatform) ? UnknownPlatform : r.ActualPlatform, r.HasReceipt))
+                string.IsNullOrWhiteSpace(r.ActualPlatform) ? UnknownPlatform : r.ActualPlatform, r.HasReceipt, r.Reevaluated))
             .ToList();
         var openGaps = await _db.PaymentMatchGaps.CountAsync(g => g.LicenseId == licenseId && g.CreatedAt >= since && g.ResolvedAt == null, ct);
 
         int Of(Outcome o) => decisions.Count(d => d.Outcome == o);
-        int ReceiptOf(Outcome o) => decisions.Count(d => d.Outcome == o && d.Receipt);
+        // Faz 2 örneklemi yalnız çekim anındaki önerilerin dekont kararları (PaymentMatchSummary özeti, "Sonradan üretilen öneri").
+        int ReceiptOf(Outcome o) => decisions.Count(d => d.Outcome == o && d.Receipt && !d.Reevaluated);
+        int ReevaluatedReceiptOf(Outcome o) => decisions.Count(d => d.Outcome == o && d.Receipt && d.Reevaluated);
         var confirmed = Of(Outcome.Confirmed); var contradicted = Of(Outcome.Contradicted); var pending = Of(Outcome.Pending);
 
         var lagTicks = incoming.Select(x => (x.FetchedAt - x.OccurredAt).Ticks)
@@ -144,7 +161,10 @@ public sealed class PaymentMatchMetrics
             ReceiptConfirmed: ReceiptOf(Outcome.Confirmed), ReceiptContradicted: ReceiptOf(Outcome.Contradicted), PendingProposals: pending,
             NoProposal: Of(Outcome.NoProposal), OpenGaps: openGaps,
             ContradictionRate: Rate(contradicted, confirmed + contradicted),
-            LagMedian: lagMedian, LagMax: lagMax, Layers: layers, Platforms: platforms);
+            LagMedian: lagMedian, LagMax: lagMax, Layers: layers, Platforms: platforms,
+            ReevaluatedReceiptConfirmed: ReevaluatedReceiptOf(Outcome.Confirmed),
+            ReevaluatedReceiptContradicted: ReevaluatedReceiptOf(Outcome.Contradicted),
+            ReevaluatedPending: decisions.Count(d => d.Outcome == Outcome.Pending && d.Reevaluated));
     }
 
     /// <summary>Gösterim oranı, üç basamağa yuvarlı; payda sıfırsa null (karar yok, oran yok). Eşik kararında kullanılmaz.</summary>
@@ -153,8 +173,9 @@ public sealed class PaymentMatchMetrics
     /// <summary>Satırın ölçümdeki anlamı. Durumdan farkı: öneriden farklı müşteriye elle eşleme (ManualOnly + öneri) çelişkidir.</summary>
     private enum Outcome { Pending, NoProposal, Confirmed, Contradicted, ManualOnly }
 
-    /// <summary><paramref name="Receipt"/>: satır bir dekonta bağlı (dekont onaylı karar).</summary>
-    private readonly record struct Decision(Outcome Outcome, PaymentMatchLayer Layer, string Platform, bool Receipt);
+    /// <summary><paramref name="Receipt"/>: satır bir dekonta bağlı (dekont onaylı karar). <paramref name="Reevaluated"/>: öneri
+    /// sonradan, IBAN hafızası değişince üretildi (kanıtın eki).</summary>
+    private readonly record struct Decision(Outcome Outcome, PaymentMatchLayer Layer, string Platform, bool Receipt, bool Reevaluated);
 
     private static Outcome Classify(PaymentMatchStatus status, bool hasProposal) => status switch
     {

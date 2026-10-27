@@ -507,6 +507,39 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Elle_esleme_bir_IBANi_cok_havaleye_yayinca_bildirim_ortak_hesap_uyarisi_da_verir()
+    {
+        // Ortak ya da havuz IBAN'ı (e-para kuruluşu, aracı hesap) tek müşteriye eşlemek yanlışı geriye dönük çok satıra yayar.
+        // Önerilen havale sayısı eşiği aşınca ayrıca uyarı şeridi çıkar: "N havale önerildi" toplu yanlış elle eşlemeye davet etmesin.
+        var (lic, txId, wpfId) = await SeedAsync();
+        var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        const int n = IndexModel.PropagationWarningThreshold + 1;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var older = Enumerable.Range(1, n).Select(i => Tx(lic, 80m + i, "EFT GELEN", DateTimeOffset.UtcNow.AddDays(-3).AddMinutes(i))).ToList();
+            foreach (var t in older) { t.CounterpartyIbanHash = hash; t.CounterpartyIbanHashValid = true; }
+            db.BankTransactions.AddRange(older);
+            var tx = await db.BankTransactions.SingleAsync(t => t.Id == txId);
+            tx.CounterpartyIbanHash = hash; tx.CounterpartyIbanHashValid = true;
+            await db.SaveChangesAsync();
+            var matcher = scope.ServiceProvider.GetRequiredService<PaymentMatcher>();
+            foreach (var t in older) await matcher.MatchAsync(t, CancellationToken.None);
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        (await PostAsync(client, "ManualMatch", lic, txId, customerId: wpfId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var result = new ManualMatchResult(ManualMatchIbanOutcome.Learned, Reevaluated: n, ProposedToCustomer: n);
+        var page = await PageAsync(client, PathFor(lic));
+        page.QuerySelector(".alert-success.alert-dismissible")!.TextContent.Trim().Should().Be(IndexModel.ManualMatchedMessage(result));
+        var warning = page.QuerySelector(".alert-warning.alert-dismissible")!.TextContent.Trim();
+        warning.Should().Be(IndexModel.ManualMatchedWarning(result)).And.Contain(n.ToString());
+        IndexModel.ManualMatchedWarning(result with { Reevaluated = n - 1, ProposedToCustomer = n - 1 })
+            .Should().BeNull("eşikte uyarı yok");
+    }
+
+    [Fact]
     public async Task Elle_esle_kutusu_ayri_betikle_aranir_satir_ici_script_yok_kutu_JS_siz_kullanici_adi_gonderir()
     {
         // CSP: betik wwwroot'tan ('self'), satır içi script yok. Kutu JS'siz de çalışır: adı Username (eski tam eşitlik yolu),

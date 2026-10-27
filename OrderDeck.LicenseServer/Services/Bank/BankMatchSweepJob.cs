@@ -20,15 +20,20 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// satırın önerisi hafızanın GÜNCEL haliyle hesaplanmış olmalı. Elle eşleme ve kaldırma bunu anında uygular
 /// (<see cref="PaymentMatchReconciler"/>, "IBAN hafızası eski havalelere de uygulanır"); bu aşama telafisidir: o yeniden
 /// değerlendirme düştüyse, bağ dekont onayıyla öğrenildiyse ya da karar bu kuraldan önce verildiyse (ilk koşu geriye dönük
-/// doldurmayı kendisi yapar). Aynı lisans kümesi ve pencere; satırı olan, kararsız (öneri ya da öneri yok, karar anı ve dekont
-/// boş), açıklaması silinmemiş, IBAN özetli gelen hareketlerden şunlar: (a) özetinin bağı var, satır bağdan ÖNCE hesaplanmış ve
-/// bağın özeti lisansta özeti geçerli (<see cref="BankTransaction.CounterpartyIbanHashValid"/>) bir harekette görünüyor — yoksa
-/// eski maskeli özetten öğrenilmiş bir bağ aynı maskeyi taşıyan başka göndericilere yayılırdı; ya da (b) kanıtında "iban-memory"
-/// geçiyor ve bağ artık yok (kaldırmanın anlık geri alması koşamadı). En yeniden başlanarak koşu başına en çok
-/// <see cref="MaxReevaluationsPerRun"/>; dışlanan hareket atlanır. Yeniden hesap <see cref="PaymentMatchReconciler.ReevaluateUndecidedAsync"/>
-/// (yalnız eşleştirici, insan kararı kilidi ve jeton; iki çakışmada satır atlanır). İdempotent: yeniden hesaplanan satır bağdan
-/// yenidir, (b)'nin kanıtı artık bağsız "iban-memory" taşımaz. Bilinen sınır: bağdan sonra hesaplanmış ama o an müşteri
-/// projeksiyonu henüz gelmemiş satırı yakalamaz.</para>
+/// doldurmayı kendisi yapar). Aynı lisans kümesi; pencere <see cref="PaymentMatchReconciler.ReevaluationSince"/> (eşleşmeyen
+/// açıklamanın saklama sınırından bir gün içeride). Satırı olan, kararsız (öneri ya da öneri yok, karar anı ve dekont boş),
+/// açıklaması silinmemiş, IBAN özetli gelen hareketlerden şunlar: (a) özetinin AYNI lisansta bağı var, satır bağdan ÖNCE
+/// hesaplanmış ve bağın özeti lisansta özeti geçerli (<see cref="BankTransaction.CounterpartyIbanHashValid"/>) bir harekette
+/// görünüyor — yoksa eski maskeli özetten öğrenilmiş bir bağ aynı maskeyi taşıyan başka göndericilere yayılırdı; ya da (b)
+/// kanıtında "iban-memory" geçiyor ve aynı lisansta bağ artık yok (kaldırmanın anlık geri alması koşamadı). En yeniden
+/// başlanarak koşu başına en çok <see cref="MaxReevaluationsPerRun"/>. Hesaplandıktan sonra dışlama listesine giren kodlu
+/// hareket bellekte atlanmaz: eşleştirici ona "excluded:KOD" yazar, sonraki koşunun seçimi o öneki eler (atlansaydı her saat
+/// yeniden seçilip kotada yer kaplardı). Yeniden hesap <see cref="PaymentMatchReconciler.ReevaluateUndecidedAsync"/> (yalnız
+/// eşleştirici, insan kararı kilidi ve jeton; hareket her denemeden önce taze okunur, iki çakışmada satır atlanır); günlükteki
+/// sayı yalnız kararsız kalan yeniden hesapları sayar. İdempotent: yeniden hesaplanan satır bağdan yenidir, (b)'nin kanıtı artık
+/// bağsız "iban-memory" taşımaz. Bilinen sınır: bağdan sonra hesaplanmış ama o an müşteri projeksiyonu henüz gelmemiş satırı
+/// yakalamaz. Performans: (LicenseId, CounterpartyIbanHash) indeksi yok; (a)'nın iç içe EXISTS'i etkin lisansların hareketlerini
+/// tarar. Bugünkü hacimde kabul edilebilir; büyürse filtreli indeks ayrı bir göçle eklenir.</para>
 /// <para>Lisans süzgeci sorguyu (LicenseId, Direction, OccurredAt) indeksinde lisans başına aramaya çevirir (bağlantısız,
 /// durdurulmuş ya da yerel verisi silinmiş lisansın hareketi de gelmez). Tampon süre: uzun bir çekim hareketi kaydedip henüz sink'e vermemişken (çekim :05'te
 /// başlar, tarama :07'de) tarama aynı hareketi kapmasın; sink bir hareketi çekimden saniyeler sonra işler.</para>
@@ -115,7 +120,8 @@ public sealed class BankMatchSweepJob
             _log.LogInformation("Banka eşleştirme taraması: {Matched} kaçırılmış hareket eşleştirildi, {Failed} düştü",
                 matched, failures.Failed);
 
-        var reevaluated = failures.Aborted ? 0 : await ReevaluateAfterIbanMemoryChangesAsync(matchingLicenses, since, failures, ct);
+        var reevaluated = failures.Aborted ? 0
+            : await ReevaluateAfterIbanMemoryChangesAsync(matchingLicenses, _reconciler.ReevaluationSince(now), failures, ct);
         if (reevaluated > 0)
             _log.LogInformation("Banka eşleştirme taraması: IBAN hafızası değiştikten sonra {Reevaluated} kararsız satır yeniden "
                 + "değerlendirildi", reevaluated);
@@ -130,8 +136,8 @@ public sealed class BankMatchSweepJob
         return matched;
     }
 
-    /// <summary>2. aşama (sınıf özeti): hafızanın güncel haliyle hesaplanmamış kararsız satırlar. Yeniden hesaplanan satır sayısını
-    /// döner.</summary>
+    /// <summary>2. aşama (sınıf özeti): hafızanın güncel haliyle hesaplanmamış kararsız satırlar. Yeniden hesaplanıp kararsız kalan
+    /// satır sayısını döner (araya insan kararı giren ya da atlanan satır sayılmaz).</summary>
     private async Task<int> ReevaluateAfterIbanMemoryChangesAsync(IQueryable<Guid> matchingLicenses, DateTimeOffset since,
         Failures failures, CancellationToken ct)
     {
@@ -159,8 +165,8 @@ public sealed class BankMatchSweepJob
         for (var i = 0; i < stale.Count; i++)
         {
             var tx = stale[i];
-            // Dışlama kodları ayardır: kanıt öneki yalnız hesaplandığı andaki listeyi yansıtır.
-            if (_reconciler.Matcher.IsExcluded(tx)) continue;
+            // Dışlama kodları ayardır, kanıt öneki hesaplandığı andaki listeyi yansıtır. Sonradan dışlanan hareket bellekte
+            // atlanmaz: eşleştirici "excluded:KOD" yazar, sonraki koşunun seçimi öneki eler (sınıf özeti).
             try
             {
                 if (await _reconciler.ReevaluateUndecidedAsync(tx, ct) is not null) reevaluated++;

@@ -553,4 +553,34 @@ public sealed class PaymentMatchRaceTests
         (await verify.PaymentMatchGaps.AsNoTracking().CountAsync()).Should().Be(0, "kaybeden dekontu bağlı bulur, gap yazmaz");
         NoPendingWrites(job);
     }
+
+    [Fact]
+    public async Task Yeniden_degerlendirme_KVKK_silmesiyle_carpisinca_hareketi_taze_okur_silinen_metni_kanita_geri_yazmaz()
+    {
+        // KVKK silmesi (ShopperPurgeService) hareketin açıklamasını siler, satırın kanıtını ve önerisini boşaltır, jetonu ilerletir,
+        // müşteriyi siler. IBAN hafızası değişince koşan yeniden değerlendirme tam o an kaydediyorsa çakışır. Yeniden deneme seçimdeki
+        // (bayat) hareketle koşsaydı silinmiş açıklamadan türeyen kanıtı ("username=…") geri yazar, eşleştiricinin aday önbelleğinde
+        // kalan silinmiş müşteriye de öneri yapardı. Yeniden denemeden önce hareket taze okunur: açıklaması silinmişse vazgeçilir.
+        var s = await SeedAsync();
+        await using var purge = Ctx();
+        async Task PurgeAsync()
+        {
+            var now = DateTimeOffset.UtcNow;
+            BankSubjectScrub.Transaction(await purge.BankTransactions.SingleAsync(t => t.Id == s.Tx.Id), now);
+            BankSubjectScrub.MatchForCustomer(await purge.PaymentMatches.SingleAsync(m => m.BankTransactionId == s.Tx.Id), s.WpfCustomerId, now);
+            (await purge.WpfCustomerProjections.SingleAsync(c => c.Id == s.WpfCustomerId)).PurgedAt = now;
+            await purge.SaveChangesAsync();
+        }
+        var race = new BeforeSave(RecomputesUndecided, PurgeAsync);
+        await using var sweep = Ctx(race);
+
+        var result = await Recon(sweep).ReevaluateUndecidedAsync(s.Tx, CancellationToken.None);
+
+        race.Fired.Should().Be(1);
+        result.Should().BeNull("hareketin açıklaması silindi: yeniden değerlendirilmez");
+        var row = await RowAsync(s.Tx.Id);
+        (row.Status, row.ProposedWpfCustomerId, row.Evidence).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null, (string?)null),
+            "silmenin bıraktığı hal kalır");
+        NoPendingWrites(sweep);
+    }
 }

@@ -30,7 +30,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// yeniden dener (bkz. <see cref="SaveAsync"/>).</para>
 /// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> jetondur. Satır okunduktan sonra değiştiyse (arada
 /// verilen insan kararı ya da eşzamanlı bir yeniden hesap) kayıt reddedilir; satır taze okunur ve hesap BİR kez yeniden
-/// yapılır: taze satır insan kararıysa dokunulmadan döner. İkinci çakışma çağırana çıkar.</para>
+/// yapılır: taze satır insan kararıysa dokunulmadan döner. İkinci çakışma çağırana çıkar. Yeniden değerlendirme
+/// (<see cref="ReevaluateAsync"/>) ilk çakışmayı çağırana bırakır: çağıran hareketi taze okuyup kendisi yeniden dener.</para>
 /// </summary>
 public sealed class PaymentMatcher
 {
@@ -73,32 +74,37 @@ public sealed class PaymentMatcher
     }
 
     /// <summary>Yeniden değerlendirmenin (<see cref="ReevaluateAsync"/>) kanıta eklediği ek: öneri çekim anında değil, sonradan
-    /// (IBAN hafızası değişince) üretildi. Faz 2 ölçümü isterse bununla ayrıştırır. ';' ile başlar: KVKK silmesinin kullanıcı adı
-    /// araması (anahtardan sonra son, ';' ya da ',') bozulmaz.</summary>
+    /// (IBAN hafızası değişince) üretildi. Faz 2 ölçümü (<see cref="PaymentMatchMetrics"/>) bu ekli satırların dekont kararlarını
+    /// eşiğin örnekleminden ayırır. ';' ile başlar: KVKK silmesinin kullanıcı adı araması (anahtardan sonra son, ';' ya da ',')
+    /// bozulmaz.</summary>
     public const string ReevaluationEvidenceSuffix = ";reeval";
 
-    public Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct) => MatchCoreAsync(tx, null, ct);
-
-    /// <summary><see cref="MatchAsync"/>'in aynısı (aynı katmanlar, aynı insan kararı kilidi, aynı jeton), yalnız kanıta
-    /// <see cref="ReevaluationEvidenceSuffix"/> eklenir. Çekimden sonra IBAN hafızası değişince var olan kararsız satırı yeniden
-    /// hesaplamak için (<c>PaymentMatchReconciler.ReevaluateUndecidedAsync</c>). Dışlama kararı hafızadan bağımsızdır, eki
-    /// almaz.</summary>
-    public Task<PaymentMatch> ReevaluateAsync(BankTransaction tx, CancellationToken ct) => MatchCoreAsync(tx, ReevaluationEvidenceSuffix, ct);
-
-    private async Task<PaymentMatch> MatchCoreAsync(BankTransaction tx, string? evidenceSuffix, CancellationToken ct)
+    public async Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct)
     {
         try
         {
-            return await MatchOnceAsync(tx, evidenceSuffix, ct);
+            return await MatchOnceAsync(tx, null, ct);
         }
         catch (DbUpdateConcurrencyException)
         {
             // SaveAsync satırı DB'deki haliyle tazeledi; insan kararıysa MatchOnceAsync onu dokunmadan döner.
             _log.LogInformation("Gölge eşleştirme: hareket={BankTransactionId} önerisi okunduktan sonra değişti; taze satırla "
                 + "yeniden hesaplanıyor", tx.Id);
-            return await MatchOnceAsync(tx, evidenceSuffix, ct);
+            return await MatchOnceAsync(tx, null, ct);
         }
     }
+
+    /// <summary><see cref="MatchAsync"/>'in aynısı (aynı katmanlar, aynı insan kararı kilidi, aynı jeton), yalnız kanıta
+    /// <see cref="ReevaluationEvidenceSuffix"/> eklenir ve çakışma (DbUpdateConcurrencyException) yeniden denenmeden çağırana
+    /// çıkar: satır SaveAsync'te DB'deki haliyle tazelenmiş olur. Çekimden sonra IBAN hafızası değişince var olan kararsız satırı
+    /// yeniden hesaplamak için (<c>PaymentMatchReconciler.ReevaluateUndecidedAsync</c>). Çağıran hareketi yeniden denemeden önce
+    /// taze okur: karşı yazan bir KVKK silmesiyse açıklama gitmiştir, bayat hareketle yeniden hesap silinmiş metinden türeyen kanıtı
+    /// geri yazardı. Dışlama kararı hafızadan bağımsızdır, eki almaz.</summary>
+    public Task<PaymentMatch> ReevaluateAsync(BankTransaction tx, CancellationToken ct) => MatchOnceAsync(tx, ReevaluationEvidenceSuffix, ct);
+
+    /// <summary>Lisansın önbellekteki aday listesini atar (sınıf özeti): sonraki hesap müşterileri DB'den yeniden okur. Yeniden
+    /// değerlendirme çakışmadan sonra çağırır; karşı yazan bir KVKK silmesiyse silinen müşteri önbellekte aday kalmasın.</summary>
+    public void ForgetCandidates(Guid licenseId) => _candidates.Remove(licenseId);
 
     /// <summary>Hareket müşteri havalesi sayılmaz mı: giden, sıfır tutarlı ya da işlem kodu
     /// <see cref="BankOptions.ExcludedTransactionCodes"/>'ta (POS tahsilatı vb.). Eşleştirici ona öneri üretmez;
@@ -308,7 +314,7 @@ public sealed class PaymentMatcher
     /// Added/Modified kalsaydı kapsamın sonraki her SaveChanges'i (partinin kalan hareketleri, bağdaştırıcının kendi
     /// yazısı) onu yeniden dener ve düşerdi. Yeni satır, hareket başına tek öneri indeksinde eşzamanlı bir çağrıya
     /// yenildiyse kazananın satırı döner: iki çağıran tek satırda buluşur. Var olan satır okunduktan sonra değiştiyse
-    /// (jeton) satır DB'deki haliyle tazelenir ve çakışma <see cref="MatchAsync"/>'e çıkar.</summary>
+    /// (jeton) satır DB'deki haliyle tazelenir ve çakışma <see cref="MatchAsync"/>'e (yeniden değerlendirmede çağırana) çıkar.</summary>
     private async Task<PaymentMatch> SaveAsync(PaymentMatch m, CancellationToken ct)
     {
         var added = _db.Entry(m).State == EntityState.Detached;

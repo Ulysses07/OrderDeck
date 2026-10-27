@@ -107,6 +107,41 @@ public sealed class IbanReevaluationRelationalTests : IAsyncLifetime
             .Should().Be(bondAt, "insan kararına dokunulmaz");
     }
 
+    [Fact]
+    public async Task Tazeleyen_elle_esleme_ve_olcumun_sonradan_oneri_ayrimi_SQL_Serverda_cevrilir()
+    {
+        // Tazelemede seçim satırın jetonunu bağın oluşturulmasıyla karşılaştırır; ölçüm kanıtın ekini (LIKE) okur. İkisi de yalnız
+        // InMemory'de sınansaydı çeviri hatası prod'da ilk elle eşlemede çıkardı.
+        Seeded s;
+        await using (var seed = NewDb(interceptor: null)) s = await SeedAsync(seed, connected: true);
+        var now = DateTimeOffset.UtcNow;
+        var bondAt = now.AddHours(-3);
+        var source = await AddIncomingAsync(s.LicenseId, s.Hash, now.AddDays(-2));
+        var target = await AddIncomingAsync(s.LicenseId, s.Hash, now.AddHours(-1));
+        await using (var db = NewDb(interceptor: null))
+        {
+            db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = s.Older.Id,
+                Status = PaymentMatchStatus.NoProposal, Evidence = "no-signal", CreatedAt = now.AddDays(-4), UpdatedAt = now.AddDays(-4) });
+            db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = s.CustomerId,
+                IbanHash = s.Hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.HumanApproval, SourceBankTransactionId = source.Id,
+                CreatedAt = bondAt, LastConfirmedAt = source.OccurredAt });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = NewDb(interceptor: null))
+            (await Recon(db).ManualMatchAsync(s.LicenseId, target.Id, s.CustomerId, CancellationToken.None)).Should().Be(
+                new ManualMatchResult(ManualMatchIbanOutcome.Refreshed, Reevaluated: 1, ProposedToCustomer: 1));
+
+        await using var verify = NewDb(interceptor: null);
+        var row = await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == s.Older.Id);
+        (row.Status, row.ProposedWpfCustomerId, row.Evidence).Should().Be((PaymentMatchStatus.Proposed, (Guid?)s.CustomerId,
+            "iban-memory" + PaymentMatcher.ReevaluationEvidenceSuffix));
+        var metrics = await new PaymentMatchMetrics(verify,
+                new PaymentMatcher(verify, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance))
+            .ComputeAsync(s.LicenseId, 30, CancellationToken.None);
+        (metrics.PendingProposals, metrics.ReevaluatedPending).Should().Be((1, 1));
+    }
+
     private sealed record Seeded(Guid LicenseId, Guid CustomerId, Guid OtherCustomerId, string Hash, BankTransaction Older);
 
     /// <summary>Araya giren admin kararı: ayrı bir bağlamda, havaleyi verilen müşteriye elle eşler.</summary>

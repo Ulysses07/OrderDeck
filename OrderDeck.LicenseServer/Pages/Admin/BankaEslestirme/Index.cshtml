@@ -43,7 +43,9 @@
         <div class="row small">
             <div class="col-md-3">Gelen: <b>@s.Incoming</b><br />Dışlanan (POS vb.): @s.Excluded<br />Öneri üretilen: @s.Proposed</div>
             <div class="col-md-3">Doğrulandı: <b>@s.Confirmed</b><br />Çelişti: <b>@s.Contradicted</b> <span class="text-muted">(öneriden farklı elle eşleme dahil)</span><br />Elle (öneri yoktu): @s.ManualOnly</div>
-            <div class="col-md-3">Bekleyen öneri: @s.PendingProposals<br />Öneri yok: @s.NoProposal<br />Açık gap (dekont var, hareket yok): @s.OpenGaps</div>
+            <div class="col-md-3">Bekleyen öneri: @s.PendingProposals
+                @if (s.ReevaluatedPending > 0) { <span class="text-muted" data-reevaluated="pending">(@s.ReevaluatedPending sonradan, IBAN hafızasıyla)</span> }
+                <br />Öneri yok: @s.NoProposal<br />Açık gap (dekont var, hareket yok): @s.OpenGaps</div>
             <div class="col-md-3">Çelişki oranı: <b>@Rate(s.ContradictionRate)</b> <span data-fraction="overall">(çelişki @s.Contradicted/@(s.Confirmed + s.Contradicted))</span><br />
                 Gecikme medyan/maks: @(s.LagMedian?.ToString(@"d\.hh\:mm") ?? "—") / @(s.LagMax?.ToString(@"d\.hh\:mm") ?? "—")
                 <span class="text-muted">(@PaymentMatchMetrics.LagCapDays günü aşanlar sayım dışı)</span></div>
@@ -57,13 +59,15 @@
                 <span class="badge bg-light text-dark border me-1" data-platform="@p.Platform">@p.Platform ✓@p.Confirmed ✗@p.Contradicted elle @p.ManualOnly · çelişki @Rate(p.ContradictionRate)</span>
             }
         </div>
-        @* Eşik yalnız dekont onaylı öneri kararlarından (panelde öneri görülmeden verilir); sayfa kararları öneriye bakarak
-           verilir, ayrı gösterilir. Kesir yuvarlı yüzdenin yanında: P1 tek başına 5/245'i %2,0 gösterir. *@
+        @* Eşik yalnız çekim anındaki önerilerin dekont onaylı kararlarından (panelde öneri görülmeden verilir); sayfa kararları
+           öneriye bakarak verilir, sonradan (IBAN hafızası değişince) üretilmiş önerilerin dekont kararları otomatik onayın çekim
+           anındaki nüfusunda yoktur: ikisi de ayrı gösterilir. Kesir yuvarlı yüzdenin yanında: P1 tek başına 5/245'i %2,0 gösterir. *@
         <div class="mt-2 small @(s.MeetsPhase2Threshold ? "text-success" : "text-muted")" data-phase2="gate">
             Faz 2 (dekont onaylı kararlar): <span data-phase2="receipt">@s.ReceiptDecisions/@(PaymentMatchSummary.Phase2MinReceiptDecisions), çelişki @s.ReceiptContradicted/@s.ReceiptDecisions (@Rate(s.ReceiptContradictionRate))</span>
             @if (s.MeetsPhase2Threshold) { <b>✓ eşik sağlandı</b> }
             <div class="text-muted">Eşik: ≥ @(PaymentMatchSummary.Phase2MinReceiptDecisions) dekont onaylı öneri kararı, çelişki ≤ %@(PaymentMatchSummary.Phase2MaxContradictionPercent).
-                Sayfada verilen öneri kararları eşiğe girmez: <span data-phase2="page">✓@s.PageConfirmed ✗@s.PageContradicted</span></div>
+                Sayfada verilen öneri kararları eşiğe girmez: <span data-phase2="page">✓@s.PageConfirmed ✗@s.PageContradicted</span>.
+                Sonradan (IBAN hafızasıyla) üretilmiş önerilerin dekont kararları da girmez: <span data-phase2="reevaluated">✓@s.ReevaluatedReceiptConfirmed ✗@s.ReevaluatedReceiptContradicted</span></div>
         </div>
     </div></div>
 }

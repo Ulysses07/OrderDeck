@@ -346,12 +346,17 @@ alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
   kaydedildikten sonra yeniden hesaplanır.
 - IBAN hafızası değişince (2026-10-27): insan kararı olmayan satırın önerisi hafızanın güncel haliyle hesaplanmış
   olmalı. Elle eşleme YENİ bir bağ yazınca ya da kaldırma bir bağı silince, aynı lisans ve IBAN özetinin kararsız
-  satırları (öneri / öneri yok, karar ve dekont boş; son 30 gün; açıklaması silinmemiş; dışlanmamış; kesmeden önce
-  çekilmiş özetliler dahil) eşleştiriciyle yeniden hesaplanır; tetik başına ≤100. Sonuç yalnız öneridir (kanıt `;reeval`
-  ekiyle), zincirleme öğrenme yok; kararın kaydından sonra koşar, düşerse kararı geri almaz. Telafisi ve geriye dönük
-  doldurma telafi taramasının 2. aşaması: bağdan önce hesaplanmış satır (bağın özeti lisansta geçerli özetli bir
-  harekette görünüyorsa) ya da `iban-memory` kanıtlı, bağı silinmiş satır. Dekont onayıyla öğrenilen bağ taramayla
-  (≤1 saat) uygulanır. Sayfa bildirimi IBAN'ın neden öğrenilmediğini ya da kaç havalenin önerildiğini söyler.
+  satırları (öneri / öneri yok, karar ve dekont boş; açıklaması silinmemiş; dışlanmamış; kesmeden önce çekilmiş
+  özetliler dahil) eşleştiriciyle yeniden hesaplanır; tetik başına ≤100. Elle eşleme var olan bağı tazeleyince yalnız
+  bağdan önce hesaplanmış kararsız satırlar (dekont onayıyla öğrenilen bağ böylece ilk elle eşlemede de uygulanır).
+  Pencere taramanınkinden ve eşleşmeyen açıklamanın saklama süresinden bir gün içeride (29 gün): saklama açıklamayı
+  jetonu ilerletmeden siler, sınırdaki satırın yeniden hesabı onunla çakışmasız yarışırdı. Hareket her denemeden önce
+  taze okunur; çakışmada (ör. araya giren KVKK silmesi) açıklaması silinmişse vazgeçilir. Sonuç yalnız öneridir (kanıt
+  `;reeval` ekiyle), zincirleme öğrenme yok, her satır yine elle eşlenir (Faz 1 gölge mod); kararın kaydından sonra
+  koşar, düşerse kararı geri almaz. Telafisi ve geriye dönük doldurma telafi taramasının 2. aşaması: bağdan önce
+  hesaplanmış satır (bağın özeti lisansta geçerli özetli bir harekette görünüyorsa) ya da `iban-memory` kanıtlı, bağı
+  silinmiş satır (ikisi de aynı lisansın bağına bakar). Sayfa bildirimi IBAN'ın neden öğrenilmediğini ya da kaç
+  havalenin önerildiğini söyler; 10'dan çok öneride ortak hesap (e-para, aracı hesap) uyarısı da çıkar.
 - `PaymentMatch.UpdatedAt` eşzamanlılık jetonudur ve kayıtta merkezi damgalanır; çakışmada taze satırla bir kez
   yeniden denenir, ikincide iş yolu uyarıyla vazgeçer, admin yolu "çakışma" mesajı verir.
 - KVKK silmesi müşterinin IBAN hafızasını siler, ona ait kanıt metinlerini boşaltır; eşleşme satırı ölçüm için kalır.
@@ -364,8 +369,10 @@ alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
 - Gecikme = çekildiği an − işlem anı, medyan ve maks; 7 günü aşan (ilk geri doldurma) ve negatif farklar sayım dışı.
 - Faz 2 eşiği yalnız dekont onaylı öneri kararlarından (satır bir dekonta bağlı): ≥ 200 karar ve çelişki ≤ %2, tam
   sayılarla (yuvarlı oranla değil). Panelde dekont onayı öneri görülmeden verilir; sayfadaki karar öneriye bakılarak
-  verildiği için ayrı gösterilir, eşiğe girmez. Tasarımdaki "≥ 3 hafta" ve "gap oranı açıklanmış" ölçütleri kodda
-  değil, karar verenin denetiminde.
+  verildiği için ayrı gösterilir, eşiğe girmez. Sonradan (IBAN hafızası değişince) üretilmiş önerinin (kanıtı `;reeval`
+  ekli) dekont kararı da eşiğe girmez, ayrı gösterilir: o öneri çekim anında yoktu, çekim anında çalışacak otomatik
+  onayın nüfusunda olmazdı. Bekleyen önerilerin sonradan üretileni de ayrıca görünür. Tasarımdaki "≥ 3 hafta" ve "gap
+  oranı açıklanmış" ölçütleri kodda değil, karar verenin denetiminde.
 
 **Bilinen sınırlar**
 - Katman 1'de kalan yanlış pozitif biçimleri: harf+rakam kullanıcı adının rakam kuyruğu, açıklamada adın hemen
@@ -379,5 +386,15 @@ alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
 - Kaldırmadan sonraki yeniden hesap düşerse satır "öneri yok" kalır: tarama satırı olan hareketi yalnız IBAN hafızası
   değiştiyse yeniden hesaplar; admin yine elle eşleyebilir.
 - IBAN bağından sonra hesaplanmış ama o an müşteri projeksiyonu henüz gelmemiş satır yeniden değerlendirilmez.
+- IBAN hafızasının yayılması bankanın karşı IBAN'ı tam göndermesine bağlı: maskeli ya da boş gelen havalenin özeti yok,
+  elle eşlemesi hiçbir şey öğretmez (bildirim "IBAN yok ya da maskeli" der); 22.10 kesmesinden önce çekilmiş havale de
+  öğretmez (yalnız öneri alır). Hesabın tam / maskeli / boş sayaçları (`BankAccounts.Iban*Count`) bunu gösterir.
+- KVKK silmesi kişiye bağlı satırın kanıtını boşaltır: o satırın `;reeval` eki de gider, dekont kararı bir daha
+  "sonradan öneri" diye ayrılamaz.
+- Elle eşleme ortak ya da havuz IBAN'ını (e-para kuruluşu, aracı hesap) tek müşteriye bağlarsa öneri geriye dönük de
+  yayılır; yalnız uyarı var (öneri sayısı 10'u aşınca). Öneriyi tek tıkla onaylayan düğme yok: her satır yine Elle eşle
+  ister (ayrı iş).
+- `BankTransactions`'ta (LicenseId, CounterpartyIbanHash) indeksi yok: taramanın 2. aşaması etkin lisansların
+  hareketlerini tarar. Hacim büyürse filtreli indeks ayrı bir göçle.
 - Sonucu belirsiz banka eklemesinin audit satırı yok; Obifin'de açılmış bir banka kaydını yerel bağlantıya bağlayan
   arayüz de yok (etiket günlükte ve bildirimde).

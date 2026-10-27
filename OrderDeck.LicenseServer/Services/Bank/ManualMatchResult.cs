@@ -7,7 +7,8 @@ public enum ManualMatchIbanOutcome
 {
     /// <summary>Yeni bağ yazıldı; aynı IBAN'ın kararsız satırları yeniden değerlendirildi.</summary>
     Learned,
-    /// <summary>Bağ zaten bu müşteriye kayıtlıydı; süresi tazelendi (KVKK K-6). Bağ değişmediği için yeniden değerlendirme yok.</summary>
+    /// <summary>Bağ zaten bu müşteriye kayıtlıydı; süresi tazelendi (KVKK K-6). Bağ değişmez: yalnız bağdan önce hesaplanmış
+    /// kararsız satırlar yeniden değerlendirildi.</summary>
     Refreshed,
     /// <summary>Hareketin IBAN özeti yok: banka karşı IBAN'ı boş ya da maskeli gönderdi.</summary>
     NoValidIban,
@@ -20,7 +21,8 @@ public enum ManualMatchIbanOutcome
 }
 
 /// <param name="Iban">Hareketin IBAN'ının öğrenilip öğrenilmediği.</param>
-/// <param name="Reevaluated">Yeniden değerlendirilen kararsız satır (aynı lisans ve IBAN özeti, son 30 gün).</param>
+/// <param name="Reevaluated">Yeniden değerlendirilen kararsız satır (aynı lisans ve IBAN özeti,
+/// <see cref="PaymentMatchReconciler.ReevaluationSince"/> penceresi).</param>
 /// <param name="ProposedToCustomer">Bunlardan şimdi bu müşteriye öneri alan.</param>
 /// <param name="More">Tetik başına sınıra (<see cref="PaymentMatchReconciler.MaxReevaluationsPerTrigger"/>) takıldı; kalanını
 /// telafi taraması (<see cref="BankMatchSweepJob"/>) yapar.</param>
