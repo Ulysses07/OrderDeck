@@ -70,7 +70,10 @@
 
 @if (Model.LicenseId != Guid.Empty)
 {
-    <table class="table table-sm table-striped">
+    @* Elle eşle kutusu müşteri aramasıdır (wwwroot/js/banka-eslestirme.js; CSP script-src 'self', satır içi script yok).
+       Arama POST'la bu adrese gider: sorgu URL'ye girmez. Betik seçimsiz gönderimi durdurup aramayı açar; yalnız JS'siz
+       kutu eski yolla tam kullanıcı adı gönderir (Username). *@
+    <table class="table table-sm table-striped" data-search-url="@Url.Page("/Admin/BankaEslestirme/Index", "CustomerSearch")">
         <thead><tr><th>Tarih</th><th>Tutar</th><th>Banka</th><th>Açıklama</th><th>Karşı IBAN</th><th>Öneri</th><th>Durum</th><th>Gerçek</th><th></th></tr></thead>
         <tbody>
         @foreach (var r in Model.Rows)
@@ -88,7 +91,7 @@
                 <td>@(r.Status?.ToString() ?? "—")</td>
                 <td data-cell="actual">@r.ActualUsername @if (r.PaymentId is not null) { <span class="text-muted">(dekont)</span> }</td>
                 <td>
-                    <form method="post" class="d-flex gap-1">
+                    <form method="post" class="d-flex gap-1" data-form="@(r.IsLinked ? "unmatch" : "manual-match")">
                         <input type="hidden" name="LicenseId" value="@Model.LicenseId" />
                         <input type="hidden" name="TransactionId" value="@r.TransactionId" />
                         <input type="hidden" name="PageNo" value="@Model.PageNo" />
@@ -100,7 +103,15 @@
                         }
                         else
                         {
-                            <input name="Username" class="form-control form-control-sm" placeholder="kullanıcı adı" required />
+                            var listId = $"musteri-arama-{r.TransactionId}";
+                            <div class="position-relative">
+                                <input name="Username" class="form-control form-control-sm" placeholder="müşteri ara (ad ya da kullanıcı adı)"
+                                       required autocomplete="off" aria-label="Müşteri ara" data-customer-search
+                                       role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="@listId" />
+                                <input type="hidden" name="CustomerId" value="" data-customer-id />
+                                <ul id="@listId" class="list-group position-absolute end-0 top-100 z-3 shadow-sm customer-search-results"
+                                    role="listbox" hidden></ul>
+                            </div>
                             <button class="btn btn-sm btn-outline-primary" asp-page-handler="ManualMatch">Elle eşle</button>
                         }
                     </form>
@@ -114,4 +125,6 @@
         @if (Model.PageNo > 1) { <a class="btn btn-sm btn-light" data-page="prev" asp-page="/Admin/BankaEslestirme/Index" asp-route-licenseId="@Model.LicenseId" asp-route-pageNo="@(Model.PageNo - 1)">‹ Önceki</a> }
         @if (Model.HasNext) { <a class="btn btn-sm btn-light" data-page="next" asp-page="/Admin/BankaEslestirme/Index" asp-route-licenseId="@Model.LicenseId" asp-route-pageNo="@(Model.PageNo + 1)">Sonraki ›</a> }
     </nav>
+
+    <script src="~/js/banka-eslestirme.js" asp-append-version="true"></script>
 }
