@@ -25,3 +25,14 @@ table code {
     font-size: 0.85em;
     color: #6c757d;
 }
+
+/* Banka Eşleştirme: Elle eşle kutusunun müşteri arama listesi (banka-eslestirme.js). */
+.customer-search-results {
+    min-width: 22rem;
+    max-height: 20rem;
+    overflow-y: auto;
+}
+
+.customer-search-results .list-group-item {
+    cursor: pointer;
+}

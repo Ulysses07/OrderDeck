@@ -28,8 +28,12 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// IBAN'ı siler; başka havalenin öğrettiği IBAN bağının süresi yalnız bu havaleye dayanıyorsa o bağı da imha kaydıyla siler
 /// (yapan yöneticinin kimliği). Hiçbiri arayüzden geri alınamaz.</para>
 /// <para><b>Banka modülü kapalıyken de sayfa açılır</b> (<see cref="BankHasher.IsValidKey"/>): uyarı basılır, veri
-/// gösterilir, her POST <see cref="BankHasher.DisabledMessage"/> ile döner ve hiçbir şey yazmaz. Bağdaştırıcı, eşleştirici
-/// ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri sayfayı düşürmez.</para></summary>
+/// gösterilir, karar yazan her POST <see cref="BankHasher.DisabledMessage"/> ile döner ve hiçbir şey yazmaz (müşteri araması
+/// salt okur, açık kalır). Bağdaştırıcı, eşleştirici ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri
+/// sayfayı düşürmez.</para>
+/// <para><b>Elle eşle kutusu müşteri aramasıdır</b> (<see cref="OnPostCustomerSearchAsync"/>, istemci
+/// <c>wwwroot/js/banka-eslestirme.js</c>): seçilen müşterinin kimliği formda <see cref="CustomerId"/> olarak gider. Arama
+/// POST'tur: sorgu (ad parçası) URL'ye, dolayısıyla Caddy erişim günlüğüne girmez.</para></summary>
 public class IndexModel : PageModel
 {
     public const int PageSize = 50;
@@ -41,6 +45,11 @@ public class IndexModel : PageModel
 
     /// <summary>Sayfa numarasının üst sınırı: (PageNo - 1) * PageSize int'te taşıp negatif Skip üretmesin.</summary>
     public const int MaxPageNo = 100_000;
+
+    /// <summary>Müşteri aramasının en kısa sorgusu, normalleştirilmiş harf/rakam sayısıyla (<see cref="BankTextNormalizer"/>):
+    /// "@a" ya da "z." tek harftir, lisansın yarısını getirirdi.</summary>
+    public const int CustomerSearchMinLength = 2;
+    public const int CustomerSearchMaxResults = 10;
 
     public const string UnmatchedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü, öneri yeniden hesaplandı.";
 
@@ -66,19 +75,26 @@ public class IndexModel : PageModel
     { _db = db; _reconciler = reconciler; _metrics = metrics; _audit = audit; _bank = bank.Value; _log = log; }
 
     public sealed record LicenseOption(Guid Id, string Label);
+    /// <param name="ProposedCustomerId">Önerilen müşteri hâlâ lisansta ve silinmemişse onun kimliği ("Öneriyi onayla").</param>
     public sealed record Row(Guid TransactionId, DateTimeOffset OccurredAt, decimal Amount, string Currency, string BankaKodu,
         string? Description, string? CounterpartyIbanMasked, string? ProposedUsername, PaymentMatchLayer Layer, decimal Confidence,
-        string? Evidence, PaymentMatchStatus? Status, string? ActualUsername, Guid? PaymentId)
+        string? Evidence, PaymentMatchStatus? Status, string? ActualUsername, Guid? PaymentId, Guid? ProposedCustomerId)
     {
         /// <summary>İnsan kararına bağlı (elle ya da dekont onayıyla): kaldırılabilir, elle eşlenemez.</summary>
         public bool IsLinked => PaymentId is not null
             || Status is PaymentMatchStatus.ConfirmedByHuman or PaymentMatchStatus.Contradicted or PaymentMatchStatus.ManualOnly;
     }
 
+    /// <summary>Müşteri aramasının bir sonucu; yanıtta yalnız bunlar ("kullanıcı adı · ad · platform" ve seçim için kimlik).
+    /// <paramref name="Name"/> ad soyad, yoksa görünen ad.</summary>
+    public sealed record CustomerHit(Guid Id, string Username, string? Name, string Platform);
+
     [BindProperty(SupportsGet = true)] public Guid LicenseId { get; set; }
     [BindProperty(SupportsGet = true)] public int PageNo { get; set; } = 1;
     [BindProperty] public Guid TransactionId { get; set; }
     [BindProperty] public string? Username { get; set; }
+    /// <summary>Aramadan seçilen ya da önerisi onaylanan müşteri. Doluysa <see cref="Username"/> okunmaz.</summary>
+    [BindProperty] public Guid? CustomerId { get; set; }
 
     public List<LicenseOption> Licenses { get; private set; } = new();
     public PaymentMatchSummary? Summary { get; private set; }
@@ -121,17 +137,19 @@ public class IndexModel : PageModel
         // Yalnız bu sayfanın önerdiği ya da bağlandığı müşteriler okunur.
         var customerIds = matches.Values.SelectMany(m => new[] { m.ProposedWpfCustomerId, m.ActualWpfCustomerId })
             .OfType<Guid>().Distinct().ToList();
-        var names = await _db.WpfCustomerProjections.AsNoTracking()
+        var customers = await _db.WpfCustomerProjections.AsNoTracking()
             .Where(c => c.LicenseId == LicenseId && customerIds.Contains(c.Id))
-            .Select(c => new { c.Id, c.Username, c.PurgedAt })
-            .ToDictionaryAsync(c => c.Id, c => c.PurgedAt == null ? c.Username : PurgedCustomerLabel, ct);
-        string? NameOf(Guid? id) => id is { } g && names.TryGetValue(g, out var u) ? u : null;
+            .Select(c => new { c.Id, c.Username, Purged = c.PurgedAt != null })
+            .ToDictionaryAsync(c => c.Id, ct);
+        string? NameOf(Guid? id) => id is { } g && customers.TryGetValue(g, out var c) ? (c.Purged ? PurgedCustomerLabel : c.Username) : null;
+        // Silinmiş müşterinin önerisi onaylanamaz (eşleştirici de reddeder): düğme hiç basılmaz.
+        Guid? Confirmable(Guid? id) => id is { } g && customers.TryGetValue(g, out var c) && !c.Purged ? g : null;
         Rows = txs.Select(t =>
         {
             matches.TryGetValue(t.Id, out var m);
             return new Row(t.Id, t.OccurredAt, t.Amount, t.Currency, t.BankaKodu, t.Description, t.CounterpartyIbanMasked,
                 NameOf(m?.ProposedWpfCustomerId), m?.Layer ?? PaymentMatchLayer.None, m?.Confidence ?? 0m, m?.Evidence, m?.Status,
-                NameOf(m?.ActualWpfCustomerId), m?.PaymentId);
+                NameOf(m?.ActualWpfCustomerId), m?.PaymentId, Confirmable(m?.ProposedWpfCustomerId));
         }).ToList();
         // KVKK Ö-4: açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime yazılır (lisans seçili değilse veri
         // gösterilmez, yazılmaz). Hedef banka modülünün öbür satırları gibi lisans kimliği (AuditEvents.BankPageView).
@@ -139,30 +157,42 @@ public class IndexModel : PageModel
             new { page = "banka-eslestirme", pageNo = PageNo }, ct);
     }
 
-    /// <summary>Kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>: kırpılmış, küçük harf,
-    /// İ/i farkı yok — Shopper aday aramalarıyla aynı kural; CI_AS "İrem" ile "irem"i farklı sayar), yalnız formdaki lisansın
-    /// silinmemiş asıl kayıtlarında aranır. Aynı kimlik birden çok müşterideyse (ör. iki platform) hangisi olduğu tahmin
-    /// edilmez.</summary>
+    /// <summary>Asıl yol müşteri kimliği (<see cref="CustomerId"/>: aramadan seçim ya da "Öneriyi onayla"): doğrulamasını
+    /// eşleştirici yapar — hareket formdaki lisansın, müşteri aynı lisansın silinmemiş asıl kaydı olmalı, yoksa
+    /// "Müşteri bulunamadı." (başka lisansın müşterisi seçilemez). Kimlik varken kullanıcı adına geri düşülmez.
+    /// <para>Kimlik yoksa (JS'siz) eski yol: kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>:
+    /// kırpılmış, küçük harf, İ/i farkı yok — Shopper aday aramalarıyla aynı kural; CI_AS "İrem" ile "irem"i farklı sayar),
+    /// yalnız formdaki lisansın silinmemiş asıl kayıtlarında aranır. Aynı kimlik birden çok müşterideyse (ör. iki platform)
+    /// hangisi olduğu tahmin edilmez.</para></summary>
     public async Task<IActionResult> OnPostManualMatchAsync(CancellationToken ct)
     {
         if (BankDisabled) return BankDisabledResult();
-        var username = (Username ?? "").Trim();
-        var key = WpfCustomerProjection.IdentityKeyOf(username);
-        // IdentityKey != "": anahtar burada zaten boş değil; sabit koşul sorguyu
-        // filtreli kimlik indeksinin koşuluna bağlar (CustomerIdentityIndex).
-        var customerIds = key.Length == 0
-            ? []
-            : await _db.WpfCustomerProjections.AsNoTracking()
-                .Where(c => c.LicenseId == LicenseId && c.IdentityKey == key && c.IdentityKey != "" && c.PurgedAt == null)
-                .Select(c => c.Id).ToListAsync(ct);
-        if (customerIds.Count != 1)
+        Guid customerId;
+        if (CustomerId is { } chosen && chosen != Guid.Empty)
         {
-            TempData["Error"] = customerIds.Count == 0 ? UnknownUsernameMessage : AmbiguousUsernameMessage;
-            return Back();
+            customerId = chosen;
+        }
+        else
+        {
+            var username = (Username ?? "").Trim();
+            var key = WpfCustomerProjection.IdentityKeyOf(username);
+            // IdentityKey != "": anahtar burada zaten boş değil; sabit koşul sorguyu
+            // filtreli kimlik indeksinin koşuluna bağlar (CustomerIdentityIndex).
+            var customerIds = key.Length == 0
+                ? []
+                : await _db.WpfCustomerProjections.AsNoTracking()
+                    .Where(c => c.LicenseId == LicenseId && c.IdentityKey == key && c.IdentityKey != "" && c.PurgedAt == null)
+                    .Select(c => c.Id).ToListAsync(ct);
+            if (customerIds.Count != 1)
+            {
+                TempData["Error"] = customerIds.Count == 0 ? UnknownUsernameMessage : AmbiguousUsernameMessage;
+                return Back();
+            }
+            customerId = customerIds[0];
         }
         try
         {
-            await _reconciler.ManualMatchAsync(LicenseId, TransactionId, customerIds[0], CancellationToken.None);
+            await _reconciler.ManualMatchAsync(LicenseId, TransactionId, customerId, CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -173,9 +203,54 @@ public class IndexModel : PageModel
         // Karar kaydedildi: audit istek iptaliyle düşmesin. Ayrıntı kullanıcı adı değil kayıt numarası (KVKK Ö-14: satır 24 ay
         // durur). Biçim BankSubjectScrub.ManualMatchAuditDetails'inkiyle aynı: KVKK silmesi kişinin satırını onunla bulup boşaltır.
         await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(),
-            new { wpfCustomerId = customerIds[0] }, CancellationToken.None);
+            new { wpfCustomerId = customerId }, CancellationToken.None);
         TempData["Success"] = "Eşlendi.";
         return Back();
+    }
+
+    /// <summary>Elle eşle kutusunun müşteri araması (JSON). Lisans HAREKETTEN türetilir, formdaki lisans okunmaz: yalnız o
+    /// lisansın silinmemiş asıl kayıtları (kopyalar sorgu filtresiyle dışarıda) aranır; bilinmeyen hareket boş döner.
+    /// <para>Eşleme <see cref="BankTextNormalizer"/>'la (eşleştiricinin normalleştirmesi: Türkçe karakter, büyük/küçük harf,
+    /// ayraç farkı yok): sorgunun her parçası kullanıcı adında, ad soyadda ya da görünen adda geçmeli. Kural Türkçe
+    /// katlama istediği için SQL'de değil bellekte koşar — <see cref="PaymentMatcher"/> da lisansın müşterilerini böyle
+    /// okur. Sıra: kullanıcı adı sorguyla başlayanlar, sonra kullanıcı adında geçenler, sonra adda geçenler; her grupta
+    /// kullanıcı adına göre. Normalleşmiş sorgu <see cref="CustomerSearchMinLength"/> karakterden kısaysa boş.</para>
+    /// <para>Sorgu da sonuç da günlüğe yazılmaz; POST olduğu için URL'de de taşınmaz (sınıf özeti).</para></summary>
+    public async Task<IActionResult> OnPostCustomerSearchAsync(string? q, CancellationToken ct)
+    {
+        var query = BankTextNormalizer.Tokenize(q);
+        if (query.Joined.Length < CustomerSearchMinLength) return new JsonResult(Array.Empty<CustomerHit>());
+        var licenseId = await _db.BankTransactions.AsNoTracking()
+            .Where(t => t.Id == TransactionId && t.Direction == BankTransactionDirection.Incoming)
+            .Select(t => (Guid?)t.LicenseId).FirstOrDefaultAsync(ct);
+        if (licenseId is null) return new JsonResult(Array.Empty<CustomerHit>());
+
+        var rows = await _db.WpfCustomerProjections.AsNoTracking()
+            .Where(c => c.LicenseId == licenseId && c.PurgedAt == null)
+            .Select(c => new { c.Id, c.Username, c.FullName, c.DisplayName, c.Platform }).ToListAsync(ct);
+        var hits = new List<(int Rank, CustomerHit Hit)>();
+        foreach (var r in rows)
+        {
+            var username = BankTextNormalizer.Tokenize(r.Username).Joined;
+            int rank;
+            if (username.StartsWith(query.Joined, StringComparison.Ordinal)) rank = 0;
+            else if (query.Tokens.All(t => username.Contains(t, StringComparison.Ordinal))) rank = 1;
+            else
+            {
+                var fullName = BankTextNormalizer.Tokenize(r.FullName).Joined;
+                var displayName = BankTextNormalizer.Tokenize(r.DisplayName).Joined;
+                if (!query.Tokens.All(t => username.Contains(t, StringComparison.Ordinal)
+                        || fullName.Contains(t, StringComparison.Ordinal) || displayName.Contains(t, StringComparison.Ordinal)))
+                    continue;
+                rank = 2;
+            }
+            hits.Add((rank, new CustomerHit(r.Id, r.Username,
+                string.IsNullOrWhiteSpace(r.FullName) ? r.DisplayName : r.FullName, r.Platform)));
+        }
+        return new JsonResult(hits
+            .OrderBy(h => h.Rank).ThenBy(h => h.Hit.Username, StringComparer.Ordinal)
+            .ThenBy(h => h.Hit.Platform, StringComparer.Ordinal).ThenBy(h => h.Hit.Id)
+            .Take(CustomerSearchMaxResults).Select(h => h.Hit).ToList());
     }
 
     public async Task<IActionResult> OnPostUnmatchAsync()
