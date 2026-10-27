@@ -75,10 +75,9 @@ public class IndexModel : PageModel
     { _db = db; _reconciler = reconciler; _metrics = metrics; _audit = audit; _bank = bank.Value; _log = log; }
 
     public sealed record LicenseOption(Guid Id, string Label);
-    /// <param name="ProposedCustomerId">Önerilen müşteri hâlâ lisansta ve silinmemişse onun kimliği ("Öneriyi onayla").</param>
     public sealed record Row(Guid TransactionId, DateTimeOffset OccurredAt, decimal Amount, string Currency, string BankaKodu,
         string? Description, string? CounterpartyIbanMasked, string? ProposedUsername, PaymentMatchLayer Layer, decimal Confidence,
-        string? Evidence, PaymentMatchStatus? Status, string? ActualUsername, Guid? PaymentId, Guid? ProposedCustomerId)
+        string? Evidence, PaymentMatchStatus? Status, string? ActualUsername, Guid? PaymentId)
     {
         /// <summary>İnsan kararına bağlı (elle ya da dekont onayıyla): kaldırılabilir, elle eşlenemez.</summary>
         public bool IsLinked => PaymentId is not null
@@ -93,7 +92,7 @@ public class IndexModel : PageModel
     [BindProperty(SupportsGet = true)] public int PageNo { get; set; } = 1;
     [BindProperty] public Guid TransactionId { get; set; }
     [BindProperty] public string? Username { get; set; }
-    /// <summary>Aramadan seçilen ya da önerisi onaylanan müşteri. Doluysa <see cref="Username"/> okunmaz.</summary>
+    /// <summary>Aramadan seçilen müşteri. Doluysa <see cref="Username"/> okunmaz.</summary>
     [BindProperty] public Guid? CustomerId { get; set; }
 
     public List<LicenseOption> Licenses { get; private set; } = new();
@@ -137,19 +136,17 @@ public class IndexModel : PageModel
         // Yalnız bu sayfanın önerdiği ya da bağlandığı müşteriler okunur.
         var customerIds = matches.Values.SelectMany(m => new[] { m.ProposedWpfCustomerId, m.ActualWpfCustomerId })
             .OfType<Guid>().Distinct().ToList();
-        var customers = await _db.WpfCustomerProjections.AsNoTracking()
+        var names = await _db.WpfCustomerProjections.AsNoTracking()
             .Where(c => c.LicenseId == LicenseId && customerIds.Contains(c.Id))
-            .Select(c => new { c.Id, c.Username, Purged = c.PurgedAt != null })
-            .ToDictionaryAsync(c => c.Id, ct);
-        string? NameOf(Guid? id) => id is { } g && customers.TryGetValue(g, out var c) ? (c.Purged ? PurgedCustomerLabel : c.Username) : null;
-        // Silinmiş müşterinin önerisi onaylanamaz (eşleştirici de reddeder): düğme hiç basılmaz.
-        Guid? Confirmable(Guid? id) => id is { } g && customers.TryGetValue(g, out var c) && !c.Purged ? g : null;
+            .Select(c => new { c.Id, c.Username, c.PurgedAt })
+            .ToDictionaryAsync(c => c.Id, c => c.PurgedAt == null ? c.Username : PurgedCustomerLabel, ct);
+        string? NameOf(Guid? id) => id is { } g && names.TryGetValue(g, out var u) ? u : null;
         Rows = txs.Select(t =>
         {
             matches.TryGetValue(t.Id, out var m);
             return new Row(t.Id, t.OccurredAt, t.Amount, t.Currency, t.BankaKodu, t.Description, t.CounterpartyIbanMasked,
                 NameOf(m?.ProposedWpfCustomerId), m?.Layer ?? PaymentMatchLayer.None, m?.Confidence ?? 0m, m?.Evidence, m?.Status,
-                NameOf(m?.ActualWpfCustomerId), m?.PaymentId, Confirmable(m?.ProposedWpfCustomerId));
+                NameOf(m?.ActualWpfCustomerId), m?.PaymentId);
         }).ToList();
         // KVKK Ö-4: açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime yazılır (lisans seçili değilse veri
         // gösterilmez, yazılmaz). Hedef banka modülünün öbür satırları gibi lisans kimliği (AuditEvents.BankPageView).
@@ -157,10 +154,11 @@ public class IndexModel : PageModel
             new { page = "banka-eslestirme", pageNo = PageNo }, ct);
     }
 
-    /// <summary>Asıl yol müşteri kimliği (<see cref="CustomerId"/>: aramadan seçim ya da "Öneriyi onayla"): doğrulamasını
-    /// eşleştirici yapar — hareket formdaki lisansın, müşteri aynı lisansın silinmemiş asıl kaydı olmalı, yoksa
-    /// "Müşteri bulunamadı." (başka lisansın müşterisi seçilemez). Kimlik varken kullanıcı adına geri düşülmez.
-    /// <para>Kimlik yoksa (JS'siz) eski yol: kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>:
+    /// <summary>Asıl yol müşteri kimliği (<see cref="CustomerId"/>, aramadan seçim): doğrulamasını eşleştirici yapar — hareket
+    /// formdaki lisansın, müşteri aynı lisansın silinmemiş asıl kaydı olmalı, yoksa "Müşteri bulunamadı." (başka lisansın
+    /// müşterisi seçilemez). Kimlik varken kullanıcı adına geri düşülmez.
+    /// <para>Kimlik yoksa eski yol — yalnız JS'siz tarayıcıda gelir: betik seçimsiz gönderimi durdurup aramayı açar, yazılan
+    /// parça kullanıcı adı diye gönderilmez. Kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>:
     /// kırpılmış, küçük harf, İ/i farkı yok — Shopper aday aramalarıyla aynı kural; CI_AS "İrem" ile "irem"i farklı sayar),
     /// yalnız formdaki lisansın silinmemiş asıl kayıtlarında aranır. Aynı kimlik birden çok müşterideyse (ör. iki platform)
     /// hangisi olduğu tahmin edilmez.</para></summary>

@@ -71,7 +71,8 @@
 @if (Model.LicenseId != Guid.Empty)
 {
     @* Elle eşle kutusu müşteri aramasıdır (wwwroot/js/banka-eslestirme.js; CSP script-src 'self', satır içi script yok).
-       Arama POST'la bu adrese gider: sorgu URL'ye girmez. JS'siz kutu eski yolla tam kullanıcı adı gönderir (Username). *@
+       Arama POST'la bu adrese gider: sorgu URL'ye girmez. Betik seçimsiz gönderimi durdurup aramayı açar; yalnız JS'siz
+       kutu eski yolla tam kullanıcı adı gönderir (Username). *@
     <table class="table table-sm table-striped" data-search-url="@Url.Page("/Admin/BankaEslestirme/Index", "CustomerSearch")">
         <thead><tr><th>Tarih</th><th>Tutar</th><th>Banka</th><th>Açıklama</th><th>Karşı IBAN</th><th>Öneri</th><th>Durum</th><th>Gerçek</th><th></th></tr></thead>
         <tbody>
@@ -90,17 +91,6 @@
                 <td>@(r.Status?.ToString() ?? "—")</td>
                 <td data-cell="actual">@r.ActualUsername @if (r.PaymentId is not null) { <span class="text-muted">(dekont)</span> }</td>
                 <td>
-                    @if (!r.IsLinked && r.ProposedCustomerId is { } proposedId)
-                    {
-                        @* Önerilen müşteriyle elle eşlemenin aynısı (yeni karar türü değil): eşleştirici ConfirmedByHuman yazar. *@
-                        <form method="post" class="mb-1" data-form="confirm-proposal">
-                            <input type="hidden" name="LicenseId" value="@Model.LicenseId" />
-                            <input type="hidden" name="TransactionId" value="@r.TransactionId" />
-                            <input type="hidden" name="PageNo" value="@Model.PageNo" />
-                            <input type="hidden" name="CustomerId" value="@proposedId" />
-                            <button class="btn btn-sm btn-outline-success" asp-page-handler="ManualMatch">Öneriyi onayla</button>
-                        </form>
-                    }
                     <form method="post" class="d-flex gap-1" data-form="@(r.IsLinked ? "unmatch" : "manual-match")">
                         <input type="hidden" name="LicenseId" value="@Model.LicenseId" />
                         <input type="hidden" name="TransactionId" value="@r.TransactionId" />

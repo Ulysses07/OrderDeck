@@ -379,12 +379,13 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     public async Task Musteri_aramasi_Turkce_karakter_ve_buyuk_kucuk_harf_duyarsiz_kullanici_adi_gorunen_ad_ve_ad_soyadda_arar()
     {
         var (lic, txId, _) = await SeedAsync();
-        var id = await AddCustomerAsync(lic, "youtube", "sevgi_kuş34", fullName: "Şükran Çağdeneme Işıkçı", displayName: "Gül Öz");
+        // Kurgusal adlar (repo herkese açık): Türkçe karakterleri (ş ü ç ğ ı I ö) taşır, gerçek bir kişiye benzemez.
+        var id = await AddCustomerAsync(lic, "youtube", "sevgi_kuş34", fullName: "Şükran Çağdeneme Işıkörnek", displayName: "Gülöz Takmaad");
         var client = await _factory.CreateLoggedInAdminClientAsync();
         var token = await TokenAsync(client, lic);
 
-        var expected = new Hit(id, "sevgi_kuş34", "Şükran Çağdeneme Işıkçı", "youtube");
-        foreach (var q in new[] { "SEVGİ", "sevgi kus", "Kuş3", "sukran", "ÇAĞDENEME", "isikci", "IŞIKÇI", "gul oz", "GÜLÖZ", " şükran  çağ " })
+        var expected = new Hit(id, "sevgi_kuş34", "Şükran Çağdeneme Işıkörnek", "youtube");
+        foreach (var q in new[] { "SEVGİ", "sevgi kus", "Kuş3", "sukran", "ÇAĞDENEME", "isikornek", "IŞIKÖRNEK", "gul oz", "GÜLÖZ", "takmaad", " şükran  çağ " })
             (await SearchAsync(client, token, txId, q)).Should().Equal(new[] { expected }, q);
         (await SearchAsync(client, token, txId, "sevgi_kuş35")).Should().BeEmpty("her parça bir alanda geçmeli");
     }
@@ -452,42 +453,26 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             .CountAsync(a => a.TargetId == txId.ToString())).Should().Be(0);
     }
 
+    /// <summary>JS'siz tarayıcının gerçekten gönderdiği biçim: sayfanın elle eşle formundaki her alan, gizli CustomerId boş
+    /// dizeyle ("CustomerId="). Boş kimlik null'a bağlanmalı ve eşleme kutudaki kullanıcı adıyla yapılmalı — öbür kullanıcı
+    /// adı testleri alanı hiç göndermez, bu sözleşmeyi kilitlemez.</summary>
     [Fact]
-    public async Task Oneriyi_onayla_onerilen_musteriyi_tek_tikla_esler_kutu_bos_baslar()
+    public async Task JS_siz_form_bos_CustomerId_alaniyla_gonderilince_kullanici_adiyla_esler()
     {
         var (lic, txId, wpfId) = await SeedAsync();
-        var purged = await AddCustomerAsync(lic, "instagram", "silinmis_oneri", purged: true);
-        var purgedTx = Tx(lic, 60m, "EFT GELEN");
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            db.BankTransactions.Add(purgedTx);
-            PaymentMatch Proposed(Guid tx, Guid proposed) => new()
-            {
-                Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx, Status = PaymentMatchStatus.Proposed,
-                Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.UsernameConfidence,
-                ProposedWpfCustomerId = proposed, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
-            };
-            db.PaymentMatches.AddRange(Proposed(txId, wpfId), Proposed(purgedTx.Id, purged));
-            await db.SaveChangesAsync();
-        }
         var client = await _factory.CreateLoggedInAdminClientAsync();
+        var form = (await PageAsync(client, PathFor(lic))).QuerySelector($"tr[data-tx='{txId}'] form[data-form='manual-match']")!;
+        var fields = form.QuerySelectorAll("input[name]").ToDictionary(i => i.GetAttribute("name")!, i => i.GetAttribute("value") ?? "");
+        fields.Should().ContainKey("CustomerId").WhoseValue.Should().BeEmpty();
+        fields["Username"] = "ornek_musteri34";
+        var action = form.QuerySelector("button[formaction*='ManualMatch']")!.GetAttribute("formaction")!;
 
-        var doc = await PageAsync(client, PathFor(lic));
-        var row = doc.QuerySelector($"tr[data-tx='{txId}']")!;
-        var confirm = row.QuerySelector("form[data-form='confirm-proposal']")!;
-        confirm.QuerySelector("input[name='CustomerId']")!.GetAttribute("value").Should().Be(wpfId.ToString());
-        confirm.QuerySelector("button[formaction*='ManualMatch']")!.TextContent.Trim().Should().Be("Öneriyi onayla");
-        row.QuerySelector("input[data-customer-search]")!.GetAttribute("value").Should().BeNullOrEmpty("öneri kutuya yazılmaz");
-        doc.QuerySelector($"tr[data-tx='{purgedTx.Id}'] form[data-form='confirm-proposal']")
-            .Should().BeNull("silinmiş müşterinin önerisi onaylanamaz");
+        var post = await client.PostAsync(action, new FormUrlEncodedContent(fields));
 
-        (await PostAsync(client, "ManualMatch", lic, txId, customerId: wpfId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
-
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, PathFor(lic), "success")).Should().Be("Eşlendi.");
         var m = (await MatchAsync(txId))!;
-        m.ActualWpfCustomerId.Should().Be(wpfId); m.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman);
-        (await PageAsync(client, PathFor(lic))).QuerySelector($"tr[data-tx='{txId}'] form[data-form='confirm-proposal']")
-            .Should().BeNull("karara bağlı satırda yalnız Kaldır var");
+        m.ActualWpfCustomerId.Should().Be(wpfId); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
     }
 
     [Fact]

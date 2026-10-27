@@ -4,14 +4,19 @@
 // Arama POST'la gider (antiforgery belirteci satırın formundan): sorgu, yani ad parçası, URL'ye ve erişim günlüğüne
 // girmez. Sunucu lisansı hareketten türetir (Index.cshtml.cs, OnPostCustomerSearchAsync).
 //
-// Seçim, müşterinin kimliğini gizli CustomerId alanına yazar; kutuda yazı değişince kimlik silinir. Kimlik boşken form
-// eski yolla kutudaki tam kullanıcı adını gönderir (JS'siz de çalışır).
+// Eşleme yalnız listeden seçimle gider. Seçim müşterinin kimliğini gizli CustomerId alanına yazar; kutuda yazı değişince
+// kimlik silinir. Kimlik boşken form gönderilmez (Enter da "Elle eşle" de): arama hemen koşar, liste açılır, seçim
+// beklenir. Yazılan parça ("ayse") kullanıcı adı diye sunucuya gitmez — sunucudaki tam kullanıcı adı yolu yalnız JS'siz
+// tarayıcı içindir.
+// Liste yalnız kutudaki sorgunun sonucunu seçtirir: yazı değişince eski sonuçlar ve yoldaki yanıt düşer, yenisi gelene
+// kadar "Aranıyor…" görünür, Enter yutulur.
 // Klavye: Aşağı/Yukarı listede gezer, Enter seçer (liste açıkken formu göndermez), Esc listeyi kapatır.
 (function () {
   'use strict';
 
   var MIN_LENGTH = 2;
   var DELAY_MS = 250;
+  var SEARCHING = 'Aranıyor…';
 
   var table = document.querySelector('table[data-search-url]');
   if (!table) return;
@@ -32,16 +37,23 @@
     if (!hidden || !list || !token || !tx) return;
 
     var timer = 0;
+    var blurTimer = 0;
     var seq = 0;          // yalnız son isteğin yanıtı gösterilir
     var controller = null;
     var hits = [];
     var active = -1;
+    var pending = false;  // kutudaki sorgunun yanıtı henüz gelmedi: liste seçtirmez
 
     input.addEventListener('input', function () {
       hidden.value = '';
-      clearTimeout(timer);
+      cancel();
+      hits = [];
+      active = -1;
       var q = input.value.trim();
       if (q.length < MIN_LENGTH) { close(); return; }
+      // Görünen sonuçlar artık eski sorgunun: yanıt gelene kadar seçilemez (Enter ya da tıklama yanlış müşteriyi seçmesin).
+      pending = true;
+      if (!list.hidden) message(SEARCHING);
       timer = setTimeout(function () { search(q); }, DELAY_MS);
     });
 
@@ -50,8 +62,10 @@
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         if (open && hits.length) { e.preventDefault(); move(e.key === 'ArrowDown' ? 1 : -1); }
       } else if (e.key === 'Enter') {
-        if (!open) return; // kapalıyken Enter formu gönderir (Elle eşle)
-        e.preventDefault();
+        // Kapalı listede Enter formu göndermeye kalkar; seçim yoksa submit dinleyicisi durdurur ve aramayı açar.
+        if (!open) return;
+        e.preventDefault(); // açık listede Enter formu hiç göndermez
+        if (pending) return; // yanıt yolda: eski sonuç seçilmez
         if (active >= 0) choose(hits[active]);
         else if (hits.length === 1) choose(hits[0]);
         else if (hits.length > 1) move(1);
@@ -60,13 +74,32 @@
       }
     });
 
-    input.addEventListener('blur', function () { setTimeout(close, 150); });
+    // Seçimsiz gönderim durur (Enter ya da "Elle eşle"): yazılan parça kullanıcı adı diye gitmesin. Arama hemen koşar,
+    // liste açılır, seçim beklenir. Seçim varsa form olduğu gibi gider.
+    form.addEventListener('submit', function (e) {
+      if (hidden.value) return;
+      e.preventDefault();
+      clearTimeout(blurTimer); // düğmeye tıklarken kutunun blur'u listeyi kapatmasın
+      input.focus();
+      searchNow();
+    });
+
+    input.addEventListener('blur', function () { blurTimer = setTimeout(close, 150); });
     // Tıklama sırasında odak kutuda kalsın (blur listeyi kapatmasın).
     list.addEventListener('mousedown', function (e) { e.preventDefault(); });
     list.addEventListener('click', function (e) {
       var li = e.target.closest('li[data-index]');
       if (li) choose(hits[Number(li.getAttribute('data-index'))]);
     });
+
+    function searchNow() {
+      cancel();
+      var q = input.value.trim();
+      if (q.length < MIN_LENGTH) { pending = false; message('En az ' + MIN_LENGTH + ' karakter yazın.'); return; }
+      pending = true;
+      message(SEARCHING);
+      search(q);
+    }
 
     function search(q) {
       var my = ++seq;
@@ -90,12 +123,14 @@
         if (my === seq) render(result);
       }).catch(function (err) {
         if (my === seq && !(err && err.name === 'AbortError')) {
+          pending = false;
           message('Arama yapılamadı; oturum düşmüş olabilir, sayfayı yenileyin.');
         }
       });
     }
 
     function render(result) {
+      pending = false;
       hits = Array.isArray(result) ? result : [];
       active = -1;
       list.textContent = '';
@@ -132,10 +167,16 @@
       input.setAttribute('aria-expanded', 'true');
     }
 
-    function close() {
-      seq++; // yoldaki yanıt listeyi yeniden açmasın
+    /** Bekleyen aramayı ve yoldaki yanıtı düşürür: gelen yanıt listeyi açmaz, eski sorgunun sonucunu göstermez. */
+    function cancel() {
+      seq++;
       clearTimeout(timer);
       if (controller) { controller.abort(); controller = null; }
+    }
+
+    function close() {
+      cancel();
+      pending = false;
       hits = [];
       active = -1;
       list.hidden = true;
