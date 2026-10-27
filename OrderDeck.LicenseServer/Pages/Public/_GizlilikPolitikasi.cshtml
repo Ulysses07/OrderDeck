@@ -520,49 +520,62 @@
 
 <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
 <p>
-    OrderDeck sunucusu, Hostinger International Ltd.'in Almanya'daki (Frankfurt) veri merkezinde barındırılır. Bu
-    politikada sunucuda tutulduğu belirtilen bütün veriler (yayıncı hesapları, kayıt formu bilgileri, yayıncının
-    müşteri ve satış kayıtları, müşteri uygulaması hesapları, ödeme ve dekont kayıtları, banka hareketleri, WhatsApp
-    yazışmaları) bu nedenle yurt dışında saklanır. Ayrıca şu hizmet sağlayıcılar kullanılır:
+    OrderDeck sunucusu, Hostinger International Ltd.'in (Kıbrıs) sağladığı ve Almanya'daki (Frankfurt) veri merkezinde
+    çalışan bir sanal sunucuda barındırılır. Bu politikada sunucuda tutulduğu belirtilen bütün veriler (yayıncı
+    hesapları, kayıt formu bilgileri, yayıncının müşteri ve satış kayıtları, müşteri uygulaması hesapları, ödeme ve
+    dekont kayıtları, banka hareketleri, WhatsApp yazışmaları) bu nedenle yurt dışında, Almanya'da saklanır. Ayrıca
+    aşağıdaki hizmet sağlayıcılar kullanılır; parantez içinde sözleşme yapılan şirket ve ülkesi yazar:
 </p>
 <ul>
     <li>
-        Cloudflare, Inc. (R2 depolama hizmeti, yurt dışı): sunucu veritabanının ve masaüstü uygulamasının sunucuya
+        Cloudflare R2 (Cloudflare, Inc., ABD), dosya depolama: sunucu veritabanının ve masaüstü uygulamasının sunucuya
         yüklediği yedeklerin şifreli kopyaları, müşteri uygulamasından yüklenen dekont dosyaları, WhatsApp
         yazışmalarındaki dosyalar (Bölüm 1.7), yayın paylaşımlarının fotoğraf ve videoları ile ürün fotoğrafları.
+        Dosyalar Cloudflare'in Doğu Avrupa (EEUR) bölgesinde saklanır; Cloudflare'in veri işleme eki, kişisel verilerin
+        Avrupa dışında, ABD dahil, işlenebileceğini öngörür.
     </li>
     <li>
-        Google (Firebase Cloud Messaging, yurt dışı): yayıncı paneli ve müşteri uygulaması bildirimleri. Bildirimi
-        alacak cihazın bildirim jetonu ve bildirimin metni (örneğin yayıncıya giden dekont bildiriminde ödeyenin adı ve
-        tutar, müşteriye giden sipariş bildiriminde tutar) bu hizmetten geçer.
+        Firebase Cloud Messaging (Google LLC, ABD), yayıncı paneli ve müşteri uygulaması bildirimleri: bildirimi alacak
+        cihazın bildirim jetonu ve bildirimin metni (örneğin yayıncıya giden dekont bildiriminde ödeyenin adı ve tutar,
+        müşteriye giden sipariş bildiriminde tutar) bu hizmetten geçer. Google bu hizmeti küresel altyapısında
+        çalıştırır; veri belirli bir ülkeyle sınırlı değildir ve ABD dahil, Google'ın veya alt işleyicilerinin tesis
+        bulundurduğu ülkelerde işlenebilir.
     </li>
     <li>
-        Meta (WhatsApp Business Cloud API ile Instagram ve Facebook Graph API, yurt dışı): yayıncının WhatsApp hattına
-        gelen ve o hattan giden mesajlar ve dosyalar, WhatsApp Business uygulamasından aktarılan geçmiş sohbetler ve
-        yayıncının telefon rehberindeki kişi adları (Bölüm 1.7); Instagram canlı yayın yorumlarının OrderDeck'e
-        iletilmesi ve kayıt bağlantısının özel mesajla gönderilmesi (Bölüm 1.2).
+        WhatsApp Business Platform (Meta Platforms Ireland Limited, İrlanda): yayıncının WhatsApp hattına gelen ve o
+        hattan giden mesajlar ve dosyalar, WhatsApp Business uygulamasından aktarılan geçmiş sohbetler ve yayıncının
+        telefon rehberindeki kişi adları (Bölüm 1.7). Mesajlar Meta'nın veri merkezlerinde, ABD dahil yurt dışında
+        işlenir.
     </li>
     <li>
-        Netgsm (Türkiye): SMS ile gönderilen doğrulama kodları, yayıncıların izin verilen kampanya SMS'leri ve İleti
-        Yönetim Sistemi'ne iletilen SMS izinleri.
+        Instagram ve Facebook Graph API (Meta Platforms Ireland Limited, İrlanda, ve Meta Platforms, Inc., ABD):
+        Instagram canlı yayın yorumlarının OrderDeck'e iletilmesi ve kayıt bağlantısının özel mesajla gönderilmesi
+        (Bölüm 1.2). Veriler Meta'nın veri merkezlerinde, ABD dahil yurt dışında işlenir.
+    </li>
+    <li>
+        Netgsm (Netgsm İletişim ve Bilgi Teknolojileri A.Ş., Türkiye): SMS ile gönderilen doğrulama kodları,
+        yayıncıların izin verilen kampanya SMS'leri ve İleti Yönetim Sistemi'ne iletilen SMS izinleri.
     </li>
     <li>
         İleti Yönetim Sistemi A.Ş. (İYS, Türkiye): verilen ve geri çekilen SMS ticari ileti izinleri, yayıncının markası
         adına, Netgsm aracılığıyla bildirilir; yayıncının müşteri kayıtlarındaki telefon numaraları için İYS'deki izin
         kaydı da Netgsm aracılığıyla sorgulanır (Bölüm 1.2a).
     </li>
-    <li>Brevo (e-posta iletimi, yurt dışı): yayıncılara giden hesap, lisans ve bilgilendirme e-postaları.</li>
+    <li>
+        Brevo (Brevo SAS, Fransa), e-posta iletimi: yayıncılara giden hesap, lisans ve bilgilendirme e-postaları. Brevo
+        verileri Fransa ve Belçika'daki veri merkezlerinde barındırır; alt işleyicileri arasında ABD'de bulunan
+        şirketler de vardır.
+    </li>
     <li>
         Obifin Ödeme Hizmetleri A.Ş. (Türkiye; veriler Türkiye'de barındırılır): yayıncının banka hesap hareketleri
         (Bölüm 1.4).
     </li>
 </ul>
 <p>
-    [YER TUTUCU: sağlayıcıların sözleşme tarafı tüzel kişileri ve verinin işlendiği ülkeler (Google, Meta, Brevo,
-    Cloudflare R2 kova konumu) — Burak, avukat paketi 06 §7] [YER TUTUCU: avukat onayı — önerimiz: standart sözleşmeler
-    imzalanıp Kurul'a bildirilene kadar bu bölüm yalnız olguyu (hangi sağlayıcı, hangi ülke) yazar ve aktarımın
-    dayanağına ilişkin bir cümle içermez; imzadan sonra aktarımların KVKK m. 9/4 uyarınca Kurul'un ilan ettiği standart
-    sözleşmelere dayandığı cümlesi eklenir (12-listesi madde 19)]
+    [YER TUTUCU: avukat onayı — önerimiz: standart sözleşmeler imzalanıp Kurul'a bildirilene kadar bu bölüm yalnız
+    olguyu (hangi sağlayıcı, hangi ülke) yazar ve aktarımın dayanağına ilişkin bir cümle içermez; imzadan sonra
+    aktarımların KVKK m. 9/4 uyarınca Kurul'un ilan ettiği standart sözleşmelere dayandığı cümlesi eklenir (12-listesi
+    madde 19)]
 </p>
 
 <h3>1.7. WhatsApp yazışmaları</h3>
