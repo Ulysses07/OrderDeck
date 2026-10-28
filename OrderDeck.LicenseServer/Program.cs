@@ -1457,7 +1457,8 @@ public class Program
             "obifin-accounts",
             j => j.RunAsync(CancellationToken.None),
             "2 * * * *");
-        // Sink'in kaçırdığı gelen hareketler (sink bir hareketi yalnız bir kez görür): saatte bir, :07 (bkz. özet).
+        // Sink'in kaçırdığı gelen hareketler (sink bir hareketi yalnız bir kez görür) ve IBAN hafızası değiştikten sonra hâlâ
+        // eski hafızayla hesaplanmış kararsız satırlar (2. aşama): saatte bir, :07 (bkz. özet).
         manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankMatchSweepJob>(
             "bank-match-sweep",
             j => j.RunAsync(CancellationToken.None),

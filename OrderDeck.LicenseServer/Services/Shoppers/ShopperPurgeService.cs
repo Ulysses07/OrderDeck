@@ -297,8 +297,8 @@ public sealed class ShopperPurgeService
         //       kaydı olarak kalır, sonucu durumdan okunur (BankSubjectScrub.MatchForCustomer).
         //     - Kullanıcı adı anahtarı yalnız kanıtında geçen, başka müşteriye bağlı ya da önerisiz satırda (named) yalnız
         //       kanıt boşaltılır, başka müşterinin kimliği ve kararı kalır. Anahtar kanıtta TAM aranır: PaymentMatcher'ın
-        //       biçimleri "username={key}", "username={key};iban-memory" ve "conflict:username={key},iban-memory"; anahtar
-        //       yalnız [a-z0-9], ardından son, ';' ya da ',' gelir. Önek araması ("ali" → "username=alican") başka müşterinin
+        //       biçimleri "username={key}", "username={key};iban-memory" ve "conflict:username={key},iban-memory" (yeniden
+        //       değerlendirmede sonuna ";reeval" eklenir); anahtar yalnız [a-z0-9], ardından son, ';' ya da ',' gelir. Önek araması ("ali" → "username=alican") başka müşterinin
         //       hareketinin metnini geri dönüşsüz siler, imha kaydında da onu bu kişiye yazardı.
         //     - Bu satırların hareketlerinin ve silinen hafıza özetinden gelen hareketlerin açıklaması, gönderen adı ve ham
         //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:

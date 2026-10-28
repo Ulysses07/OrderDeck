@@ -342,4 +342,233 @@ public sealed class BankMatchSweepJobTests
         swept.Should().Be(0);
         (await db.PaymentMatches.CountAsync()).Should().Be(0);
     }
+
+    // ---- 2. aşama: IBAN hafızası değişince hesaplanmış kararsız satırlar (27.10) ----
+
+    /// <summary>IBAN özetli, satırı (<paramref name="match"/>) olan hareket; kaydetmez. Özet <paramref name="hashValid"/> ise KVKK Ö-7
+    /// kesmesinden sonra çekilmiş.</summary>
+    private static BankTransaction HashedTx(LicenseDbContext db, Guid lic, string hash, TimeSpan age, PaymentMatch match,
+        bool hashValid = true, string description = "EFT GELEN")
+    {
+        var tx = Tx(lic, description, age);
+        tx.CounterpartyIbanHash = hash; tx.CounterpartyIbanHashValid = hashValid;
+        match.Id = Guid.NewGuid(); match.LicenseId = lic; match.BankTransactionId = tx.Id;
+        db.BankTransactions.Add(tx); db.PaymentMatches.Add(match);
+        return tx;
+    }
+
+    private static PaymentMatch Undecided(DateTimeOffset computedAt, string evidence = "no-signal", Guid? proposed = null) => new()
+    {
+        Status = proposed is null ? PaymentMatchStatus.NoProposal : PaymentMatchStatus.Proposed, ProposedWpfCustomerId = proposed,
+        Layer = proposed is null ? PaymentMatchLayer.None : PaymentMatchLayer.IbanMemory,
+        Confidence = proposed is null ? 0m : PaymentMatcher.IbanConfidence, Evidence = evidence, CreatedAt = computedAt, UpdatedAt = computedAt,
+    };
+
+    private static PaymentMatch DecidedFor(Guid customer, DateTimeOffset at) => new()
+    {
+        Status = PaymentMatchStatus.ManualOnly, ActualWpfCustomerId = customer, DecidedAt = at, IbanConfirmedAt = at,
+        Evidence = "no-signal", CreatedAt = at, UpdatedAt = at,
+    };
+
+    private static WpfCustomerProjection AddCustomer(LicenseDbContext db, Guid lic, string username, bool purged = false)
+    {
+        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username,
+            UpdatedAt = DateTimeOffset.UtcNow, PurgedAt = purged ? DateTimeOffset.UtcNow : null };
+        db.WpfCustomerProjections.Add(c);
+        return c;
+    }
+
+    private static CustomerIbanMemory Bond(LicenseDbContext db, Guid lic, Guid customer, string hash, DateTimeOffset createdAt, Guid? source)
+    {
+        var m = new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = customer, IbanHash = hash, IbanMasked = "TR..",
+            LearnedFrom = IbanMemorySource.ManualMatch, SourceBankTransactionId = source, CreatedAt = createdAt, LastConfirmedAt = createdAt };
+        db.CustomerIbanMemories.Add(m);
+        return m;
+    }
+
+    private static string NewHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    [Fact]
+    public async Task Bagdan_once_hesaplanmis_kararsiz_satir_taramada_IBAN_hafizasiyla_yeniden_degerlendirilir_ikinci_kosu_dokunmaz()
+    {
+        // Bugünkü (düzeltmeden önceki) elle eşlemelerin geriye dönük doldurması ve elle eşlemenin anlık yeniden değerlendirmesi
+        // düştüğünde telafi: ayrı bir CLI ya da elle adım gerekmez. İdempotent: yeniden hesaplanan satır bağdan yenidir.
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(2), DecidedFor(customer.Id, now.AddHours(-3)));
+        Bond(db, lic, customer.Id, hash, now.AddHours(-3), source.Id);
+        // Kesmeden önce çekilmiş (özeti HashValid=false) eski havale de: geçerli bağın özetine eşitlik aynı tam IBAN.
+        var stale = HashedTx(db, lic, hash, TimeSpan.FromDays(8), Undecided(now.AddDays(-8)), hashValid: false);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await Job(db).RunAsync(CancellationToken.None)).Should().Be(0, "1. aşamanın sayısı: satırı olmayan hareket yok");
+
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == stale.Id);
+        (row.Status, row.Layer, row.ProposedWpfCustomerId, row.Evidence).Should().Be((PaymentMatchStatus.Proposed,
+            PaymentMatchLayer.IbanMemory, (Guid?)customer.Id, "iban-memory" + PaymentMatcher.ReevaluationEvidenceSuffix));
+        (row.DecidedAt, row.ActualWpfCustomerId).Should().Be(((DateTimeOffset?)null, (Guid?)null));
+        var decided = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == source.Id);
+        decided.UpdatedAt.Should().Be(now.AddHours(-3), "insan kararına dokunulmaz");
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == stale.Id)).UpdatedAt
+            .Should().Be(row.UpdatedAt, "ikinci koşu aynı satırı yeniden hesaplamaz");
+    }
+
+    [Fact]
+    public async Task Gecerli_ozette_hic_gorunmeyen_bag_taramada_yayilmaz()
+    {
+        // Eski maskeli özetten öğrenilmiş olabilecek bağ ("TR12…345"in özeti farklı göndericilerde aynıdır): lisansta özeti geçerli
+        // hiçbir harekette görünmüyorsa aynı maskeyi taşıyan başka göndericilere yayılmaz.
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(20), DecidedFor(customer.Id, now.AddDays(-15)), hashValid: false);
+        Bond(db, lic, customer.Id, hash, now.AddDays(-15), source.Id);
+        var stale = HashedTx(db, lic, hash, TimeSpan.FromDays(18), Undecided(now.AddDays(-18)), hashValid: false);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == stale.Id);
+        (row.Status, row.UpdatedAt).Should().Be((PaymentMatchStatus.NoProposal, now.AddDays(-18)));
+    }
+
+    [Fact]
+    public async Task Silinmis_bagdan_gelen_oneri_taramada_geri_alinir()
+    {
+        // Kaldırma bağı sildi ama anlık yeniden değerlendirme koşamadı (durdurulmuş bağlantı, düşen hesap): kanıtında
+        // "iban-memory" geçen, bağı artık olmayan satır yeniden hesaplanır.
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var now = DateTimeOffset.UtcNow;
+        var orphan = HashedTx(db, lic, NewHash(), TimeSpan.FromDays(4), Undecided(now.AddDays(-1), "iban-memory", customer.Id));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == orphan.Id);
+        (row.Status, row.ProposedWpfCustomerId, row.Evidence).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, "no-signal" + PaymentMatcher.ReevaluationEvidenceSuffix));
+    }
+
+    [Fact]
+    public async Task Silinmis_musteriye_taramada_oneri_yapilmaz()
+    {
+        // Eşleştirici silinmiş (PurgedAt) müşteriyi aday listesinden düşürür; hafızası henüz silinmemiş olsa da öneri olmaz.
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var purged = AddCustomer(db, lic, "silinen_musteri", purged: true);
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(2), DecidedFor(purged.Id, now.AddHours(-3)));
+        Bond(db, lic, purged.Id, hash, now.AddHours(-3), source.Id);
+        var stale = HashedTx(db, lic, hash, TimeSpan.FromDays(6), Undecided(now.AddDays(-6)));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == stale.Id);
+        (row.Status, row.ProposedWpfCustomerId).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null));
+    }
+
+    [Fact]
+    public async Task Bagdan_sonra_hesaplanmis_aciklamasi_silinmis_saklama_sinirindaki_ve_durdurulmus_baglantidaki_satira_tarama_dokunmaz()
+    {
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(10), DecidedFor(customer.Id, now.AddDays(-9)));
+        Bond(db, lic, customer.Id, hash, now.AddDays(-9), source.Id);
+        // Bağdan sonra hesaplanmış: hafızayı zaten gördü (açıklamadaki kullanıcı adı çatıştı, öneri yok).
+        var after = HashedTx(db, lic, hash, TimeSpan.FromDays(8), Undecided(now.AddDays(-8), "conflict:username=baska,iban-memory"));
+        // Açıklaması silinmiş (saklama ya da kişi silmesi): kullanıcı adı katmanı kaybolur, öneri bozulurdu.
+        var scrubbed = HashedTx(db, lic, hash, TimeSpan.FromDays(12), Undecided(now.AddDays(-12)));
+        scrubbed.Description = null; scrubbed.DescriptionPurgedAt = now.AddDays(-1);
+        // Bağdan önce hesaplanmış ama eşleşmeyen açıklamanın saklama sınırına bir günden yakın: saklama işi açıklamayı jetonu
+        // ilerletmeden siler, yeniden hesap onunla çakışmasız yarışırdı (PaymentMatchReconciler.ReevaluationSince).
+        var edge = HashedTx(db, lic, hash, TimeSpan.FromDays(BankMatchSweepJob.LookbackDays - 0.5), Undecided(now.AddDays(-20)));
+        // Durdurulmuş bağlantının lisansı (KVKK K-6).
+        var stopped = Guid.NewGuid();
+        db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = stopped, BaseUrl = "https://obifin.invalid",
+            UserCode = $"u-{Guid.NewGuid():N}", Status = ObifinConnectionStatus.Disabled, DisabledAt = now, CreatedAt = now, UpdatedAt = now });
+        var stoppedCustomer = AddCustomer(db, stopped, "ornek_musteri34");
+        var stoppedSource = HashedTx(db, stopped, hash, TimeSpan.FromDays(3), DecidedFor(stoppedCustomer.Id, now.AddDays(-2)));
+        Bond(db, stopped, stoppedCustomer.Id, hash, now.AddDays(-2), stoppedSource.Id);
+        var stoppedStale = HashedTx(db, stopped, hash, TimeSpan.FromDays(5), Undecided(now.AddDays(-5)));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var before = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.BankTransactionId);
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        foreach (var tx in new[] { after, scrubbed, edge, stoppedStale, source })
+            (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == tx.Id))
+                .Should().BeEquivalentTo(before[tx.Id], o => o.Excluding(m => m.BankTransaction), tx.Id.ToString());
+    }
+
+    [Fact]
+    public async Task Hesaplandiktan_sonra_dislanan_kodlu_hareket_taramada_dislama_kanitini_alir_bir_daha_secilmez()
+    {
+        // Dışlama kodları ayardır: kod listeye satır hesaplandıktan sonra girebilir. Bellekte atlansaydı satır her saat yeniden
+        // seçilir, en yeniden sıralı kotada 30 gün yer kaplardı. Eşleştirici ona "excluded:KOD" yazar (önerisi düşer); sonraki
+        // koşunun seçimi öneki eler.
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(2), DecidedFor(customer.Id, now.AddHours(-3)));
+        Bond(db, lic, customer.Id, hash, now.AddHours(-3), source.Id);
+        var pos = HashedTx(db, lic, hash, TimeSpan.FromDays(6), Undecided(now.AddDays(-6)));
+        pos.TransactionCode = "CCP"; // varsayılan dışlama listesinde (POS tahsilatı)
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == pos.Id);
+        (row.Status, row.ProposedWpfCustomerId, row.Evidence).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null, "excluded:CCP"));
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == pos.Id)).UpdatedAt
+            .Should().Be(row.UpdatedAt, "ikinci koşu dışlanan satırı seçmez");
+    }
+
+    [Fact]
+    public async Task Ikinci_asama_bagi_yalniz_kendi_lisansinda_uygular_ayni_ozetli_iki_etkin_lisans()
+    {
+        // Aynı gönderici iki yayıncıya da havale gönderebilir; özet lisanslar arasında aynıdır. Bir lisansın bağı öbür lisansın
+        // satırına öneri üretmez ((a) aynı lisansın bağı); öbür lisansın bağı silinmişse onun "iban-memory" önerisi, ilk lisansın
+        // aynı özetli bağı dursa da geri alınır ((b) aynı lisansta bağ yok).
+        using var db = NewDb();
+        var lic = ConnectedLicense(db); var otherLic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var otherCustomer = AddCustomer(db, otherLic, "mehmet_k");
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(2), DecidedFor(customer.Id, now.AddHours(-3)));
+        Bond(db, lic, customer.Id, hash, now.AddHours(-3), source.Id);
+        var otherStale = HashedTx(db, otherLic, hash, TimeSpan.FromDays(8), Undecided(now.AddDays(-8)));
+        var otherOrphan = HashedTx(db, otherLic, hash, TimeSpan.FromDays(4), Undecided(now.AddDays(-1), "iban-memory", otherCustomer.Id));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var staleBefore = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == otherStale.Id);
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == otherStale.Id))
+            .Should().BeEquivalentTo(staleBefore, o => o.Excluding(m => m.BankTransaction), "öbür lisansın bağı yok");
+        var orphan = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == otherOrphan.Id);
+        (orphan.Status, orphan.ProposedWpfCustomerId, orphan.Evidence).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, "no-signal" + PaymentMatcher.ReevaluationEvidenceSuffix));
+    }
 }

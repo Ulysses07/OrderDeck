@@ -219,6 +219,37 @@ public sealed class PaymentMatchMetricsTests
     }
 
     [Fact]
+    public async Task Sonradan_yeniden_degerlendirilen_oneriye_verilen_dekont_karari_Faz2_orneklemine_girmez_ayri_gosterilir()
+    {
+        // IBAN hafızası değişince yeniden hesaplanan öneri (kanıtı ";reeval" ekli) çekim anında yoktu: Faz 2'nin otomatik onayı çekim
+        // anında çalışacaksa o satırlar o an "öneri yok" olurdu. Eşik otomatikleştirilecek nüfusu ölçmeli; bu kararlar ne örnekleme ne
+        // orana girer, sayfa kararı da sayılmaz, ayrı gösterilir. Bekleyen önerilerin kaçının sonradan üretildiği de görünür (ilk
+        // taramanın geriye dönük doldurması "Bekleyen öneri"yi sıçratır).
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
+        var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        const string reeval = PaymentMatcher.ReevaluationEvidenceSuffix;
+        var txs = Enumerable.Range(1, 6).Select(i => T(lic, now, i)).ToArray();
+        db.BankTransactions.AddRange(txs);
+        db.PaymentMatches.AddRange(
+            M(txs[0], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, "iban-memory", proposed: a, actual: a, payment: Guid.NewGuid()),
+            M(txs[1], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, "iban-memory" + reeval, proposed: a, actual: a, payment: Guid.NewGuid()),
+            M(txs[2], PaymentMatchStatus.Contradicted, PaymentMatchLayer.IbanMemory, "iban-memory" + reeval, proposed: a, actual: b, payment: Guid.NewGuid()),
+            M(txs[3], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, "iban-memory" + reeval, proposed: a, actual: a),
+            M(txs[4], PaymentMatchStatus.Proposed, PaymentMatchLayer.IbanMemory, "iban-memory" + reeval, proposed: a),
+            M(txs[5], PaymentMatchStatus.Proposed, PaymentMatchLayer.UsernameInDescription, "username=ornek", proposed: a));
+        await db.SaveChangesAsync();
+
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+
+        (m.Confirmed, m.Contradicted).Should().Be((3, 1), "genel sayımlar ve katman isabeti değişmez");
+        (m.ReceiptConfirmed, m.ReceiptContradicted).Should().Be((1, 0), "Faz 2 örneklemi yalnız çekim anındaki önerilerin dekont kararları");
+        (m.ReevaluatedReceiptConfirmed, m.ReevaluatedReceiptContradicted).Should().Be((1, 1));
+        (m.PageConfirmed, m.PageContradicted).Should().Be((1, 0), "sonradan önerinin dekont kararı sayfa kararı da değildir");
+        (m.PendingProposals, m.ReevaluatedPending).Should().Be((2, 1));
+    }
+
+    [Fact]
     public async Task Platform_kirilimi_gercek_musterinin_platformuna_gore_bilinmeyen_ve_silinen_soru_isareti()
     {
         using var db = NewDb();
