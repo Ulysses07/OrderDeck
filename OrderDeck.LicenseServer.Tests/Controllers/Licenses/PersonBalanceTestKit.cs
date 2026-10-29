@@ -19,6 +19,15 @@ public sealed class PersonBalanceTestKit
     public const string KindManual = "manual-adjustment";
     public const string KindReversal = "reversal";
 
+    /// <summary>Havuz kipinin alt sınırını (Wh, <see cref="PersonBalanceConfiguredApiFactory.MinClientVersion"/>) geçen
+    /// istemci; satış senkronu kapısını (Ws) da geçer.</summary>
+    public const string PoolUserAgent = SalesCommandTestKit.WpfUserAgent;
+
+    /// <summary>Wh'den eski istemci: havuz kipinde preview ve yeni yazım 409 <c>client-update-required</c> alır.
+    /// Havuz kapısını kanıtlayan testler kiti SalesSyncMode.Off ile kurar (<see cref="CreateAsync"/>'in varsayılanı);
+    /// mod On'da 409 satış senkronu kapısından da gelir (bu sürüm Ws'yi de geçemez) ve havuz kapısını kanıtlamaz.</summary>
+    public const string OldUserAgent = "OrderDeck-WPF/0.9.10";
+
     private readonly Dictionary<Guid, (string Platform, string Username)> _identities = new();
 
     private PersonBalanceTestKit(SalesCommandTestKit sales) => Sales = sales;
@@ -150,6 +159,23 @@ public sealed class PersonBalanceTestKit
         return id;
     }
 
+    /// <summary>
+    /// Lisansı havuz kipine alır (spec §3.1, §7.2): <c>PersonBalancePoolSince</c> = <paramref name="since"/> (verilmezse
+    /// bir dakika önce). Prod'da bayrağı yalnız <c>person-balance enable --apply</c> yazar; testte kapı koşulları atlanır.
+    /// </summary>
+    public Task EnablePoolAsync(DateTimeOffset? since = null) =>
+        SetPoolSinceAsync(since ?? DateTimeOffset.UtcNow.AddMinutes(-1));
+
+    /// <summary>Lisansı satır kipine indirir (<c>disable</c>, kill switch).</summary>
+    public Task DisablePoolAsync() => SetPoolSinceAsync(null);
+
+    private Task SetPoolSinceAsync(DateTimeOffset? value) =>
+        Sales.WithDbAsync(async db =>
+        {
+            var license = await db.Licenses.SingleAsync(l => l.Id == LicenseId);
+            license.PersonBalancePoolSince = value;
+        });
+
     /// <summary>Spec Örnek 1'in sonu.</summary>
     public sealed record Example1(Guid T, Guid I, Guid Y, Guid K, Guid L1, Guid L2, string Group);
 
@@ -195,6 +221,21 @@ public sealed class PersonBalanceTestKit
             .ToListAsync());
     }
 
+    /// <summary>
+    /// Bir çekim grubunun bütün satırları (spec §3.2): çapa (<c>Id == anchorId</c>) ilk, sonra bacaklar satır Id'sinin
+    /// "N" metnine göre ordinal. Eski tek satırlık hareket (<c>DrawGroupId</c> NULL) de çapa olarak döner.
+    /// </summary>
+    public async Task<List<CustomerBalanceTransaction>> GroupRowsAsync(Guid anchorId)
+    {
+        var rows = await Sales.ReadDbAsync(db => db.CustomerBalanceTransactions.AsNoTracking()
+            .Where(t => t.Id == anchorId || t.DrawGroupId == anchorId)
+            .ToListAsync());
+        return rows
+            .OrderBy(t => t.Id == anchorId ? 0 : 1)
+            .ThenBy(t => t.WpfCustomerId.ToString("N"), StringComparer.Ordinal)
+            .ToList();
+    }
+
     public Task<WpfCustomerProjection> ProjectionAsync(Guid id) =>
         Sales.ReadDbAsync(db => db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking().SingleAsync(p => p.Id == id));
 
@@ -202,6 +243,16 @@ public sealed class PersonBalanceTestKit
 
     public Task<HttpResponseMessage> PreviewAsync(Guid row) =>
         SendAsync(HttpMethod.Get, $"{WpfUrl}/preview?wpfCustomerId={row}");
+
+    /// <summary>Havuz kipi preview'ı (spec §4.0, §4.1): her üye Id'si tekrarlı <c>memberIds</c> sorgu parametresi
+    /// (iskelet 18f); <paramref name="memberIds"/> null → parametre hiç gönderilmez.</summary>
+    public Task<HttpResponseMessage> PreviewAsync(
+        Guid row, IReadOnlyCollection<Guid>? memberIds, string? userAgent = SalesCommandTestKit.WpfUserAgent)
+    {
+        var url = $"{WpfUrl}/preview?wpfCustomerId={row}";
+        if (memberIds is not null) url += string.Concat(memberIds.Select(id => $"&memberIds={id}"));
+        return SendAsync(HttpMethod.Get, url, userAgent: userAgent);
+    }
 
     public Task<HttpResponseMessage> ScopeAsync(Guid row, string saleScope) =>
         SendAsync(HttpMethod.Get, $"{WpfUrl}/scope?wpfCustomerId={row}&saleScope={Uri.EscapeDataString(saleScope)}");
@@ -216,6 +267,14 @@ public sealed class PersonBalanceTestKit
         SendAsync(HttpMethod.Post, $"{WpfUrl}/apply",
             new { wpfCustomerId = row, amount, productTotal, idempotencyKey = key, saleScope });
 
+    /// <summary>Havuz kipi apply'ı (spec §4.0, §4.2): gövdede <c>memberIds</c> (iskelet 18f; null → JSON'da null).
+    /// 5 argümanlı çağrı var olan aşırı yüklemeye gider; <paramref name="memberIds"/> varsayılansız.</summary>
+    public Task<HttpResponseMessage> ApplyAsync(
+        Guid row, decimal amount, decimal productTotal, Guid? key, string? saleScope,
+        IReadOnlyCollection<Guid>? memberIds, string? userAgent = SalesCommandTestKit.WpfUserAgent) =>
+        SendAsync(HttpMethod.Post, $"{WpfUrl}/apply",
+            new { wpfCustomerId = row, amount, productTotal, idempotencyKey = key, saleScope, memberIds }, userAgent);
+
     public Task<HttpResponseMessage> PanelGetAsync(Guid row, int take = 50) =>
         SendAsync(HttpMethod.Get, $"/api/panel/customers/{row}/balance?take={take}", userAgent: null);
 
@@ -225,6 +284,11 @@ public sealed class PersonBalanceTestKit
     public Task<HttpResponseMessage> PanelRefundAsync(Guid row, decimal amount) =>
         SendAsync(HttpMethod.Post, $"/api/panel/customers/{row}/balance/refund-full",
             new { amount, reason = (string?)null }, userAgent: null);
+
+    /// <summary>Panel elle ayarı (<c>ManualAdjustmentRequest(Amount, Reason)</c>); eksi tutar K5'in çekimi (spec §4.13).</summary>
+    public Task<HttpResponseMessage> PanelManualAdjustmentAsync(Guid row, decimal amount, string reason) =>
+        SendAsync(HttpMethod.Post, $"/api/panel/customers/{row}/balance/manual-adjustment",
+            new { amount, reason }, userAgent: null);
 
     /// <summary>WPF senkronu (Format 2) ile üyenin grup numarasını damgalı yazar.</summary>
     public Task<HttpResponseMessage> SyncGroupAsync(Guid member, string? groupId, DateTimeOffset? stamp = null)

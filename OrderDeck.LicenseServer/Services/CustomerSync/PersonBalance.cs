@@ -12,7 +12,8 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// <para><b>S1 (bu sınıf):</b> kişi (<see cref="MembersAsync"/>), çekim grubu okuyucuları (<see cref="IsAnchor"/>,
 /// <see cref="AnchorOfAsync"/>, <see cref="GroupSumAsync"/>), grup geri alması ve toplanmış liste. S1 kip bayrağını
 /// OKUMAZ ve çok bacaklı çekim YAZMAZ — para davranışı değişmez; S2'nin biçimini yalnız okur ve geri alır
-/// (genişlet/daralt). <b>S2:</b> <c>ResolveDrawSetAsync</c>, <c>PlanDraw</c>, <c>DrawAsync</c>.</para>
+/// (genişlet/daralt). <b>S2:</b> <see cref="IsPoolModeAsync"/> (kip bayrağını okur), <c>ResolveDrawSetAsync</c>,
+/// <c>PlanDraw</c>, <c>DrawAsync</c>.</para>
 /// </summary>
 public sealed class PersonBalance
 {
@@ -68,6 +69,14 @@ public sealed class PersonBalance
             .ToList();
         return new Person(canonicalId, head?.GroupId, members);
     }
+
+    /// <summary>
+    /// Lisans havuz kipinde mi: <c>License.PersonBalancePoolSince</c> dolu (spec §3.1, §7.2). Kip lisans başına, her
+    /// istekte okunur (§4.0); panel ve Shopper kullanır, WPF uçları sahiplik sorgusunun ikinci alanından okur.
+    /// Bilinmeyen lisans satır kipidir (false).
+    /// </summary>
+    public Task<bool> IsPoolModeAsync(Guid licenseId, CancellationToken ct) =>
+        _db.Licenses.AsNoTracking().AnyAsync(l => l.Id == licenseId && l.PersonBalancePoolSince != null, ct);
 
     // ── Çekim grupları (§2, §3.2) ────────────────────────────────────────────
 

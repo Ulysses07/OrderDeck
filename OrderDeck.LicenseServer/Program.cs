@@ -185,6 +185,14 @@ public class Program
             .Bind(builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section))
             .Validate(o => o.ForceEndSilenceMinutes > 0, "SalesSync:ForceEndSilenceMinutes 0'dan büyük olmalı.")
             .ValidateOnStart();
+        // Ortak bakiye (spec 2026-10-11 §7.2, M1): havuz kipinin istemci alt sınırı (Wh) ve enable'ın etkin PC
+        // penceresi. Compose ortamından yalnız PersonBalance__MinClientVersion gelir; pencere kod varsayılanı 14
+        // (satış senkronu kapısıyla aynı ölçüt). 0 ya da eksi pencere hiçbir PC'yi etkin saymaz ve enable'ın 1.
+        // koşulunu boşuna geçirirdi; sunucu açılmaz, deploy geri alınır.
+        builder.Services.AddOptions<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceOptions>()
+            .Bind(builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceOptions.Section))
+            .Validate(o => o.ActivePcWindowDays > 0, "PersonBalance:ActivePcWindowDays 0'dan büyük olmalı.")
+            .ValidateOnStart();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReplicaService>();
         // Yayının devri (§4.1): sessions/sync, sales/backfill ve onarım işi aynı yazıcıyı kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SessionReleaser>();
@@ -968,6 +976,15 @@ public class Program
             else
                 db.Database.EnsureCreated();
             await SeedAdminAsync(db, app.Configuration);
+            // Ortak bakiye (spec 2026-10-11 §7.2): alt sınır boş/bozukken havuz kipinde lisans varsa tek uyarı — o
+            // lisanslarda preview ve yeni yazım 409 client-update-required döner (kapalı-hata). Göçten SONRA: sayım
+            // bayrak sütununu okur. .Value doğrulamayı ValidateOnStart'tan önce tetikler; bozuk pencere burada atar.
+            await OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceStartup.WarnIfPoolWithoutMinimumAsync(
+                db,
+                scope.ServiceProvider
+                    .GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceOptions>>().Value,
+                app.Logger,
+                CancellationToken.None);
         }
 
         // Banka modülü anahtarsız KAPALI açılır: master merge = otomatik prod deploy, .env'de eksik bir

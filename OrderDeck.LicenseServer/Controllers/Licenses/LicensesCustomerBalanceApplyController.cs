@@ -111,8 +111,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         [FromQuery] Guid wpfCustomerId,
         CancellationToken ct)
     {
-        var mode = await OwnedLicenseModeAsync(licenseId, ct);
-        if (mode is null) return NotFound();
+        var owned = await OwnedLicenseModeAsync(licenseId, ct);
+        if (owned is null) return NotFound();
+        var (mode, _) = owned.Value;
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "preview");
 
@@ -180,8 +181,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
                     + "karakteri aşamaz.");
 
-        var mode = await OwnedLicenseModeAsync(licenseId, ct);
-        if (mode is null) return NotFound();
+        var owned = await OwnedLicenseModeAsync(licenseId, ct);
+        if (owned is null) return NotFound();
+        var (mode, _) = owned.Value;
         // v0.9.10 bulduğu düşümü benimser ve toplam aynıysa önizleme ile
         // apply'ı hiç çağırmadan mesajı gönderir; kapı burada da olmalı.
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
@@ -338,8 +340,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
                     + "karakteri aşamaz.");
 
-        var mode = await OwnedLicenseModeAsync(licenseId, ct);
-        if (mode is null) return NotFound();
+        var owned = await OwnedLicenseModeAsync(licenseId, ct);
+        if (owned is null) return NotFound();
+        var (mode, _) = owned.Value;
         // §6.5-3: bakiyenin her okumasından (oynatma dahil) önce.
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "apply");
@@ -659,8 +662,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     public async Task<IActionResult> Reverse(
         Guid licenseId, Guid transactionId, CancellationToken ct)
     {
-        var mode = await OwnedLicenseModeAsync(licenseId, ct);
-        if (mode is null) return NotFound();
+        var owned = await OwnedLicenseModeAsync(licenseId, ct);
+        if (owned is null) return NotFound();
+        var (mode, _) = owned.Value;
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "reverse");
 
@@ -705,15 +709,17 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     public static string ScopeLockResource(Guid licenseId, Guid canonicalCustomerId, string saleScope) =>
         $"bal:{licenseId:N}:{canonicalCustomerId:N}:{saleScope.ToLowerInvariant().TrimEnd(' ')}";
 
-    /// <summary>Lisans çağırana aitse kipi; değilse null (uç 404 döner). Sahiplik
-    /// ve kip tek sorguda.</summary>
-    private async Task<SalesSyncMode?> OwnedLicenseModeAsync(Guid licenseId, CancellationToken ct)
+    /// <summary>Lisans çağırana aitse satış senkronu kipi ve ortak bakiye kipi (spec 2026-10-11 §4.0: havuz kipi ⇔
+    /// <c>PersonBalancePoolSince</c> dolu); değilse null (uç 404 döner). Sahiplik, satış senkronu kipi ve ortak
+    /// bakiye kipi tek sorguda; kip her istekte okunur.</summary>
+    private async Task<(SalesSyncMode Mode, bool Pool)?> OwnedLicenseModeAsync(Guid licenseId, CancellationToken ct)
     {
         var callerId = User.GetTenantCustomerId();
-        return await _db.Licenses
+        var row = await _db.Licenses
             .Where(l => l.Id == licenseId && l.CustomerId == callerId)
-            .Select(l => (SalesSyncMode?)l.SalesSyncMode)
+            .Select(l => new { l.SalesSyncMode, Pool = l.PersonBalancePoolSince != null })
             .FirstOrDefaultAsync(ct);
+        return row is null ? null : (row.SalesSyncMode, row.Pool);
     }
 
     /// <summary>İstemci (<c>User-Agent</c>) <c>SalesSync:MinClientVersion</c>'ı
