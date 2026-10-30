@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Services.Sync.Commands;
 
@@ -92,18 +93,20 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     private readonly PersonBalance _person;
     private readonly SalesSyncOptions _salesSync;
     private readonly PersonBalanceOptions _personBalance;
+    private readonly OrderDeckMetrics _metrics;
     private readonly ILogger<LicensesCustomerBalanceApplyController> _log;
 
     public LicensesCustomerBalanceApplyController(
         LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person,
         IOptions<SalesSyncOptions> salesSync, IOptions<PersonBalanceOptions> personBalance,
-        ILogger<LicensesCustomerBalanceApplyController> log)
+        OrderDeckMetrics metrics, ILogger<LicensesCustomerBalanceApplyController> log)
     {
         _db = db;
         _customerIds = customerIds;
         _person = person;
         _salesSync = salesSync.Value;
         _personBalance = personBalance.Value;
+        _metrics = metrics;
         _log = log;
     }
 
@@ -575,6 +578,8 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             return Problem(title: rejection.Code, detail: rejection.Message, statusCode: rejection.StatusCode);
         }
 
+        // §8.6: çok bacaklı çekim (yalnız Drawn ve Legs > 1); yanıt değişmez.
+        CountMultiLegDraw(result);
         switch (result.Status)
         {
             case PersonBalance.DrawStatus.Drawn:
@@ -970,12 +975,24 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
     {
+        _metrics.BalanceBusy.Add(1, new KeyValuePair<string, object?>("endpoint", endpoint));
         // Uyarı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü.
         _log.LogDebug(
             "customer-balance/{Endpoint}: 503 balance-busy (license={LicenseId})",
             endpoint, licenseId);
         return Problem(title: CodeBalanceBusy, statusCode: 503,
             detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+    }
+
+    /// <summary>
+    /// Çok bacaklı çekim sayacı (spec §8.6, plan S2 fark 18h): yalnız yazılmış (<c>Drawn</c>) ve birden çok satıra
+    /// dokunan çekim; etiket <c>legs</c> çapa dahil yazılan hareket satırı sayısıdır. Yalnız çapaya yazılan çekim
+    /// sayılmaz; <c>Drawn</c> dışındaki sonuçlarda <c>Legs</c> zaten 0.
+    /// </summary>
+    private void CountMultiLegDraw(PersonBalance.DrawResult result)
+    {
+        if (result.Status == PersonBalance.DrawStatus.Drawn && result.Legs > 1)
+            _metrics.BalanceMultiLegDraws.Add(1, new KeyValuePair<string, object?>("legs", result.Legs));
     }
 
     /// <summary>
@@ -1013,6 +1030,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     private ObjectResult ClientUpdateRequired(Guid licenseId, string endpoint)
     {
+        // §8.5-8.6: endpoint preview | scope | apply | reverse (scope: v0.9.10 önce onu sorar, R6-01).
+        _metrics.BalanceClientUpdateRequired.Add(1,
+            new KeyValuePair<string, object?>("gate", "sales-sync"),
+            new KeyValuePair<string, object?>("endpoint", endpoint));
         _log.LogInformation(
             "customer-balance/{Endpoint}: mod On'da istemci alt sürümün altında ya da alt sürüm tanımsız, "
             + "409 client-update-required (license={LicenseId})",
@@ -1044,6 +1065,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// </summary>
     private ObjectResult PoolClientUpdateRequired(Guid licenseId, string endpoint)
     {
+        _metrics.BalanceClientUpdateRequired.Add(1,
+            new KeyValuePair<string, object?>("gate", "person-balance"),
+            new KeyValuePair<string, object?>("endpoint", endpoint));
         if (_personBalance.ParseMinClientVersion() is null)
             _log.LogError(
                 "customer-balance/{Endpoint}: havuz kipinde PersonBalance:MinClientVersion tanımsız ya da "
@@ -1076,6 +1100,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// </summary>
     private ObjectResult CustomerNotSynced(Guid licenseId, string endpoint, IReadOnlyList<Guid> rowIds)
     {
+        _metrics.BalanceCustomerNotSynced.Add(1, new KeyValuePair<string, object?>("endpoint", endpoint));
         _log.LogInformation(
             "customer-balance/{Endpoint}: 409 customer-not-synced (license={LicenseId}, rows={RowIds})",
             endpoint, licenseId, string.Join(",", rowIds.Select(id => id.ToString("N"))));

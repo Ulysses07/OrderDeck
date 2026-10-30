@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.Observability;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -33,15 +34,17 @@ public sealed class PanelCustomerBalanceController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
     private readonly PersonBalance _person;
+    private readonly OrderDeckMetrics _metrics;
     private readonly ILogger<PanelCustomerBalanceController> _log;
 
     public PanelCustomerBalanceController(
         LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person,
-        ILogger<PanelCustomerBalanceController> log)
+        OrderDeckMetrics metrics, ILogger<PanelCustomerBalanceController> log)
     {
         _db = db;
         _customerIds = customerIds;
         _person = person;
+        _metrics = metrics;
         _log = log;
     }
 
@@ -270,6 +273,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             CreatedByCustomerId: customerId,
             ScopeLockResource: null), beforeAttempt: null, ct);
 
+        CountMultiLegDraw(result);
         return result.Status switch
         {
             PersonBalance.DrawStatus.Drawn => Ok(),
@@ -502,6 +506,9 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             beforeAttempt: (_, token) => IsReversedAsync(token),
             ct);
 
+        // §8.6: çok bacaklı iptal çekimi (yalnız Drawn ve Legs > 1); yanıt değişmez.
+        CountMultiLegDraw(result);
+
         // Havuz yetmedi: kazanan bu isteğin bakiye okumalarından önce commit ettiyse jeton çakışması olmaz, ikinci
         // deneme gelmez (Örnek 4: kazanandan sonra havuz 10 < 80). Kazananın commit'i okumalardan önce geldiği için
         // iptali bu sorguda kesin görünür → already-reversed (§4.9 "Hakem N01"). Yalnız havuz dalı; satır kipi aynen.
@@ -544,10 +551,23 @@ public sealed class PanelCustomerBalanceController : ControllerBase
     /// <param name="endpoint"><c>reverse</c> ya da <c>manual-adjustment</c>.</param>
     private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
     {
+        // §8.6: panel uçları WPF'inkilerden "panel/" önekiyle ayrılır.
+        _metrics.BalanceBusy.Add(1, new KeyValuePair<string, object?>("endpoint", $"panel/{endpoint}"));
         _log.LogDebug(
             "panel balance/{Endpoint}: 503 balance-busy (license={LicenseId})", endpoint, licenseId);
         return Problem(title: "balance-busy", statusCode: 503,
             detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+    }
+
+    /// <summary>
+    /// Çok bacaklı çekim sayacı (spec §8.6, plan S2 fark 18h): yalnız yazılmış (<c>Drawn</c>) ve birden çok satıra
+    /// dokunan çekim; etiket <c>legs</c> çapa dahil yazılan hareket satırı sayısıdır. Yalnız çapaya yazılan çekim
+    /// sayılmaz.
+    /// </summary>
+    private void CountMultiLegDraw(PersonBalance.DrawResult result)
+    {
+        if (result.Status == PersonBalance.DrawStatus.Drawn && result.Legs > 1)
+            _metrics.BalanceMultiLegDraws.Add(1, new KeyValuePair<string, object?>("legs", result.Legs));
     }
 
     /// <summary>
