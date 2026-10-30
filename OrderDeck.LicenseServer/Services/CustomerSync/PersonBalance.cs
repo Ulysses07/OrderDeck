@@ -229,6 +229,54 @@ public sealed class PersonBalance
         return new DrawSet(anchorId, person, draw, lockedNegatives);
     }
 
+    // ── Çekim planı (§4.2 adım 4, M7) ────────────────────────────────────────
+
+    /// <summary>Planın bir satırı: o satırdan çekilecek tutar (≥ 0). Yazıcı (<c>DrawAsync</c>) <c>−Amount</c> yazar.</summary>
+    public sealed record DrawLeg(Guid WpfCustomerId, decimal Amount);
+
+    /// <summary>
+    /// Çekim planı — spec 2026-10-11 §4.2 adım 4, M7 (sıra belirlenimli). Saf: veritabanı, saat, rastgelelik yok;
+    /// girdi listesinin sırası sonucu değiştirmez. Her adımda o satırdan <c>min(max(0, bakiye), kalan)</c> alınır.
+    /// Sıra: çapa (alıcının parası önce, K1) → silinmiş üyeler (ayırmada erişilemez kalabilecek para önce, K3) →
+    /// canlı üyeler; iki grupta da bakiye büyükten küçüğe, eşitlikte Id ("N", ordinal). Silinmişler arasında eşitlik
+    /// kırıcı da Id (plan fark 18b).
+    ///
+    /// <para>İlk eleman HER ZAMAN çapadır ve tutarı 0 olabilir: çapa satırı tutarı 0 olan bir düşüm satırıdır (§3.2).
+    /// Çapa <paramref name="draw"/>'da yoksa bakiyesi 0 sayılır (bakiye satırı olmayabilir, §4.2 adım 5). Çapa dışında
+    /// bakiyesi ≤ 0 olan üye ve 0 çekilen üye listede yoktur.</para>
+    ///
+    /// <para>Bacakların toplamı <c>min(max(0, amount), çapanın artısı + Σ artı bakiyeler)</c>. Çağıran
+    /// <c>amount ≤ max(0, Σ)</c> garantisini verir (Σ, <c>S∖P</c>'nin eksilerini de içerir); burada denetlenmez,
+    /// yalnız kırpılır.</para>
+    /// </summary>
+    /// <param name="anchorId">Çapa: istekteki (rota/sahip) satırın asıl kaydı.</param>
+    /// <param name="draw">Çekim kümesi P (<c>DrawSet.Draw</c>); eksi ve sıfır üyeler içerebilir.</param>
+    /// <param name="amount">Uygulanacak tutar (≥ 0 beklenir; eksi 0 sayılır).</param>
+    public static IReadOnlyList<DrawLeg> PlanDraw(Guid anchorId, IReadOnlyList<Member> draw, decimal amount)
+    {
+        var remaining = Math.Max(0m, amount);
+
+        var anchorBalance = draw.FirstOrDefault(m => m.WpfCustomerId == anchorId)?.Balance ?? 0m;
+        var fromAnchor = Math.Min(Math.Max(0m, anchorBalance), remaining);
+        var legs = new List<DrawLeg> { new(anchorId, fromAnchor) };
+        remaining -= fromAnchor;
+
+        var others = draw
+            .Where(m => m.WpfCustomerId != anchorId && m.Balance > 0m)
+            .OrderByDescending(m => m.Purged)
+            .ThenByDescending(m => m.Balance)
+            .ThenBy(m => m.WpfCustomerId.ToString("N"), StringComparer.Ordinal);
+        foreach (var member in others)
+        {
+            if (remaining <= 0m) break;
+            var take = Math.Min(member.Balance, remaining);
+            legs.Add(new DrawLeg(member.WpfCustomerId, take));
+            remaining -= take;
+        }
+
+        return legs;
+    }
+
     // ── Çekim grupları (§2, §3.2) ────────────────────────────────────────────
 
     /// <summary>Çapa ⇔ <c>DrawGroupId IS NULL OR DrawGroupId = Id</c>. Eski tek bacaklı satır kendi çapasıdır.</summary>
