@@ -27,11 +27,13 @@ public sealed class PersonBalance
     private const string BalanceRowIndex = "IX_CustomerBalances_LicenseId_WpfCustomerId";
 
     private readonly LicenseDbContext _db;
+    private readonly CustomerIdResolver _customerIds;
     private readonly ILogger<PersonBalance> _log;
 
-    public PersonBalance(LicenseDbContext db, ILogger<PersonBalance> log)
+    public PersonBalance(LicenseDbContext db, CustomerIdResolver customerIds, ILogger<PersonBalance> log)
     {
         _db = db;
+        _customerIds = customerIds;
         _log = log;
     }
 
@@ -77,6 +79,155 @@ public sealed class PersonBalance
     /// </summary>
     public Task<bool> IsPoolModeAsync(Guid licenseId, CancellationToken ct) =>
         _db.Licenses.AsNoTracking().AnyAsync(l => l.Id == licenseId && l.PersonBalancePoolSince != null, ct);
+
+    // ── Çekim kümesi (§4.0) ──────────────────────────────────────────────────
+
+    /// <summary>409 kodu: kişinin hiçbir üyesi sunucuda yok — kesin; yeni açılmış müşteri bekletilmez (§4.0 kural 1).</summary>
+    public const string CodeNoBalance = "no-balance";
+
+    /// <summary>
+    /// 409 kodu (K2): sahip satırı sunucuda yok ya da WPF'in kişisi (W) sunucununkiyle (S) uyuşmuyor (§4.0 kural 1,
+    /// 3a, 3b). Bir gönderim + çekme turuyla kapanır (§6.1-b).
+    /// </summary>
+    public const string CodeCustomerNotSynced = "customer-not-synced";
+
+    /// <summary>
+    /// Çekim kümesi (spec 2026-10-11 §2, §4.0-4). <c>Draw</c> = P: WPF'te (W ∩ S)'nin canlıları ∪ S'nin silinmişleri,
+    /// panelde (K5) S'nin hepsi. <c>LockedNegatives</c> = S∖P'nin eksi bakiyeli üyeleri (sıfırlar yok sayılır; panelde
+    /// boş): para onlardan çekilmez ama havuza sayılır ve kilitlenir — görülmeyen borç havuzu açmaz (D3, §4.13). İki
+    /// liste de <c>Person.Members</c>'ın sırasında ("N" ordinal).
+    /// </summary>
+    /// <param name="AnchorId">a: isteğin asıl kaydı (çapanın satırı).</param>
+    /// <param name="Person">S(a), <see cref="MembersAsync"/>'ten.</param>
+    public sealed record DrawSet(
+        Guid AnchorId, Person Person, IReadOnlyList<Member> Draw, IReadOnlyList<Member> LockedNegatives)
+    {
+        /// <summary>Σ = Σ_P + Σ_{S∖P, Balance &lt; 0}. Kullanılabilir = max(0, Σ).</summary>
+        public decimal Pool => Draw.Sum(m => m.Balance) + LockedNegatives.Sum(m => m.Balance);
+    }
+
+    /// <param name="Code"><see cref="CodeNoBalance"/> ya da <see cref="CodeCustomerNotSynced"/>.</param>
+    /// <param name="RowIds">customer-not-synced'e yol açan satırlar, "N" ordinal sıralı (§5.5 günlüğü); no-balance'ta
+    /// boş.</param>
+    public sealed record DrawSetRejection(string Code, IReadOnlyList<Guid> RowIds);
+
+    /// <summary>Tam olarak biri dolu: <c>Set</c> ya da <c>Rejection</c>.</summary>
+    public sealed record DrawSetResult(DrawSet? Set, DrawSetRejection? Rejection);
+
+    /// <summary>
+    /// Havuz kipinde WPF preview ve apply'ın çekim kümesi P ve 409 kuralları — spec 2026-10-11 §4.0 kural 1–4.
+    /// W = <paramref name="memberIds"/> ∪ {a}, her Id asıl kayda çözülmüş; W'nin yalnız sunucuda var olan CANLI
+    /// üyeleri kullanılır, silinmişler S'den alınır (K3).
+    /// <list type="number">
+    /// <item>a'nın projeksiyonu yoksa: W'nin hiçbir Id'si de yoksa <see cref="CodeNoBalance"/> (kesin; apply bunu 409
+    /// döner, preview 200 <c>Balance = 0</c> — plan fark 19), en az biri varsa <see cref="CodeCustomerNotSynced"/>
+    /// (<c>RowIds</c> = [a]).</item>
+    /// <item>Sunucuda olmayan W Id'si atılır; W'nin silinmiş üyeleri yok sayılır.</item>
+    /// <item>(a) W'nin S'de olmayan canlı üyesi ya da (b) S'nin W'de olmayan, bakiyesi &gt; 0 canlı üyesi varsa
+    /// <see cref="CodeCustomerNotSynced"/> (<c>RowIds</c> = ikisinin birleşimi).</item>
+    /// <item><see cref="DrawSet"/>: P ve S∖P'nin eksileri.</item>
+    /// </list>
+    /// <para>Plan fark 5: <see cref="MembersAsync"/> "a sunucuda yok"u ayırt etmez (projeksiyon yoksa S = {a}); kural 1
+    /// ve 2'nin varlık ve silinmişlik bilgisi <see cref="KnownMembersAsync"/>'in tek sorgusundan gelir. Yalnız okur;
+    /// iki okuma arasında üyelik değişirse yazıcı (<c>DrawAsync</c>) üyeliği kayıttan önce yeniden okur.</para>
+    /// </summary>
+    /// <param name="anchorId">a — asıl kayıt olmalı (çağıran <see cref="CustomerIdResolver"/>'dan geçirir).</param>
+    public async Task<DrawSetResult> ResolveDrawSetAsync(
+        Guid licenseId, Guid anchorId, IReadOnlyCollection<Guid> memberIds, CancellationToken ct)
+    {
+        var known = await KnownMembersAsync(licenseId, anchorId, memberIds, ct);
+
+        // Kural 1: çapa yazılamaz (hareket projeksiyona FK). Hiçbir üye yoksa hiçbir üyede para da olamaz (bakiye
+        // satırı projeksiyona FK): kesin no-balance.
+        if (!known.ContainsKey(anchorId))
+            return new DrawSetResult(null, known.Count == 0
+                ? new DrawSetRejection(CodeNoBalance, [])
+                : new DrawSetRejection(CodeCustomerNotSynced, [anchorId]));
+
+        // Kural 2 + K3: sunucuda olmayan Id sözlükte yok; W'nin silinmişleri burada düşer.
+        var wLive = LiveIds(known);
+        var person = await MembersAsync(licenseId, anchorId, ct);
+
+        // Kural 3: W ile S'nin CANLI üyeleri. 3a S dışından, 3b S içinden gelir: iki küme ayrık.
+        var inPerson = person.Members.Select(m => m.WpfCustomerId).ToHashSet();
+        var notSynced = wLive.Where(id => !inPerson.Contains(id))
+            .Concat(person.Members
+                .Where(m => !m.Purged && m.Balance > 0m && !wLive.Contains(m.WpfCustomerId))
+                .Select(m => m.WpfCustomerId))
+            .OrderBy(id => id.ToString("N"), StringComparer.Ordinal)
+            .ToList();
+        if (notSynced.Count > 0)
+            return new DrawSetResult(null, new DrawSetRejection(CodeCustomerNotSynced, notSynced));
+
+        return new DrawSetResult(BuildDrawSet(anchorId, person, wLive), null);
+    }
+
+    /// <summary>
+    /// Panelin çekim kümesi (K5, §4.8, §4.9): P = S(a), eksiler dahil; <c>LockedNegatives</c> boş. Panel WPF üye
+    /// listesi taşımaz; 409 kuralı yok.
+    /// </summary>
+    /// <param name="anchorId">a — asıl kayıt (rota satırı ya da hedef hareketin satırı).</param>
+    public async Task<DrawSet> PersonDrawSetAsync(Guid licenseId, Guid anchorId, CancellationToken ct)
+    {
+        var person = await MembersAsync(licenseId, anchorId, ct);
+        return new DrawSet(anchorId, person, person.Members, []);
+    }
+
+    /// <summary>
+    /// Yeniden oynatmanın <c>RemainingBalance</c>'ı (§4.2; plan fark 18c): kayıtlı anahtar hiçbir zaman
+    /// <see cref="CodeCustomerNotSynced"/> almaz, bu yüzden kural 1 ve 3 UYGULANMAZ. <paramref name="memberIds"/> null
+    /// ya da boşsa max(0, Σ_S); değilse kural 2 ve 4'le kurulan kümenin max(0, Σ)'sı (kural 1 uygulanmaz: a sunucuda
+    /// yoksa S = {a} olur ve küme boş kalır → 0; kayıtlı anahtarda çapa hareketi projeksiyona FK olduğundan bu kol
+    /// pratikte oluşmaz).
+    /// </summary>
+    public async Task<decimal> PoolBalanceAsync(
+        Guid licenseId, Guid anchorId, IReadOnlyCollection<Guid>? memberIds, CancellationToken ct)
+    {
+        if (memberIds is null || memberIds.Count == 0)
+        {
+            var whole = await MembersAsync(licenseId, anchorId, ct);
+            return Math.Max(0m, whole.Members.Sum(m => m.Balance));
+        }
+
+        var known = await KnownMembersAsync(licenseId, anchorId, memberIds, ct);
+        var person = await MembersAsync(licenseId, anchorId, ct);
+        return Math.Max(0m, BuildDrawSet(anchorId, person, LiveIds(known)).Pool);
+    }
+
+    /// <summary>
+    /// W = <paramref name="memberIds"/> ∪ {a}, asıl kayda çözülmüş (kopya Id'si eski PC'den gelebilir); döner: W'nin
+    /// sunucuda projeksiyonu olan Id'si → silinmiş mi. TEK sorgu; sorgu süzgeci kopyaları gizler — girdiler asıl
+    /// kayda çözülmüş olduğundan doğru (plan fark 5).
+    /// </summary>
+    private async Task<Dictionary<Guid, bool>> KnownMembersAsync(
+        Guid licenseId, Guid anchorId, IReadOnlyCollection<Guid> memberIds, CancellationToken ct)
+    {
+        var canonical = await _customerIds.CanonicalOfAsync(licenseId, memberIds.Append(anchorId), ct);
+        var w = canonical.Values.Append(anchorId).Distinct().ToList();
+        return await _db.WpfCustomerProjections.AsNoTracking()
+            .Where(p => p.LicenseId == licenseId && w.Contains(p.Id))
+            .Select(p => new { p.Id, Purged = p.PurgedAt != null })
+            .ToDictionaryAsync(x => x.Id, x => x.Purged, ct);
+    }
+
+    /// <summary>W'nin sunucuda var olan canlı üyeleri: bilinmeyenler (kural 2) ve silinmişler (K3) düşer.</summary>
+    private static HashSet<Guid> LiveIds(IReadOnlyDictionary<Guid, bool> known) =>
+        known.Where(kv => !kv.Value).Select(kv => kv.Key).ToHashSet();
+
+    /// <summary>
+    /// Kural 4 (saf): P = (W ∩ S)'nin canlıları ∪ S'nin silinmişleri; S∖P'nin eksi bakiyeli üyeleri kilitlenen eksiler
+    /// (sıfırlar yok sayılır). Sıra <c>person.Members</c>'ınki.
+    /// </summary>
+    private static DrawSet BuildDrawSet(Guid anchorId, Person person, IReadOnlySet<Guid> wLive)
+    {
+        var draw = person.Members
+            .Where(m => m.Purged || wLive.Contains(m.WpfCustomerId))
+            .ToList();
+        var lockedNegatives = person.Members
+            .Where(m => !m.Purged && !wLive.Contains(m.WpfCustomerId) && m.Balance < 0m)
+            .ToList();
+        return new DrawSet(anchorId, person, draw, lockedNegatives);
+    }
 
     // ── Çekim grupları (§2, §3.2) ────────────────────────────────────────────
 
