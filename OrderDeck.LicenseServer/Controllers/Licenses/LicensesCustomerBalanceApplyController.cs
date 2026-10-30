@@ -206,7 +206,8 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     /// <param name="AppliedAmount">Grubun toplamı (<c>−Σ</c>, spec 2026-10-11 §4.3): çok bacaklı düşümde çapanın
     /// kendi payı 0 olabilir. Eski tek bacaklı satırda <c>−Amount</c>.</param>
-    /// <param name="PersonPool">Havuz kipinde true; S1'de hep false (WPF birleştirme notunda kullanır, §6.1-d).</param>
+    /// <param name="PersonPool">Lisans havuz kipindeyse (<c>PersonBalancePoolSince</c> dolu) true, satır kipinde
+    /// false (spec 2026-10-11 §4.3). WPF birleştirme notunda kullanır (§6.1-d).</param>
     public sealed record ScopeResponse(
         Guid TransactionId,
         decimal AppliedAmount,
@@ -257,16 +258,18 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         var owned = await OwnedLicenseModeAsync(licenseId, ct);
         if (owned is null) return NotFound();
-        var (mode, _) = owned.Value;
+        var (mode, pool) = owned.Value;
         // v0.9.10 bulduğu düşümü benimser ve toplam aynıysa önizleme ile
         // apply'ı hiç çağırmadan mesajı gönderir; kapı burada da olmalı.
+        // Havuz sürüm kapısı burada yok (plan fark 4): uç salt okunur.
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "scope");
 
         // Düşüm asıl kayıtta (A5b: hareketler birleştirmede taşınır, yenileri
-        // çözülmüş Id'yle yazılır).
+        // çözülmüş Id'yle yazılır). Ortak bakiye §4.3: yüklem iki kipte aynı
+        // (çapa düzeyinde); havuz kipinde yalnız PersonPool = true.
         var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, wpfCustomerId, ct);
-        var row = await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, ct);
+        var row = await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, pool, ct);
 
         return row is null ? NoContent() : Ok(row);
     }
@@ -285,9 +288,13 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// temsil eder (D5, grup tek işlemde geri alınır). Eski tek bacaklı satırda
     /// grup yalnız kendisidir; S2 çapasında <c>DrawGroupId = Id</c> olduğundan
     /// çapa toplamda bir kez sayılır.</para>
+    ///
+    /// <para><paramref name="personPool"/> yalnız yanıt bayrağıdır
+    /// (<see cref="ScopeResponse.PersonPool"/>); yüklemi değiştirmez. 409
+    /// <c>scope-has-deduction</c>'ın uzantıları onu taşımaz.</para>
     /// </summary>
     private Task<ScopeResponse?> LatestScopeDeductionAsync(
-        Guid licenseId, Guid canonicalCustomerId, string saleScope, CancellationToken ct) =>
+        Guid licenseId, Guid canonicalCustomerId, string saleScope, bool personPool, CancellationToken ct) =>
         _db.CustomerBalanceTransactions
             .AsNoTracking()
             .Where(t => t.LicenseId == licenseId
@@ -305,7 +312,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                     .Sum(g => g.Amount),
                 t.OriginalAmount ?? 0m,
                 t.CreatedAt,
-                false))
+                personPool))
             .FirstOrDefaultAsync(ct);
 
     // ── GET transactions/{id} (R6-02 durum ucu) ─────────────────────────────
@@ -373,12 +380,16 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// <param name="SaleScope">R4-03: satışın kalıcı kimliği
     /// (<c>"session:{id}"</c> | <c>"cumulative"</c> | <c>"legacy:{key}"</c>).
     /// Opsiyonel — eski istemciler göndermez, davranışları değişmez.</param>
+    /// <param name="MemberIds">Ortak bakiye §4.0: havuz kipinde kişinin üye Id'leri (WPF'in bildiği hâliyle);
+    /// satır kipinde okunmaz; eski istemci göndermez. Gövde alanı <c>memberIds</c>. Alanın yokluğu ile boş liste
+    /// aynı sayılır (plan fark 18f).</param>
     public sealed record ApplyRequest(
         Guid WpfCustomerId,
         decimal Amount,
         decimal ProductTotal,
         Guid? IdempotencyKey = null,
-        string? SaleScope = null);
+        string? SaleScope = null,
+        IReadOnlyList<Guid>? MemberIds = null);
 
     public sealed record ApplyResponse(
         Guid TransactionId,
@@ -416,7 +427,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         var owned = await OwnedLicenseModeAsync(licenseId, ct);
         if (owned is null) return NotFound();
-        var (mode, _) = owned.Value;
+        var (mode, pool) = owned.Value;
         // §6.5-3: bakiyenin her okumasından (oynatma dahil) önce.
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "apply");
@@ -429,7 +440,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // çağıran onun sonucunu görmemeli.
         if (req.IdempotencyKey is { } preKey)
         {
-            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, preKey, ct);
+            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, preKey, pool, ct);
             if (foreign) return NotFound();
             if (conflict) return ContentConflict();
             if (replay is not null) return Ok(replay);
@@ -490,13 +501,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         if (req.IdempotencyKey is { } key)
         {
-            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, key, ct);
+            // Satır kipinin yolu: oynatılan RemainingBalance asıl kaydın bakiyesi (havuz kipi bu yönteme girmez).
+            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, key, pool: false, ct);
             if (foreign) return NotFound();
             if (conflict) return ContentConflict();
             if (replay is not null) return Ok(replay);
         }
 
-        if (await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, ct) is { } existing)
+        // Satır kipinin yolu; yanıt bayrağı burada kullanılmaz (409 uzantıları PersonPool taşımaz).
+        if (await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, personPool: false, ct) is { } existing)
         {
             _log.LogInformation(
                 "customer-balance/apply: kapsamda geri alınmamış düşüm var, 409 scope-has-deduction "
@@ -604,7 +617,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 // tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
                 _db.ChangeTracker.Clear();
                 var (winner, _, conflict) = await LookupAsync(
-                    licenseId, req, canonicalId, req.IdempotencyKey.Value, ct);
+                    licenseId, req, canonicalId, req.IdempotencyKey.Value, pool: false, ct);
                 if (conflict) return (ContentConflict(), false);
                 if (winner is null) throw;
                 _log.LogWarning(
@@ -638,7 +651,11 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// <para><c>RemainingBalance</c> o anki gerçek bakiyedir (donmuş bir kopya
     /// değil): istemci bunu ekranda gösteriyor, eski bir değeri oynatmak
     /// operatöre yanlış bakiye gösterirdi. <c>AppliedAmount</c> ise ledger
-    /// satırından gelir — "ne kadar düştü" cevabı değişmemeli.</para>
+    /// satırından gelir — "ne kadar düştü" cevabı değişmemeli. Satır kipinde
+    /// asıl kaydın bakiyesi; havuz kipinde (<paramref name="pool"/>) o anki
+    /// havuz (spec 2026-10-11 §4.2): <c>memberIds</c> varsa kural 4'ün
+    /// <c>Σ</c>'sı, yoksa <c>S</c>'nin toplamı, 409 kuralları uygulanmadan
+    /// (plan fark 18c, <see cref="PersonBalance.PoolBalanceAsync"/>).</para>
     ///
     /// <para><b>Ortak bakiye (spec 2026-10-11 §4.2 "İdempotency ve A11"):</b>
     /// anahtar her zaman bir ÇAPANIN Id'sidir; bulunan satır bacaksa
@@ -651,8 +668,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// </summary>
     /// <param name="canonicalCustomerId">İstekteki müşteri Id'sinin asıl kaydı
     /// (A5b, <see cref="CustomerIdResolver"/>).</param>
+    /// <param name="pool">Lisans havuz kipinde mi; yalnız oynatılan
+    /// <c>RemainingBalance</c>'ı belirler. Foreign, A11 ve <c>−Σ</c> iki kipte aynı.</param>
     private async Task<(ApplyResponse? Replay, bool Foreign, bool ContentConflict)> LookupAsync(
-        Guid licenseId, ApplyRequest req, Guid canonicalCustomerId, Guid key, CancellationToken ct)
+        Guid licenseId, ApplyRequest req, Guid canonicalCustomerId, Guid key, bool pool, CancellationToken ct)
     {
         var tx = await _db.CustomerBalanceTransactions
             .AsNoTracking()
@@ -699,16 +718,19 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             return (null, false, true);
         }
 
-        // Kalan bakiye asıl kayıttan (kopyanın satırı birleştirmede 0'lanır).
-        var remaining = await _db.CustomerBalances
-            .AsNoTracking()
-            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalCustomerId)
-            .Select(b => (decimal?)b.Balance)
-            .FirstOrDefaultAsync(ct) ?? 0m;
+        // Satır kipi: kalan bakiye asıl kayıttan (kopyanın satırı birleştirmede 0'lanır).
+        // Havuz kipi: o anki havuz, 409 kuralları uygulanmadan — spec §4.2, plan fark 18c;
+        // kayıtlı anahtar hiçbir zaman customer-not-synced almaz.
+        var remaining = pool
+            ? await _person.PoolBalanceAsync(licenseId, canonicalCustomerId, req.MemberIds, ct)
+            : (await _db.CustomerBalances
+                .AsNoTracking()
+                .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalCustomerId)
+                .Select(b => (decimal?)b.Balance)
+                .FirstOrDefaultAsync(ct) ?? 0m);
 
         _log.LogInformation(
             "Bakiye uygulama sonucu tekrar oynatıldı (key={Key}, license={LicenseId})", key, licenseId);
-        // remaining satır kipinde bugünkü gibi asıl kaydın bakiyesi; havuz Σ'sı S2.
         return (new ApplyResponse(tx.Id, applied, remaining), false, false);
     }
 
