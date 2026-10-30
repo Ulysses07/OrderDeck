@@ -1016,7 +1016,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     {
         _metrics.BalanceBusy.Add(1, new KeyValuePair<string, object?>("endpoint", endpoint));
         // Ayırt edici satır çağıranda: DrawAsync/ReverseGroupAsync'in Busy kolunda servisin uyarısı (neden ve çapayla),
-        // servis dışı okuma kilitlenmesinde çağıranın kendi satırı (ReplayDeadlocked; panelde üyelik okuması). Burada
+        // servis dışı okuma kilitlenmesinde çağıranın kendi satırı (ReplayDeadlocked; panelde ReadDeadlocked). Burada
         // yalnız hangi ucun 503 döndüğü.
         _log.LogDebug(
             "customer-balance/{Endpoint}: 503 balance-busy (license={LicenseId})",

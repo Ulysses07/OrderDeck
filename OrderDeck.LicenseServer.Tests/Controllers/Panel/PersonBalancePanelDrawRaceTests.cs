@@ -13,6 +13,7 @@ using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.PersonBalanceTestKit;
+using PanelBalanceController = OrderDeck.LicenseServer.Controllers.Panel.PanelCustomerBalanceController;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
 
@@ -427,6 +428,10 @@ public sealed class PersonBalancePanelDrawRaceTests : IAsyncLifetime
         injected.Should().Be(1, "kanca üyelik okumasında ({0}) bir kez fırlatmalı", path);
         busy.Should().Be(((HttpStatusCode, string?))(HttpStatusCode.ServiceUnavailable, "balance-busy"),
             "üyelik okumasının 1205'i yeniden denensin (503); 500 değil");
+        _factory.Log.Entries.Count(e => e.Category == typeof(PanelBalanceController).FullName
+                && e.Message.Contains("üyelik okuması kilitlenme kurbanı (1205)", StringComparison.Ordinal)
+                && e.Message.Contains(target.ToString(), StringComparison.Ordinal))
+            .Should().Be(1, "servis bu kaynakta yazmaz; kaynağı ayıran tek satır denetleyicinin ({0})", path);
         (await TransactionCountAsync(kit)).Should().Be(before, "okuma her yazımdan önce: hiçbir şey yazılmadı");
 
         (await kit.PanelReverseAsync(route, target)).StatusCode.Should().Be(HttpStatusCode.OK,

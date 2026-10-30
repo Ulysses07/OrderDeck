@@ -383,7 +383,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             }
             catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
             {
-                return BalanceBusy(licenseId, "reverse");
+                return ReadDeadlocked(licenseId, target.Id, "üyelik okuması");
             }
             if (!group.Any(t => members.Contains(t.WpfCustomerId))) return NotFound();
         }
@@ -453,7 +453,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         }
         catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
         {
-            return BalanceBusy(licenseId, "reverse");
+            return ReadDeadlocked(licenseId, target.Id, "üyelik okuması");
         }
         if (!members.Contains(target.WpfCustomerId)) return NotFound();
 
@@ -522,7 +522,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
             {
                 // Okuma kilitlenme kurbanı (hiçbir şey yazılmadı): 500 değil, yeniden denensin.
-                return BalanceBusy(licenseId, "reverse");
+                return ReadDeadlocked(licenseId, targetId, "geri alındı mı okuması");
             }
             if (reversed) return Problem(title: "already-reversed", statusCode: 409);
         }
@@ -544,9 +544,26 @@ public sealed class PanelCustomerBalanceController : ControllerBase
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 503 <c>balance-busy</c> (spec §4.5, §4.13; iskelet farkı 12): servis yazımı üç denemede de kuramadı, hiçbir
-    /// şey yazılmadı. Uyarı satırı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü. Başlık ve
-    /// metin WPF denetleyicisinin <c>BalanceBusy</c>'siyle aynı.
+    /// Servisin korunan denemesinin dışındaki bir okuma (havuz kipinde iptalin üyelik okuması ya da
+    /// <c>Insufficient</c> sonrası "geri alındı mı") kilitlenme kurbanı (1205) oldu: hiçbir şey yazılmadı → 503
+    /// <c>balance-busy</c>, yeniden denensin (plan fark 18k). Servis bu kaynakta bir şey yazmadığı için ayırt edici
+    /// satır burada (WPF denetleyicisinin <c>ReplayDeadlocked</c>'ının ikizi).
+    /// </summary>
+    /// <param name="read">Hangi okuma; günlükte kaynağı ayırır.</param>
+    private ObjectResult ReadDeadlocked(Guid licenseId, Guid targetId, string read)
+    {
+        _log.LogInformation(
+            "panel balance/reverse: {Read} kilitlenme kurbanı (1205), 503 balance-busy "
+            + "(target={TargetId}, license={LicenseId})",
+            read, targetId, licenseId);
+        return BalanceBusy(licenseId, "reverse");
+    }
+
+    /// <summary>
+    /// 503 <c>balance-busy</c> (spec §4.5, §4.13; iskelet farkı 12): servis yazımı üç denemede de kuramadı ya da
+    /// servis dışı bir okuma kilitlenme kurbanı oldu; iki durumda da hiçbir şey yazılmadı. Ayırt edici satır çağıranda:
+    /// servisin Busy kolunda servisin uyarısı (neden ve çapayla), okuma kilitlenmesinde <see cref="ReadDeadlocked"/>;
+    /// burada yalnız hangi ucun 503 döndüğü. Başlık ve metin WPF denetleyicisinin <c>BalanceBusy</c>'siyle aynı.
     /// </summary>
     /// <param name="endpoint"><c>reverse</c> ya da <c>manual-adjustment</c>.</param>
     private ObjectResult BalanceBusy(Guid licenseId, string endpoint)

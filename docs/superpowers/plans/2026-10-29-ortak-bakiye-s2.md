@@ -5268,6 +5268,8 @@ yerine:
 
 - [ ] **Adım 4: `ApplyPoolAsync` ve `ScopeHasDeduction`'ı yaz**
 
+> **30.10.2026 notu:** Aşağıdaki kod Görev 7'nin ilk hâlidir. Son incelemeden sonra çekim sonrası dallar (`NoBalance`, `CustomerNotSynced`, `DuplicateKey`) ortak `ReplayWrittenKeyAsync` yardımcısından geçer, Lookup'taki 1205 ve havuz kipinde Apply'ın ön oynatmasındaki 1205 `ReplayDeadlocked` ile 503 olur (fark 18m, 18n; commit'ler `4a7f8a82`, `6a67d071`). Güncel hâl için koda bakın.
+
 Edit — `ApplyOncePerScopeAsync`'in belgesinin ilk iki satırı (bugün `:369-370`):
 
 ```csharp
@@ -10010,6 +10012,8 @@ MSG
 - Test (oluştur): `OrderDeck.LicenseServer.Tests/Controllers/Licenses/PersonBalanceDrawDeadlockTests.cs` (1205; emsal `Controllers/Licenses/PersonBalanceReversalDeadlockTests.cs:85-145`)
 - Kaynak dosyası değişmez.
 
+> **30.10.2026 notu:** Görev uygulandıktan sonraki son inceleme `PersonBalanceDrawRaceTests`'e üç test ekledi (`Ilk_denemede_ayni_anahtarli_rakip_yazdiysa_customer_not_synced_yerine_oynatilir`, `Cekimden_sonraki_Lookup_kilitlenme_kurbani_olursa_503_balance_busy`, `On_oynatmanin_bakiye_okumasi_kilitlenme_kurbani_olursa_503_balance_busy`). Bu üçü denetleyici düzeltmesine (fark 18n'nin 30.10 eki) karşı önce kırmızı yazıldı; Görev 7'nin aşağıda anılan ilk koduyla kırmızı kalırlar. Sınıf artık 11 test; aşağıdaki "8" ve "8 + 2" sayıları ilk hâlin sayısıdır.
+
 Kod değişikliği beklenmez: havuzlu apply'ın yarış davranışını Görev 4 (`DrawAsync`: kişi kilidi = `P`'nin satırlı üyelerine ve `S∖P` eksilerine jeton dokunuşu, `ChangeTracker.Clear()` ile baştan kurma, yakalama sırası `DbUpdateConcurrencyException` → `IsDuplicateReversal` → `IsDuplicateBalanceRow` → `IsDuplicateTransactionKey` → `IsDeadlock`, en çok `MaxAttempts` deneme, tek `LogWarning` + `Busy`), Görev 7 (`ApplyPoolAsync`: 2.+ denemede Lookup geri çağrısı, `DuplicateKey` → Lookup → kazananı oynat, `NoBalance` → anahtar varsa son bir Lookup (Görev 7 Not 6), `Busy` → 503) ve Görev 13 (`BalanceBusy` sayacı, `endpoint=apply`) kurar; bu görev onları gerçek SQL Server'da kanıtlar. InMemory'de jeton denetlenir ama `SaveChanges` atomik değil, tekil indeks ve komut kancası yok — bu yüzden hepsi burada. Yarışlar sırayla kurulur, zamanlamayla değil: kayıt öncesi `RaceSaveHook` (`Once(Func<DbContext,Task>)` aşırı yüklemesi kancanın HANGİ kayıtta tetiklendiğini kanıtlar; sayaç `ThrowingConcurrencyExceptionAsync`'te — fark 17), okuma öncesi `ReadQueryHook` (zincir: kayıt kancasının gövdesinden `Arm`). İki paralel test (TC1, TC2 sekizli) gerçek eşzamanlılığı sınar; belirlenimli kardeşleri dalı şansa bırakmaz (S1 emsali `PersonBalanceReversalRaceTests.cs:116-145`). Bir test kırmızı kalırsa önce sistematik hata ayıklama: `Expected` satırları hangi görevin sözleşmesine dayandığını söyler.
 
 **Not (spec ↔ kod) — bu görev:**
@@ -13344,7 +13348,7 @@ Bütün DB sorgularını **Burak koşar** (SA parolası okunmaz); çıktılarda 
    - Ayır onayı doğru dağılımı gösterir; Vazgeç ile çıkılır (W-havuz).
    - Yeni bir satırla Birleştir, hemen ardından Ödeme iste: önce "Henüz eşitlenmedi" çıkar, ≤ 60 sn sonra havuz gelir. Günlükte ve `orderdeck_balance_customer_not_synced_total`'da bir artış görünür.
    - `… person-balance verify --license <pilot-id>` → D4, D5, D6 ve yetim bacak 0, taban dışı D1 0. Ertesi gün `person-balance-verify` uyarısızdır; D3 satırı yoktur.
-   - Günlükte `client-update-required` ve `customer-not-synced` sayıları, `/metrics`'te dört sayaç izlenir. `orderdeck_balance_busy_total` kişi kilidinin çakışma sıklığını gösterir: üç denemesi tükenen yazımları ve denemenin dışındaki bir okumanın kilitlenme kurbanı olduğu istekleri sayar (iki durumda da hiçbir şey yazılmadı; ikincisi günlükte `oynatma Lookup'ı kilitlenme kurbanı (1205)` satırıyla ayrılır, panelde üyelik okuması). Seyrek olması beklenir (§4.13).
+   - Günlükte `client-update-required` ve `customer-not-synced` sayıları, `/metrics`'te dört sayaç izlenir. `orderdeck_balance_busy_total` kişi kilidinin çakışma sıklığını gösterir: üç denemesi tükenen yazımları ve denemenin dışındaki bir okumanın kilitlenme kurbanı olduğu istekleri sayar (iki durumda da hiçbir şey yazılmadı). İkincisi günlükte Information satırıyla ayrılır: apply'da `oynatma Lookup'ı kilitlenme kurbanı (1205)`, panel iptalinde `üyelik okuması kilitlenme kurbanı (1205)` ya da `geri alındı mı okuması kilitlenme kurbanı (1205)`. Birincisinde servisin uyarısı vardır. Seyrek olması beklenir (§4.13).
 
 9. **Adım 9: öbür lisanslar tek tek.** Her lisansta sırasıyla:
    - Tabanı incelenmemişse önce §7.1 adım 4: inceleme ve `--mark-reviewed --license <id> --apply`.
@@ -13472,7 +13476,7 @@ Satır numaraları bu turdaki eklemelerden sonraki parçalara göredir.
   - Görev 16 `CustomerBalanceConcurrencyTests`'in dört `[Fact]`'ini `[Theory] (pool: false/true)` yapar. Spec §8.2-14 bunu ister; `pool: false` dalı bugünkü testin aynısıdır ve iddialar değişmez.
 - TDD istisnaları bilinçlidir:
   - Görev 7'nin §7.5 testi kurulum elle tohumlandığı için Adım 2'de de yeşildir.
-  - Görev 14, 15 ve 16 üretim koduna dokunmaz. Yalnız kanıt testi ekler (16 ayrıca var olan dört testi iki kipe çevirir); ilk koşuda PASS beklenir.
+  - Görev 14, 15 ve 16 üretim koduna dokunmaz. Yalnız kanıt testi ekler (16 ayrıca var olan dört testi iki kipe çevirir); ilk koşuda PASS beklenir. *(30.10.2026: son inceleme Görev 14'ün sınıfına denetleyici düzeltmesiyle birlikte üç test ekledi, sınıf 11 test; fark 18n.)*
 - Görev 6 → 7 arasında, yalnız bayrak açıkken görülen bir ara durum var (Görev 6 Not 1). Aynı PR'da gider ve sahaya çıkmaz.
 - Bağımlılıklar sırayla karşılanıyor:
   - Görev 13'ün sayaçları 9 ve 10'un yardımcılarına dayanır.
@@ -13496,7 +13500,8 @@ Satır numaraları bu turdaki eklemelerden sonraki parçalara göredir.
    - S1'den gelen grup okuması (`ReverseDrawGroupAsync`'in başı, `CustomerBalanceTransactions`) iki kipte aynen korumasız kalır: bayrak boşken yol S1'in birebir aynısı olmalı.
 5. **Testsiz yollar (davranış tanımlı, otomatik kanıt yok):**
    - `busy`'nin `panel/reverse` ve WPF `reverse` etiketleri.
-   - Fark 18m: PK yarışında kazanan bulunamazsa `InvalidOperationException` (500; satır yolunun `throw;`'u da 500).
+   - Fark 18m: PK yarışında kazanan bulunamazsa `InvalidOperationException` (500; satır yolunun `throw;`'u da 500). 30.10 ekiyle aynı dalda foreign → 404 ve Lookup 1205 → 503 de testsiz; ikisi `ReplayWrittenKeyAsync` yardımcısından geçer ve o yardımcının 1205 kolu `NoBalance` dalında testli.
+   - Panel iptalinin `Insufficient` sonrası "geri alındı mı" okumasının 1205 kolu (`ReadDeadlocked`, `geri alındı mı okuması`); üyelik okuması kolu testli.
    - Fark 18f'nin satır kipi farkı ise artık iki tarafta da testli (R19).
 6. **`PersonBalanceTestKit.PoolUserAgent`** (Görev 1) hiçbir görevde kullanılmıyor. Public sabit olduğu için uyarı üretmez; istenirse Görev 1'den çıkarılabilir.
 7. **Spec §4.0-1 notu — kapandı.** Spec, planla aynı commit'te güncellendi: §4.0-1'in kesin kolu "apply'da 409 `no-balance`, preview'da 200 `Balance = 0`, `PersonPool = true` (K7)", §8.3'ün preview maddesi aynı biçimde, §10'a sahip kararı K7 (2026-10-29) eklendi.
