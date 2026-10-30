@@ -2,6 +2,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync.Commands;
 
 namespace OrderDeck.LicenseServer.Services.CustomerSync;
 
@@ -9,11 +10,12 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// Ortak bakiye (kişi havuzu) — spec 2026-10-11 §4.0. Defter satır başına kalır; havuz okumada toplanır, çekim çok
 /// bacaklı yazılır (S2). Bu dosyanın VARLIĞI deploy README'nin "S1 tabanı" kontrolüdür.
 ///
-/// <para><b>S1 (bu sınıf):</b> kişi (<see cref="MembersAsync"/>), çekim grubu okuyucuları (<see cref="IsAnchor"/>,
-/// <see cref="AnchorOfAsync"/>, <see cref="GroupSumAsync"/>), grup geri alması ve toplanmış liste. S1 kip bayrağını
-/// OKUMAZ ve çok bacaklı çekim YAZMAZ — para davranışı değişmez; S2'nin biçimini yalnız okur ve geri alır
-/// (genişlet/daralt). <b>S2:</b> <see cref="IsPoolModeAsync"/> (kip bayrağını okur), <c>ResolveDrawSetAsync</c>,
-/// <c>PlanDraw</c>, <c>DrawAsync</c>.</para>
+/// <para><b>S1:</b> kişi (<see cref="MembersAsync"/>), çekim grubu okuyucuları (<see cref="IsAnchor"/>,
+/// <see cref="AnchorOfAsync"/>, <see cref="GroupSumAsync"/>), grup geri alması ve toplanmış liste; S2'nin biçimini
+/// okur ve geri alır (genişlet/daralt). <b>S2:</b> kip bayrağı (<see cref="IsPoolModeAsync"/>), çekim kümesi
+/// (<see cref="ResolveDrawSetAsync"/>, <see cref="PersonDrawSetAsync"/>), plan (<see cref="PlanDraw"/>) ve çok bacaklı
+/// çekim yazımı (<see cref="DrawAsync"/>; kişi kilidi, üyeliğin ikinci okuması, baştan kurma). <see cref="DrawAsync"/>'i
+/// yalnız havuz kipindeki uçlar çağırır: kip kapalı lisansta para davranışı S1'deki gibidir.</para>
 /// </summary>
 public sealed class PersonBalance
 {
@@ -25,6 +27,9 @@ public sealed class PersonBalance
     public const int MaxAttempts = 3;
 
     private const string BalanceRowIndex = "IX_CustomerBalances_LicenseId_WpfCustomerId";
+
+    /// <summary>Hareketin PK'sı (göç <c>20260602125823_AddCustomerBalance</c>): çapanın Id'si istemcinin anahtarıdır.</summary>
+    private const string TransactionPrimaryKey = "PK_CustomerBalanceTransactions";
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
@@ -275,6 +280,297 @@ public sealed class PersonBalance
         }
 
         return legs;
+    }
+
+    // ── Çekim (§4.2, §4.8, §4.9, §4.13) ──────────────────────────────────────
+
+    /// <summary>
+    /// Tutar kuralı. <c>UpToPool</c> — WPF apply (ve ileride banka): <c>Σ ≤ 0</c> → <c>NoBalance</c>,
+    /// <c>applied = min(Requested, Σ)</c>. <c>AllOrNothing</c> — panel K5 (elle eksi, artı hareketin iptali):
+    /// <c>max(0, Σ) &lt; Requested</c> → <c>Insufficient</c>, kısmi çekim yok (spec §4.8, §4.9).
+    /// </summary>
+    public enum DrawAmountRule { UpToPool, AllOrNothing }
+
+    /// <summary>Bir çekim (spec §4.2 adım 5, §3.2 satır biçimleri; K5 §4.8, §4.9).</summary>
+    /// <param name="AnchorRowId">Çapanın satırı (a), asıl kayıt: WPF'te istekteki satır, panelde rota satırı ya da
+    /// iptal edilen hareketin satırı.</param>
+    /// <param name="AnchorTransactionId">Çapanın Id'si = grubun <c>DrawGroupId</c>'si (tek bacaklıda da).</param>
+    /// <param name="AnchorIdIsIdempotencyKey">true: Id istemcinin anahtarı; PK ihlali <c>DuplicateKey</c> döner, çağıran
+    /// kazananı oynatır. false: sunucunun ürettiği Id; PK ihlali yakalanmaz.</param>
+    /// <param name="Requested">Çekilecek tutar, &gt; 0 ve en çok 2 ondalık (apply: <c>min(Amount, ProductTotal)</c>,
+    /// ikisi de <c>invalid-money-scale</c> ile doğrulanmış; K5: <c>|tutar|</c>). Kuruş altı tutar
+    /// <see cref="ArgumentOutOfRangeException"/> atar: <c>decimal(18,2)</c> bacağın <c>Amount</c>'unu ve satırın
+    /// bakiyesini ayrı ayrı yuvarlar, D1 bozulurdu.</param>
+    /// <param name="MemberIds">WPF'in üye listesi (W): dolu → <see cref="ResolveDrawSetAsync"/>; null →
+    /// <see cref="PersonDrawSetAsync"/> (panel, P = S).</param>
+    /// <param name="OriginalAmount">Yalnız çapaya yazılır (§3.2, D4); <paramref name="SaleScope"/>,
+    /// <paramref name="Reason"/> ve <paramref name="ReversesTransactionId"/> da öyle.</param>
+    /// <param name="ScopeLockResource">Dolu → her deneme kendi işlemini açar ve <c>SalesCommandLock</c>'u alır (kapsam
+    /// kuralı, satış senkronu §6.6; plan fark 7). <c>SalesCommandRejection</c> çağırana yükselir.</param>
+    public sealed record DrawRequest(
+        Guid LicenseId, Guid AnchorRowId, Guid AnchorTransactionId, bool AnchorIdIsIdempotencyKey, string Kind,
+        decimal Requested, DrawAmountRule Rule, IReadOnlyCollection<Guid>? MemberIds, decimal? OriginalAmount,
+        string? SaleScope, string? Reason, Guid? ReversesTransactionId, Guid CreatedByCustomerId, string? ScopeLockResource);
+
+    /// <summary>
+    /// <c>Stopped</c>: geri çağrı durdurdu (ör. Lookup kaydı buldu). <c>NoBalance</c>: kural 1'in kesin kolu ya da
+    /// UpToPool'da <c>Σ ≤ 0</c>. <c>CustomerNotSynced</c>: kümenin kural 1/3a/3b reddi ya da kural 3b'nin izlenen
+    /// satırlarla taze denetimi (S∖P'nin eksi üyesi artıya geçmiş). <c>AlreadyReversed</c>: N01 ihlali (çekim türü
+    /// iptal). <c>DuplicateKey</c>: aynı anahtarla yarış (PK). <c>Busy</c>: <see cref="MaxAttempts"/> denemede
+    /// kurulamadı (503 <c>balance-busy</c>).
+    /// </summary>
+    public enum DrawStatus
+    {
+        Drawn, Stopped, NoBalance, NothingToApply, Insufficient, CustomerNotSynced, AlreadyReversed, DuplicateKey, Busy,
+    }
+
+    /// <param name="Applied">Bütün bacakların toplamı (&gt; 0 yalnız <c>Drawn</c>'da).</param>
+    /// <param name="Pool">Planın Σ'sı, izlenen satırlardan, eksiler dahil (§4.0-4); Σ kurulmadıysa 0.</param>
+    /// <param name="Legs">Yazılan hareket satırı sayısı, çapa dahil (<c>Drawn</c> dışında 0).</param>
+    /// <param name="RejectedRowIds">Yalnız <c>CustomerNotSynced</c>'te dolu (§5.5 günlüğü, Görev 5).</param>
+    public sealed record DrawResult(
+        DrawStatus Status, Guid AnchorTransactionId, decimal Applied, decimal Pool, int Legs, IReadOnlyList<Guid> RejectedRowIds);
+
+    /// <summary>
+    /// Havuz kipindeki bütün para çeken yazımların tek yolu (spec §4.2 adım 1–7; K5 §4.8, §4.9): WPF apply, panel elle
+    /// eksi ve artı hareketin iptali (ileride banka). Para yalnız P'den çekilir; S∖P'nin eksileri havuza sayılır ve
+    /// kilitlenir, çekilmez (D3). Plan <see cref="PlanDraw"/>'dan; yazım tek <c>SaveChanges</c> (§3.2: ortak
+    /// <c>CreatedAt</c>, açıklama/kapsam/iptal bağı yalnız çapada, tek bacaklıda da <c>DrawGroupId = Id</c>).
+    ///
+    /// <para><b>Deneme</b> (her biri baştan; 2.+ denemede <c>ChangeTracker.Clear()</c>): kapsam kilidi (varsa, kendi
+    /// işleminde) → <paramref name="beforeAttempt"/> (çağıranın Lookup'ı ve kapsam yüklemi; true → <c>Stopped</c>) →
+    /// çekim kümesi → P ve S∖P eksilerinin bakiye satırları İZLENEN nesneler olarak (tek sorgu) → <b>üyeliğin ikinci
+    /// okuması</b> (S(a) ve numara; fark → baştan, deneme sayılır — §4.2-2, §4.11, plan fark 18a) → kural 3b izlenen
+    /// satırlarla (S∖P'nin eksi üyesi artıya geçtiyse <c>CustomerNotSynced</c>, §4.0-3b) → Σ izlenen satırlardan →
+    /// tutar kuralı → plan → yazım. Çapanın bakiye satırı yoksa 0 ile açılır (§4.2-5, §4.12).</para>
+    ///
+    /// <para><b>Kişi kilidi (M6, §4.13):</b> çekilmeyen her izlenen satırın (P'nin satırlı üyeleri, S∖P'nin eksileri,
+    /// 0 çekilen çapa) <c>UpdatedAt</c>'i "değişti" işaretlenir; değeri <c>StampCustomerBalanceVersions</c> ilerletir.
+    /// Aynı kişiye eşzamanlı iki çekimden biri jetonda çakışır ve taze planla baştan kurulur.</para>
+    ///
+    /// <para><b>Baştan kurma:</b> jeton çakışması, bakiye satırı açma yarışı, kilitlenme kurbanlığı (1205, okumalar
+    /// dahil — <see cref="IsDeadlock"/>) ve üyelik değişimi; en çok <see cref="MaxAttempts"/> deneme, sonra
+    /// <c>Busy</c> ve TEK uyarı satırı. N01 ihlali → <c>AlreadyReversed</c>; istemci anahtarının PK ihlali →
+    /// <c>DuplicateKey</c>. "Yeniden yükle, deltayı yeniden uygula" çok satırlı kayıtta yanlıştır (M12).</para>
+    ///
+    /// <para>Çağıran DbContext'te izlenen değişiklik bırakmamalı (izleyici denemeler arasında temizlenir) ve çağırmadan
+    /// önce izleyiciye bir şey eklememeli: izlenen bir bakiye satırı yükleme sorgusunda tazelenmezdi.</para>
+    ///
+    /// <para>Çağıran açık bir işlem tutmamalı (tutarsa <see cref="InvalidOperationException"/>): kapsam kuralında
+    /// deneme kendi işlemini açar; 1205 bütün işlemi düşürür, dıştaki bir işlemde yeniden denemek yanlış olurdu
+    /// (çağıranın önceki yazımları sessizce geri alınır ya da sonraki komut 3930 alır).</para>
+    /// </summary>
+    /// <param name="beforeAttempt">(deneme numarası 1'den, ct): kilitten SONRA, okumalardan ÖNCE her denemede.</param>
+    public async Task<DrawResult> DrawAsync(
+        DrawRequest request, Func<int, CancellationToken, Task<bool>>? beforeAttempt, CancellationToken ct)
+    {
+        // Ön koşullar; ikisi de bugünkü hiçbir çağıranda tutmaz (apply tutarı doğrular, uçlar işlem açmaz), savunmadır.
+        // InMemory'de CurrentTransaction her zaman null.
+        if (_db.Database.CurrentTransaction is not null)
+            throw new InvalidOperationException("DrawAsync açık bir işlem içinde çağrılamaz.");
+        if (decimal.Round(request.Requested, 2) != request.Requested)
+            throw new ArgumentOutOfRangeException(nameof(request), "Requested kuruş hassasiyetini aşamaz.");
+
+        for (var attempt = 1; ; attempt++)
+        {
+            if (attempt > 1) _db.ChangeTracker.Clear();
+
+            // try denemenin kilidini, geri çağrısını ve OKUMALARINI da kapsar: kilitlenme kurbanı bir okuma da olabilir
+            // (§4.2-6 S2 notu; S1'in grup geri almasında görüldü). Okumalar yazmaz; yeniden denemek güvenli.
+            string retryReason;
+            try
+            {
+                // Kapsam kuralı (satış senkronu §6.6) deneme başına kendi işleminde: kilitlenme kurbanı işlemi ve kilidi
+                // bütünüyle düşürür, aynı işlemde yeniden denemek yanlış olurdu (plan fark 7). Commit edilmeyen işlem
+                // atılınca geri alınır; kilit işleme aittir. InMemory'de işlem yok (kilit zaten no-op).
+                await using var tx = request.ScopeLockResource is not null && _db.Database.IsRelational()
+                    ? await _db.Database.BeginTransactionAsync(ct)
+                    : null;
+                if (tx is not null && request.ScopeLockResource is { } resource)
+                    await SalesCommandLock.AcquireAsync(_db, resource, SalesCommandLock.DefaultTimeout, ct);
+
+                if (beforeAttempt is not null && await beforeAttempt(attempt, ct))
+                    return Rejected(DrawStatus.Stopped, request, 0m);
+
+                var resolved = request.MemberIds is { } memberIds
+                    ? await ResolveDrawSetAsync(request.LicenseId, request.AnchorRowId, memberIds, ct)
+                    : new DrawSetResult(await PersonDrawSetAsync(request.LicenseId, request.AnchorRowId, ct), null);
+                if (resolved.Rejection is { } rejection)
+                    // Code ∈ {CodeNoBalance, CodeCustomerNotSynced} (Görev 2).
+                    return rejection.Code == CodeCustomerNotSynced
+                        ? new DrawResult(DrawStatus.CustomerNotSynced, request.AnchorTransactionId, 0m, 0m, 0, rejection.RowIds)
+                        : Rejected(DrawStatus.NoBalance, request, 0m);
+                var set = resolved.Set ?? throw new InvalidOperationException("Çekim kümesi ne küme ne ret döndü.");
+
+                // §4.2-2: P'nin ve S∖P'nin eksi üyelerinin bakiye satırları izlenen nesneler olarak, TEK sorguda.
+                // AsTracking: bağlamın varsayılanı ne olursa olsun jeton dokunuşu ancak izlenen girdide UPDATE olur.
+                var ids = set.Draw.Concat(set.LockedNegatives).Select(m => m.WpfCustomerId)
+                    .Append(request.AnchorRowId).Distinct().ToList();
+                var rows = await _db.CustomerBalances.AsTracking()
+                    .Where(b => b.LicenseId == request.LicenseId && ids.Contains(b.WpfCustomerId))
+                    .ToDictionaryAsync(b => b.WpfCustomerId, ct);
+
+                // Üyeliğin ikinci okuması (§4.2-2, §4.11): üyelik okuması ile bakiye yüklemesi arasında kaydedilen bir
+                // ayırma burada görünür; bundan sonra kaydedilen ayırmayı kanca (jeton) yakalar.
+                var again = await MembersAsync(request.LicenseId, request.AnchorRowId, ct);
+                if (MembershipChanged(set.Person, again))
+                {
+                    retryReason = "üyelik değişti";
+                }
+                else
+                {
+                    // Kural 3b taze veriyle (§4.0-3b): S∖P'nin izlemesiz okumada eksi olan bir üyesi, iki okuma arasında
+                    // commit eden bir iadeyle artıya geçmiş olabilir. İzlenen jeton iade sonrasınındır, yani yazım
+                    // iadeden SONRA sıralanır; o sırada o para W'de görülmeyen paradır → 409, hiçbir şey yazılmaz.
+                    // Yok sayıp çekmek ya da Σ ≤ 0'da kesin NoBalance dönmek WPF'e MarkNoBalance yazdırırdı. Yalnız
+                    // WPF yolunda olur (panelde LockedNegatives boş). İzlenen yüklemeden SONRA gelen iadeyi jeton yakalar.
+                    var nowPositive = set.LockedNegatives
+                        .Where(m => rows.TryGetValue(m.WpfCustomerId, out var b) && b.Balance > 0m)
+                        .Select(m => m.WpfCustomerId)
+                        .OrderBy(id => id.ToString("N"), StringComparer.Ordinal)
+                        .ToList();
+                    if (nowPositive.Count > 0)
+                        return new DrawResult(
+                            DrawStatus.CustomerNotSynced, request.AnchorTransactionId, 0m, 0m, 0, nowPositive);
+
+                    // Σ izlenen satırlardan (kümenin izlemesiz okuması bayat olabilir). S∖P'nin üyesi 0'a indiyse
+                    // havuza girmez; satırı yine izlenir ve jetonu dokunulur.
+                    var draw = set.Draw
+                        .Select(m => m with { Balance = rows.TryGetValue(m.WpfCustomerId, out var b) ? b.Balance : 0m })
+                        .ToList();
+                    var locked = set.LockedNegatives
+                        .Sum(m => rows.TryGetValue(m.WpfCustomerId, out var b) ? Math.Min(0m, b.Balance) : 0m);
+                    var pool = draw.Sum(m => m.Balance) + locked;
+
+                    decimal applied;
+                    if (request.Rule == DrawAmountRule.UpToPool)
+                    {
+                        if (pool <= 0m) return Rejected(DrawStatus.NoBalance, request, pool);
+                        applied = Math.Min(request.Requested, pool);
+                    }
+                    else
+                    {
+                        if (Math.Max(0m, pool) < request.Requested) return Rejected(DrawStatus.Insufficient, request, pool);
+                        applied = request.Requested;
+                    }
+                    if (applied <= 0m) return Rejected(DrawStatus.NothingToApply, request, pool);
+
+                    var legs = PlanDraw(request.AnchorRowId, draw, applied);
+                    StageDraw(request, rows, legs, DateTimeOffset.UtcNow);
+                    await _db.SaveChangesAsync(ct);
+                    if (tx is not null) await tx.CommitAsync(ct);
+
+                    if (legs.Count > 1)
+                        _log.LogInformation(
+                            "Ortak bakiye: çok bacaklı çekim yazıldı ({Legs} bacak, license={LicenseId}, anchor={AnchorId})",
+                            legs.Count, request.LicenseId, request.AnchorTransactionId);
+                    return new DrawResult(DrawStatus.Drawn, request.AnchorTransactionId, applied, pool, legs.Count, []);
+                }
+            }
+            // Sıra önemli: DbUpdateConcurrencyException, DbUpdateException'dan türer (plan fark 9).
+            catch (DbUpdateConcurrencyException)
+            {
+                retryReason = "jeton çakışması";
+            }
+            catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
+            {
+                // Çekim türü iptalde N01 hakem: eşzamanlı ikinci iptal bütün bacaklarıyla geri alındı.
+                _db.ChangeTracker.Clear();
+                return Rejected(DrawStatus.AlreadyReversed, request, 0m);
+            }
+            catch (DbUpdateException ex) when (IsDuplicateBalanceRow(ex))
+            {
+                // Çapanın satırını eşzamanlı biri açtı (işlem bütünüyle geri alındı).
+                retryReason = "bakiye satırı açma yarışı";
+            }
+            catch (DbUpdateException ex) when (request.AnchorIdIsIdempotencyKey && IsDuplicateTransactionKey(ex))
+            {
+                // Aynı anahtarla yarış: bütün bacaklar geri alındı; kazananı çağıran oynatır (§4.2-6).
+                _db.ChangeTracker.Clear();
+                return Rejected(DrawStatus.DuplicateKey, request, 0m);
+            }
+            // Exception, DbUpdateException değil: varsayılan yürütme stratejisi 1205'i sarar, satır okunurken gelen
+            // 1205 çıplak gelir (bkz. IsDeadlock).
+            catch (Exception ex) when (IsDeadlock(ex))
+            {
+                retryReason = "kilitlenme (1205)";
+            }
+
+            // Hiçbir şey yazılmadı; plan taze okumayla baştan kurulur (döngü başı izleyiciyi temizler).
+            if (attempt >= MaxAttempts)
+            {
+                _db.ChangeTracker.Clear();
+                // balance-busy'nin TEK uyarı satırı (denetleyiciler yalnız Debug yazar).
+                _log.LogWarning(
+                    "Ortak bakiye: çekim {Attempts} denemede kurulamadı, son neden: {Reason}; balance-busy (license={LicenseId}, anchor={AnchorId})",
+                    MaxAttempts, retryReason, request.LicenseId, request.AnchorTransactionId);
+                return Rejected(DrawStatus.Busy, request, 0m);
+            }
+            _log.LogInformation(
+                "Ortak bakiye: çekim {Attempt}. denemede kurulamadı ({Reason}), baştan kuruluyor (license={LicenseId}, anchor={AnchorId})",
+                attempt, retryReason, request.LicenseId, request.AnchorTransactionId);
+        }
+    }
+
+    private static DrawResult Rejected(DrawStatus status, DrawRequest request, decimal pool) =>
+        new(status, request.AnchorTransactionId, 0m, pool, 0, []);
+
+    /// <summary>
+    /// Üyeliğin ikinci okuması farklı mı: a'nın numarası (ordinal) ya da <c>(WpfCustomerId, Purged)</c> kümesi.
+    /// Silinmişlik de karşılaştırılır: K3'ün silinmiş üyesi P'ye silinmişliği yüzünden girer.
+    /// </summary>
+    private static bool MembershipChanged(Person before, Person after) =>
+        !string.Equals(before.GroupId, after.GroupId, StringComparison.Ordinal)
+        || !before.Members.Select(m => (m.WpfCustomerId, m.Purged)).ToHashSet()
+            .SetEquals(after.Members.Select(m => (m.WpfCustomerId, m.Purged)));
+
+    /// <summary>
+    /// Planı izleyiciye yazar (§3.2, §4.2-5): ilk bacak her zaman çapadır (<see cref="PlanDraw"/>). Çekilen satırın
+    /// bakiyesi düşer; çekilmeyen her izlenen satıra jeton dokunuşu (kişi kilidi). Çapanın satırı yoksa 0 ile açılır:
+    /// eklenen satır kendi değeriyle yazılır, tekil indeks yarışı <c>IsDuplicateBalanceRow</c> ile baştan kurulur.
+    /// </summary>
+    private void StageDraw(
+        DrawRequest request, IReadOnlyDictionary<Guid, CustomerBalance> rows, IReadOnlyList<DrawLeg> legs,
+        DateTimeOffset now)
+    {
+        if (!rows.ContainsKey(request.AnchorRowId))
+            _db.CustomerBalances.Add(new CustomerBalance
+            {
+                Id = Guid.NewGuid(), LicenseId = request.LicenseId, WpfCustomerId = request.AnchorRowId,
+                Balance = 0m, UpdatedAt = now,
+            });
+
+        var drawn = new HashSet<Guid>();
+        for (var i = 0; i < legs.Count; i++)
+        {
+            var leg = legs[i];
+            var isAnchor = i == 0;
+            _db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = isAnchor ? request.AnchorTransactionId : Guid.NewGuid(),
+                LicenseId = request.LicenseId,
+                WpfCustomerId = leg.WpfCustomerId,
+                Amount = -leg.Amount,
+                Kind = request.Kind,
+                OriginalAmount = isAnchor ? request.OriginalAmount : null,
+                SaleScope = isAnchor ? request.SaleScope : null,
+                Reason = isAnchor ? request.Reason : null,
+                ReversesTransactionId = isAnchor ? request.ReversesTransactionId : null,
+                DrawGroupId = request.AnchorTransactionId,
+                CreatedByCustomerId = request.CreatedByCustomerId,
+                CreatedAt = now,
+            });
+            // Yalnız çapa 0 olabilir; > 0 çekilen satırın izlenen bakiyesi > 0'dır, yani satırı yüklüdür.
+            if (leg.Amount == 0m) continue;
+            var row = rows[leg.WpfCustomerId];
+            row.Balance -= leg.Amount;
+            row.UpdatedAt = now;
+            drawn.Add(leg.WpfCustomerId);
+        }
+
+        foreach (var (id, row) in rows)
+            if (!drawn.Contains(id))
+                _db.Entry(row).Property(b => b.UpdatedAt).IsModified = true;
     }
 
     // ── Çekim grupları (§2, §3.2) ────────────────────────────────────────────
@@ -579,6 +875,16 @@ public sealed class PersonBalance
         ex.InnerException is SqlException sql
         && sql.Number is 2601 or 2627
         && sql.Message.Contains(BalanceRowIndex, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Aynı anahtarla yarış: hareketin PK'sı (çapa = istemcinin anahtarı). Genel <c>DbUpdateException</c> süzgeci
+    /// yetmez: havuz yazımında bakiye satırı açma yarışı ve N01 ihlali de <c>DbUpdateException</c>'dır, onlar oynatmaya
+    /// değil yeniden denemeye ve <c>already-reversed</c>'e gider (plan fark 9).
+    /// </summary>
+    public static bool IsDuplicateTransactionKey(DbUpdateException ex) =>
+        ex.InnerException is SqlException sql
+        && sql.Number is 2601 or 2627
+        && sql.Message.Contains(TransactionPrimaryKey, StringComparison.Ordinal);
 
     /// <summary>
     /// SQL Server kilitlenme kurbanı (1205): işlem bütünüyle geri alındı, yeniden kurmak güvenli. 1205 geçici bir hata
