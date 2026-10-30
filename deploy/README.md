@@ -171,6 +171,19 @@ SalesSync__ScrubOrderTextOnPurge=true
 # olmalı; 0 ya da eksi değerle sunucu açılmaz.
 SalesSync__ForceEndSilenceMinutes=15
 
+# Ortak bakiye (spec 2026-10-11 §7.2). docker-compose.yml'de listeli.
+# Wh'nin (ortak bakiyenin WPF değişikliklerini — W-havuz — taşıyan ilk Velopack
+# sürümü) numarası. Wh yayımlanana kadar BOŞ kalır: boşken
+# `person-balance enable --apply` reddeder; havuz kipindeki bir lisansta WPF'in
+# preview'ı ve yeni apply'ı (kayıtlı anahtarın oynatması etkilenmez) 409
+# client-update-required döner (kapalı-hata, açılışta uyarı); WPF reverse ve
+# panel işlemleri etkilenmez. Wh yayımlanıp PC'ler güncellenince sürümü yaz ve
+# `docker compose up -d license-server` (aşağıda "Ortak bakiye S2"). Değer
+# SalesSync__MinClientVersion'dan küçük olamaz (Wh ⊇ Ws; enable'ın 4. koşulu).
+# Etkin PC penceresi (PersonBalance:ActivePcWindowDays) burada YOK: kod
+# varsayılanı 14 gün.
+PersonBalance__MinClientVersion=
+
 # Optional: SMTP (set to real values when email features needed)
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
@@ -484,6 +497,86 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 >    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --mark-reviewed --apply`
 >    `--mark-reviewed --apply` lisansın incelenmemiş bütün taban satırlarını
 >    tek seferde işaretler ve S2 `enable`'ının 3. ön koşulunu açar.
+
+> **Ortak bakiye S2 — havuz kipi (spec 2026-10-11 §7.1 adım 5–9, §7.2, §7.4).**
+> S2 göç eklemez. Deploy anında hiçbir lisans havuz kipinde değildir
+> (`Licenses.PersonBalancePoolSince` boş; onu yalnız aşağıdaki `enable --apply`
+> yazar) ve satır kipinin davranışı değişmez. Otomatik geri alma (yukarıdaki
+> workflow) S1 imajına döner ve güvenlidir: S1 kip bayrağını okumaz, bütün
+> lisanslar satır kipine iner; S1 çok bacaklı geçmişi okur ve grup olarak geri
+> alır. Havuz verisi oluştuktan sonra elle S1'e dönmek de para kaybettirmez
+> (S1 bacakları okur, grup olarak geri alır ya da `not-reversible` ile
+> reddeder); S1 öncesine dönüş yukarıdaki S1 bloğunun kuralına tabidir.
+>
+> Havuz kipini YALNIZ CLI açar ve kapatır. Komutlar `--apply` olmadan kurudur:
+> koşulları ve yapılacak değişikliği basar, hiçbir şey yazmaz. Çıkış kodu
+> 0 = tamam, kuru ya da yapılacak bir şey yok; 1 = eşzamanlı değişiklik ya da
+> `--apply`'da koşul tutmuyor (hiçbir şey yazılmadı); 2 = kullanım,
+> yapılandırma ya da bilinmeyen lisans (`Tools/PersonBalanceCommand.cs`).
+>
+> Açılış (Burak; yayın penceresi dışında — Paz/Pzt/Çar/Per 20:00–01:00 TR
+> değil; prod'a yazım Burak'ın onayıyla):
+>
+> 1. W-havuz'u taşıyan **Wh** Velopack sürümü yayımlandı ve lisansın PC'leri
+>    güncellendi. Wh, satış senkronunun Ws değişikliklerini de taşır.
+> 2. `.env`'e `PersonBalance__MinClientVersion=<Wh sürüm numarası>` yaz
+>    (`SalesSync__MinClientVersion` dolu ve ondan küçük ya da eşit olmalı),
+>    sonra `docker compose up -d license-server`.
+> 3. Test lisansında karışık filo denemesi (spec §8.5, §7.5). Havuz kipi
+>    AÇIKKEN yapılır: satır kipinde eski PC havuz kapısına hiç takılmaz.
+>    (a) Test lisansının S1 adım 2–4'ü tamam (taban var, yukarıdaki S1
+>    bloğunun 3. adımıyla `--mark-reviewed --apply` yapılmış).
+>    (b) Bütün PC'leri Wh'deyken 4. maddedeki kuru → `--apply` `enable`
+>    komutlarını `--license <test-id>` ile koş. Önce kip açılır, eski sürüm
+>    ondan SONRA gelir: `enable`'ın 1. koşulu son 14 günde görülmüş eski bir
+>    PC varken reddeder.
+>    (c) Bir PC'yi Wh'den eski bir sürüme indir, bakiyeli bir müşteriye ödeme
+>    iste. v0.9.9 ile beklenen: mesaj engellenir, iş `NoBalance` olmaz, apply
+>    belirsiz kalır; sunucu günlüğünde ve metrikte `client-update-required`
+>    görünür. Kapı sırası satış senkronu → havuz: lisansın satış senkronu modu
+>    On ve sürüm `SalesSync__MinClientVersion`'dan küçükse (v0.9.9 öyle) 409
+>    satış kapısından gelir (`gate="sales-sync"`). Havuz kapısını
+>    (`gate="person-balance"`) görmek için denemeyi
+>    `SalesSync__MinClientVersion`'dan küçük olmayan ama Wh'den eski bir
+>    sürümle tekrarla (satış senkronu modu Off ise v0.9.9 da yeter).
+>    (d) Yalnız #506 taşıyan bir sürümle: yerel plan sorusunda "Evet" sonrası
+>    geri alma her bacağı kendi satırına döndürür (DB'de bak); sonra önizleme
+>    409 alır ve mesaj gitmez.
+>    (e) Bitince gerekiyorsa test lisansını kapat: önce kuru, sonra
+>    `person-balance disable --license <test-id> --apply` (komutun tamamı
+>    aşağıda, kill switch).
+> 4. Pilot lisansta önce kuru — dört koşulu sayılarla, iki alt sınırı yan
+>    yana basar:
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance enable --license <id>`
+>    Dördü de tutuyorsa:
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance enable --license <id> --apply`
+>    Koşullar: (1) son 14 günde görülmüş, devre dışı bırakılmamış her
+>    etkinleştirmenin sürümü ≥ alt sınır; (2) `verify`'ın D4, D5, D6, yetim
+>    bacak ve kırpma farkı 0; (3) taban var, bütün satırları incelenmiş
+>    (`--mark-reviewed`) ve tabana göre yeni sapma yok; (4) alt sınır ≥
+>    `SalesSync__MinClientVersion`.
+> 5. Saha kontrolleri (spec §8.5; gerçek etkiden: DB satırı, yanıt, ekran).
+> 6. Öbür lisanslar tek tek (spec §7.1 adım 9). Her biri için: tabanı
+>    incelenmemişse önce yukarıdaki S1 bloğunun 3. adımı (inceleme, ardından
+>    `--mark-reviewed --apply`; spec §7.1 adım 4), sonra 4 ve 5.
+>
+> **Havuz kipinde sorun — kill switch.** Önce kuru, sonra yazar:
+> `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance disable --license <id>`
+> `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance disable --license <id> --apply`
+> Lisans satır kipine iner; veri işlemi gerekmez. Çok bacaklı geçmiş doğru
+> okunmaya ve geri alınmaya devam eder; panelde bir çekim grubunun iptali
+> satır kipinde de grubun herhangi bir satırından açılır.
+> `PersonBalance__MinClientVersion`'ı boşaltmak kill switch DEĞİLDİR: havuz
+> kipindeki lisansta yalnız WPF preview'ını ve yeni apply'ı 409
+> `client-update-required`'a düşürür (kapalı-hata) ve açılışta uyarı yazar.
+> Panelin eksi ayarı ve iptali havuzdan çekmeyi sürdürür. Kipten çıkmanın
+> yolu `disable`.
+> Elle S1'e dönüş havuz bayrağını SİLMEZ: S2'ye yeniden çıkınca bayraklı
+> lisanslar kapı yeniden değerlendirilmeden havuz kipine döner (kip zaten
+> açıkken `enable` koşulları basmaz). Bu yüzden dönüşten ÖNCE, S2 imajı
+> ayaktayken bayraklı her lisansta `disable` koş (kuru, sonra `--apply`);
+> S1 imajı komutu tanımaz (kullanım, çıkış 2). S2'ye yeniden çıkınca her
+> lisansı yukarıdaki 4. adımla (kuru, dört koşul tutarsa `--apply`) yeniden aç.
 
 ## Masaüstü: satış senkronunu yerelde sıfırlama (≤0.9.10'a dönüş)
 

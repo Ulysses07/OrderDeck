@@ -225,6 +225,17 @@ services:
       SalesSync__MinClientVersion: "${SalesSync__MinClientVersion:-}"
       SalesSync__ScrubOrderTextOnPurge: "${SalesSync__ScrubOrderTextOnPurge:-true}"
       SalesSync__ForceEndSilenceMinutes: "${SalesSync__ForceEndSilenceMinutes:-15}"
+      # Ortak bakiye (spec 2026-10-11 §7.2). MinClientVersion = Wh (W-havuz'u
+      # taşıyan ilk Velopack sürümü); Wh yayımlanana kadar BOŞ: boşken
+      # `person-balance enable --apply` reddeder, havuz kipindeki lisansta
+      # WPF'in preview'ı ve yeni apply'ı (kayıtlı anahtarın oynatması
+      # etkilenmez) 409 client-update-required (kapalı-hata, açılışta
+      # uyarı); WPF reverse ve panel işlemleri etkilenmez.
+      # Değer SalesSync__MinClientVersion'dan küçük olamaz (Wh ⊇ Ws,
+      # enable'ın 4. koşulu). `:?` DEĞİL `:-`: eksik satır `config -q` kapısını
+      # düşürüp deploy'u kilitlemesin. ActivePcWindowDays compose'da YOK: kod
+      # varsayılanı 14 gün; boş string'le eklenirse int binder'ı ayrıştıramaz.
+      PersonBalance__MinClientVersion: "${PersonBalance__MinClientVersion:-}"
       # Kayıt formu "hesabınla bağlan" (PR #360, karanlık deploy). Bayraklar
       # yazılmadıkça uçlar 404 — Google doğrulaması ONAYLANMADAN
       # IntakeLogin__YouTubeEnabled açılmaz. Facebook için AYRI Consumer app
