@@ -74,29 +74,33 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     private const string CodeClientUpdateRequired = "client-update-required";
     private const string CodeScopeHasDeduction = "scope-has-deduction";
     private const string CodeBalanceBusy = "balance-busy";
+    private const string CodeMemberIdsRequired = "member-ids-required";
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
     private readonly PersonBalance _person;
     private readonly SalesSyncOptions _salesSync;
+    private readonly PersonBalanceOptions _personBalance;
     private readonly ILogger<LicensesCustomerBalanceApplyController> _log;
 
     public LicensesCustomerBalanceApplyController(
         LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person,
-        IOptions<SalesSyncOptions> salesSync,
+        IOptions<SalesSyncOptions> salesSync, IOptions<PersonBalanceOptions> personBalance,
         ILogger<LicensesCustomerBalanceApplyController> log)
     {
         _db = db;
         _customerIds = customerIds;
         _person = person;
         _salesSync = salesSync.Value;
+        _personBalance = personBalance.Value;
         _log = log;
     }
 
     public sealed record PreviewQuery(Guid WpfCustomerId);
 
-    /// <param name="PersonPool">Ortak bakiye (spec 2026-10-11 §4.1): havuz kipinde true. S1 kip bayrağını okumaz,
-    /// hep false döner — satır kipi, bakiye istenen satırınki.</param>
+    /// <param name="PersonPool">Ortak bakiye (spec 2026-10-11 §4.1): havuz kipinde true. O zaman <c>Balance</c>
+    /// kişinin havuzundan (<c>max(0, Σ)</c>), <c>UpdatedAt</c> P'nin son para hareketinden gelir (M9). Satır kipinde
+    /// false: bakiye istenen satırınki.</param>
     public sealed record PreviewResponse(
         Guid WpfCustomerId,
         decimal Balance,
@@ -105,27 +109,97 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     // ── GET preview ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Önizleme: istemcinin mesaja yazacağı bakiye.
+    ///
+    /// <para><b>Satır kipi</b> (bayrak boş): bugünkü gibi, bakiye istenen Id'nin asıl kaydının satırı; satır yoksa
+    /// 0. <paramref name="memberIds"/> bağlanır ama kullanılmaz, havuz kapısı yok. Guid'e bağlanamayan değer model
+    /// bağlamada, kip okunmadan <c>[ApiController]</c>'ın 400 <c>ValidationProblem</c>'ını alır; bu satır kipinde de
+    /// geçerli tek farktır (plan fark 18f).</para>
+    ///
+    /// <para><b>Havuz kipi</b> (spec 2026-10-11 §4.0, §4.1): satış senkronu kapısından sonra havuz sürüm kapısı
+    /// (<c>PersonBalance:MinClientVersion</c>; eski, ayrıştırılamayan ya da olmayan sürüm, alt sınır tanımsızsa
+    /// güncel sürüm de 409 <c>client-update-required</c>), sonra <paramref name="memberIds"/> (yoksa 400
+    /// <c>member-ids-required</c>), sonra P ve kural 1–4 (<see cref="PoolPreviewAsync"/>). Sürüm
+    /// <c>memberIds</c>'ten ÖNCE: üye listesi göndermeyen eski sürüm (v0.9.9) de 409 <c>client-update-required</c>
+    /// alır (§6.2, §8.5; plan fark 3).</para>
+    /// </summary>
+    /// <param name="memberIds">WPF'in kişi üyeleri (W), tekrarlı sorgu parametresi <c>memberIds</c>. Yok ile boş aynı
+    /// sayılır: ASP.NET verilmeyen üst düzey diziyi boş bağlar (plan fark 18f).</param>
     [HttpGet("preview")]
     public async Task<IActionResult> Preview(
         Guid licenseId,
         [FromQuery] Guid wpfCustomerId,
+        [FromQuery(Name = "memberIds")] Guid[]? memberIds,
         CancellationToken ct)
     {
         var owned = await OwnedLicenseModeAsync(licenseId, ct);
         if (owned is null) return NotFound();
-        var (mode, _) = owned.Value;
+        var (mode, pool) = owned.Value;
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "preview");
 
         // Bakiye asıl kayıtta (A5b). Yanıt istemcinin gönderdiği Id'yi taşır —
         // istemci yanıtı kendi Id'siyle eşleştirebilir.
         var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, wpfCustomerId, ct);
+
+        if (pool)
+        {
+            // Plan fark 3: havuz sürüm kapısı memberIds'ten önce.
+            if (!PoolClientMeetsMinimum()) return PoolClientUpdateRequired(licenseId, "preview");
+            if (!HasMemberIds(memberIds)) return MemberIdsRequired(licenseId, "preview");
+            return await PoolPreviewAsync(licenseId, wpfCustomerId, canonicalId, memberIds!, ct);
+        }
+
         var row = await _db.CustomerBalances
             .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
             .Select(b => new PreviewResponse(wpfCustomerId, b.Balance, b.UpdatedAt, false))
             .FirstOrDefaultAsync(ct);
 
         return Ok(row ?? new PreviewResponse(wpfCustomerId, 0m, DateTimeOffset.UtcNow));
+    }
+
+    /// <summary>
+    /// Havuz kipinde preview (spec 2026-10-11 §4.0 kural 1–4, §4.1). P <see cref="PersonBalance.ResolveDrawSetAsync"/>'ten
+    /// gelir.
+    /// <list type="bullet">
+    ///   <item>Kural 1'in kesin kolu (ne a ne W'nin bir Id'si sunucuda) 200 <c>Balance = 0</c>,
+    ///   <c>PersonPool = true</c>: satır kipinin "satır yoksa 0" yanıtı, yalnız bayrağı farklı (sahip kararı 1,
+    ///   plan fark 19). Spec §4.0-1'in 409 <c>no-balance</c>'ı yalnız apply'da.</item>
+    ///   <item>Öbür retler 409 <c>customer-not-synced</c> (<see cref="CustomerNotSynced"/>).</item>
+    ///   <item>Aksi hâlde <c>Balance = max(0, Σ)</c>. Σ, P'nin bakiyeleri ile S∖P'nin eksi bakiyelerinin toplamıdır
+    ///   (<see cref="PersonBalance.DrawSet.Pool"/>).</item>
+    /// </list>
+    ///
+    /// <para><c>UpdatedAt</c> (M9, plan fark 18g): P'nin son para hareketinin <c>CreatedAt</c>'i. Böylece kişi
+    /// kilidinin ilerlettiği jeton "güncellendi" zamanını oynatmaz. Hareket yoksa P'nin bakiye satırlarının en yeni
+    /// <c>UpdatedAt</c>'i, o da yoksa şimdi. S∖P'nin kilitli eksileri Σ'ya girer, zamana girmez. Yanıttaki Id
+    /// istekteki Id'dir (kopya olabilir, §4.1).</para>
+    /// </summary>
+    private async Task<IActionResult> PoolPreviewAsync(
+        Guid licenseId, Guid requestId, Guid canonicalId, IReadOnlyCollection<Guid> memberIds, CancellationToken ct)
+    {
+        var resolved = await _person.ResolveDrawSetAsync(licenseId, canonicalId, memberIds, ct);
+        if (resolved.Rejection is { } rejection)
+            return rejection.Code switch
+            {
+                // Kural 1'in kesin kolu (spec §4.0-1): hiçbir üye sunucuda yok → para olamaz, kesin 0.
+                // Sahip kararı 1 (29.10, (b)): preview 409 değil, satır kipinin "satır yoksa 0" yanıtı
+                // PersonPool = true ile; bugünkü WPF ≤ 0'ı "bakiye yok" yazar. Apply 409 no-balance kalır.
+                PersonBalance.CodeNoBalance =>
+                    Ok(new PreviewResponse(requestId, 0m, DateTimeOffset.UtcNow, PersonPool: true)),
+                _ => CustomerNotSynced(licenseId, "preview", rejection.RowIds),
+            };
+
+        var set = resolved.Set!;
+        var ids = set.Draw.Select(m => m.WpfCustomerId).ToList();
+        var updatedAt = await _person.LastMovementAtAsync(licenseId, ids, ct)
+            ?? await _db.CustomerBalances.AsNoTracking()
+                .Where(b => b.LicenseId == licenseId && ids.Contains(b.WpfCustomerId))
+                .MaxAsync(b => (DateTimeOffset?)b.UpdatedAt, ct)
+            ?? DateTimeOffset.UtcNow;
+
+        return Ok(new PreviewResponse(requestId, Math.Max(0m, set.Pool), updatedAt, PersonPool: true));
     }
 
     // ── GET scope (R4-03 uzlaştırma) ────────────────────────────────────────
@@ -738,6 +812,68 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             endpoint, licenseId);
         return Problem(title: CodeClientUpdateRequired, statusCode: 409,
             detail: "Bakiye işlemi için uygulamanın güncel sürümü gerekiyor.");
+    }
+
+    /// <summary>Havuz kipinde <c>memberIds</c> var mı. Yok (null) ile boş aynı: <c>a</c> her zaman W'ye eklendiği
+    /// için boş liste anlamlı bir girdi değil (plan fark 18f).</summary>
+    private static bool HasMemberIds(IReadOnlyCollection<Guid>? memberIds) => memberIds is { Count: > 0 };
+
+    /// <summary>İstemci (<c>User-Agent</c>) <c>PersonBalance:MinClientVersion</c>'ı (Wh, spec §7.2) karşılıyor mu.
+    /// Satış senkronu kapısıyla aynı karşılaştırma (<see cref="ClientVersion.IsAtLeast"/>, §15): kapalı-hata, sürüm
+    /// bilinmiyor ya da ayrıştırılamıyorsa ya da alt sınır tanımsızsa false.</summary>
+    private bool PoolClientMeetsMinimum() =>
+        ClientVersion.IsAtLeast(
+            ClientVersion.FromUserAgent(Request.Headers.UserAgent.ToString()),
+            _personBalance.ParseMinClientVersion());
+
+    /// <summary>
+    /// Havuz kipinin 409 <c>client-update-required</c>'ı. Başlık ve metin satış senkronu kapısınınkiyle aynıdır;
+    /// istemci ayırt etmez. Günlük ayırır:
+    /// <list type="bullet">
+    ///   <item>Alt sınır tanımsız ya da bozuksa yapılandırma hatası, <b>Error</b> (§7.2, plan fark 18j).</item>
+    ///   <item>Aksi hâlde eski ya da sürümsüz istemci, Information: lisans ve ham sürüm (yoksa "yok"). Kapı
+    ///   açıldıktan sonra dönen eski PC böyle görünür (§7.2 "çalışma anı koruması").</item>
+    /// </list>
+    /// </summary>
+    private ObjectResult PoolClientUpdateRequired(Guid licenseId, string endpoint)
+    {
+        if (_personBalance.ParseMinClientVersion() is null)
+            _log.LogError(
+                "customer-balance/{Endpoint}: havuz kipinde PersonBalance:MinClientVersion tanımsız ya da "
+                + "ayrıştırılamıyor, 409 client-update-required (license={LicenseId})",
+                endpoint, licenseId);
+        else
+            _log.LogInformation(
+                "customer-balance/{Endpoint}: havuz kipinde istemci sürümü {Version} alt sınırın altında ya da "
+                + "bilinmiyor, 409 client-update-required (license={LicenseId})",
+                endpoint, ClientVersion.RawFromUserAgent(Request.Headers.UserAgent.ToString()) ?? "yok", licenseId);
+        return Problem(title: CodeClientUpdateRequired, statusCode: 409,
+            detail: "Bakiye işlemi için uygulamanın güncel sürümü gerekiyor.");
+    }
+
+    /// <summary>Havuz kipinde üye listesi olmayan istek (spec §4.0): 400 <c>member-ids-required</c>. Sürüm
+    /// kapısından SONRA çağrılır (plan fark 3).</summary>
+    private ObjectResult MemberIdsRequired(Guid licenseId, string endpoint)
+    {
+        _log.LogInformation(
+            "customer-balance/{Endpoint}: havuz kipinde memberIds yok, 400 member-ids-required (license={LicenseId})",
+            endpoint, licenseId);
+        return Problem(title: CodeMemberIdsRequired, statusCode: 400,
+            detail: "Havuz kipinde kişinin üye listesi (memberIds) zorunlu.");
+    }
+
+    /// <summary>
+    /// 409 <c>customer-not-synced</c> (spec §4.0 kural 1 ve 3, K2). Günlüğe lisans ve 409'a yol açan satırların Id'leri
+    /// ("N", virgülle) yazılır, ad ve telefon yazılmaz (§5.5, plan fark 18i). Kalıcı bir uyuşmazlık (damgasız eski
+    /// <c>GroupId</c>) bu satırlardan izlenir. Gövdeye uzantı eklenmez.
+    /// </summary>
+    private ObjectResult CustomerNotSynced(Guid licenseId, string endpoint, IReadOnlyList<Guid> rowIds)
+    {
+        _log.LogInformation(
+            "customer-balance/{Endpoint}: 409 customer-not-synced (license={LicenseId}, rows={RowIds})",
+            endpoint, licenseId, string.Join(",", rowIds.Select(id => id.ToString("N"))));
+        return Problem(title: PersonBalance.CodeCustomerNotSynced, statusCode: 409,
+            detail: "Kişinin bir üyesi sunucuya henüz ulaşmadı; senkron tamamlanınca yeniden deneyin.");
     }
 
     private async Task<bool> OwnsLicenseAsync(Guid licenseId, CancellationToken ct)
