@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -195,6 +196,22 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
+        // Ortak bakiye S2 (spec 2026-10-11 §4.8, K5): havuz kipinde eksi ayar kişinin havuzundan çok bacaklı
+        // çekimdir. Kip yalnız eksi tutarda okunur; artı tutar iki kipte de aşağıdaki yoldan (R47). Reason yukarıda
+        // doğrulandı: TrimReason boş dönmez.
+        if (req.Amount < 0 && await _person.IsPoolModeAsync(licenseId, ct))
+        {
+            // DrawAsync kuruş altı tutarda istisna atar (decimal(18,2) bacağı ve satırı ayrı yuvarlar, D1 bozulurdu):
+            // apply'ın emsaliyle (LicensesCustomerBalanceApplyController) 400, 500 değil. Satır kipi bugünkü gibi.
+            if (decimal.Round(req.Amount, 2) != req.Amount)
+                return Problem(title: "invalid-money-scale", statusCode: 400,
+                    detail: "Amount kuruş hassasiyetini aşamaz.");
+
+            return await DrawManualAdjustmentAsync(
+                licenseId, canonicalId, customerId, req.Amount, TrimReason(req.Reason)!, ct);
+        }
+
+        // Satır kipi (bayrak boş) ve artı tutar: bugünkü yol, birebir.
         // Negatif manuel ayar bakiyeyi sıfırın altına düşürmesin — kontrol
         // ApplyTransactionAsync'in retry döngüsünün İÇİNDE yapılır (F02):
         // buradaki ayrı bir ön okuma, eşzamanlı yazımlarda bayat değere bakardı.
@@ -210,6 +227,56 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         if (!applied) return Problem(title: "insufficient-balance", statusCode: 409);
 
         return Ok();
+    }
+
+    /// <summary>
+    /// Havuz kipinde eksi elle ayar (spec 2026-10-11 §4.8, K5): <see cref="PersonBalance.DrawAsync"/> ile kişinin
+    /// havuzundan çok bacaklı çekim, <c>P = S</c> (panelde <c>W</c> yok → <c>MemberIds = null</c>). Çapa rota
+    /// satırının asıl kaydında (<c>manual-adjustment</c>, <c>Reason</c> yalnız çapada; çapanın bakiye satırı yoksa 0
+    /// ile açılır); kalan <c>S</c>'nin öbür pozitif üyelerinden, M7 sırasıyla (silinmişler önce, sonra canlılar bakiye
+    /// büyükten küçüğe). Hep-ya-hiç (<c>AllOrNothing</c>): <c>max(0, Σ_S) &lt; |tutar|</c> → hiçbir şey yazılmaz,
+    /// 409 <c>insufficient-balance</c> (bugünkü kural, kısmi ayar yok; <c>Σ_S</c> eksi üyeleri içerir). Kişi kilidi
+    /// <c>S</c>'nin bakiye satırı olan bütün üyelerine (§4.13); tek <c>SaveChanges</c>, ortak <c>CreatedAt</c>.
+    ///
+    /// <para>Tek satır yazıcısı <see cref="ApplyTransactionAsync"/> burada KULLANILMAZ (M12, iskelet farkı 11): onun
+    /// "yeniden yükle + deltayı yeniden uygula" kalıbı çok bacaklı kayıtta deltayı çakışmayan satırlara iki kez
+    /// yazardı ve hareketi okumadan önce izleyiciye ekler. Bu yöntem <c>DrawAsync</c>'ten önce izleyiciye hiçbir
+    /// şey eklemez (servis denemeler arasında izleyiciyi temizler). Çakışmada servis planı baştan kurar; üç
+    /// denemeden sonra 503 <c>balance-busy</c> (iskelet farkı 12; satır kipinin 3. çakışmadaki 500'ü değişmez).</para>
+    ///
+    /// <para>Öbür sonuçlar oluşmaz: <c>AllOrNothing</c> + <c>MemberIds = null</c> ile <c>NoBalance</c> ve
+    /// <c>CustomerNotSynced</c> (kural 1–4 yalnız WPF'in <c>W</c>'sinde), <c>ReversesTransactionId</c> boş ve anahtar
+    /// istemcinin değil → <c>AlreadyReversed</c> ve <c>DuplicateKey</c>, geri çağrı yok → <c>Stopped</c>, tutar &gt; 0 →
+    /// <c>NothingToApply</c>.</para>
+    /// </summary>
+    /// <param name="amount">İstekteki eksi tutar; çekilen <c>−amount</c>.</param>
+    /// <param name="reason">Kırpılmış, boş olmayan açıklama (çağıran doğruladı).</param>
+    private async Task<IActionResult> DrawManualAdjustmentAsync(
+        Guid licenseId, Guid canonicalId, Guid customerId, decimal amount, string reason, CancellationToken ct)
+    {
+        var result = await _person.DrawAsync(new PersonBalance.DrawRequest(
+            LicenseId: licenseId,
+            AnchorRowId: canonicalId,
+            AnchorTransactionId: Guid.NewGuid(),
+            AnchorIdIsIdempotencyKey: false,
+            Kind: PersonBalance.KindManualAdjustment,
+            Requested: -amount,
+            Rule: PersonBalance.DrawAmountRule.AllOrNothing,
+            MemberIds: null,
+            OriginalAmount: null,
+            SaleScope: null,
+            Reason: reason,
+            ReversesTransactionId: null,
+            CreatedByCustomerId: customerId,
+            ScopeLockResource: null), beforeAttempt: null, ct);
+
+        return result.Status switch
+        {
+            PersonBalance.DrawStatus.Drawn => Ok(),
+            PersonBalance.DrawStatus.Insufficient => Problem(title: "insufficient-balance", statusCode: 409),
+            PersonBalance.DrawStatus.Busy => BalanceBusy(licenseId, "manual-adjustment"),
+            _ => throw new UnreachableException($"manual-adjustment: beklenmeyen çekim sonucu {result.Status}"),
+        };
     }
 
     // ── POST reverse (yanlış kayıt iptal) ───────────────────────────────────
@@ -305,17 +372,27 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             case PersonBalance.ReverseOutcome.AlreadyReversed:
                 return Problem(title: "already-reversed", statusCode: 409);
             case PersonBalance.ReverseOutcome.Busy:
-                // Uyarı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü.
-                _log.LogDebug(
-                    "panel balance/reverse: 503 balance-busy (license={LicenseId})", licenseId);
-                return Problem(title: "balance-busy", statusCode: 503,
-                    detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+                return BalanceBusy(licenseId, "reverse");
             default:
                 return NotFound();
         }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 503 <c>balance-busy</c> (spec §4.5, §4.13; iskelet farkı 12): servis yazımı üç denemede de kuramadı, hiçbir
+    /// şey yazılmadı. Uyarı satırı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü. Başlık ve
+    /// metin WPF denetleyicisinin <c>BalanceBusy</c>'siyle aynı.
+    /// </summary>
+    /// <param name="endpoint"><c>reverse</c> ya da <c>manual-adjustment</c>.</param>
+    private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
+    {
+        _log.LogDebug(
+            "panel balance/{Endpoint}: 503 balance-busy (license={LicenseId})", endpoint, licenseId);
+        return Problem(title: "balance-busy", statusCode: 503,
+            detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+    }
 
     /// <summary>
     /// Rotadaki Id → (lisans, asıl kayıt). WpfCustomerProjection → License →
