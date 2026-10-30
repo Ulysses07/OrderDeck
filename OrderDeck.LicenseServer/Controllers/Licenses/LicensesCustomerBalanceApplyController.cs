@@ -454,7 +454,18 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // çağıran onun sonucunu görmemeli.
         if (req.IdempotencyKey is { } preKey)
         {
-            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, preKey, pool, ct);
+            (ApplyResponse? Replay, bool Foreign, bool ContentConflict) found;
+            try
+            {
+                found = await LookupAsync(licenseId, req, canonicalId, preKey, pool, ct);
+            }
+            // Havuz kipinde oynatma CustomerBalances'ı okur; çekimden sonraki son Lookup'la aynı karar. Satır kipi
+            // bugünkü yol birebir (plan fark 8).
+            catch (Exception ex) when (pool && PersonBalance.IsDeadlock(ex))
+            {
+                return ReplayDeadlocked(licenseId, preKey);
+            }
+            var (replay, foreign, conflict) = found;
             if (foreign) return NotFound();
             if (conflict) return ContentConflict();
             if (replay is not null) return Ok(replay);
@@ -493,8 +504,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     ///   <c>−Σ(grup)</c> (§4.2 "Her denemede", §15-2).</item>
     ///   <item><b><c>no-balance</c> ve <c>customer-not-synced</c>'ten önce</b> anahtar varsa son bir
     ///   <see cref="LookupAsync"/>: kapsamsız yolda 1. deneme kilitsiz ön oynatmaya dayanır; ondan sonra commit eden
-    ///   aynı anahtarlı istek oynatılır, kayıtlı anahtar ret almaz (§4.2 adım 6'nın amacı). Bu Lookup'ta kilitlenme
-    ///   kurbanı (1205) 503 <c>balance-busy</c> döner.</item>
+    ///   aynı anahtarlı istek oynatılır, kayıtlı anahtar ret almaz (§4.2 adım 6'nın amacı). <c>DuplicateKey</c>'te de
+    ///   kazanan aynı yoldan oynatılır (foreign 404). Bu Lookup'ta kilitlenme kurbanı (1205) 503 <c>balance-busy</c>
+    ///   döner (<see cref="ReplayDeadlocked"/>; Apply'ın havuz kipindeki ön oynatmasında da).</item>
     ///   <item><b>Kapsam kuralı</b> yalnız satış senkronu mod On ∧ kapsam dolu (<c>legacy:</c> muaf değil, §15-18);
     ///   çapa düzeyinde (M10): aynı kişinin başka satırındaki çapa tetiklemez. Her deneme kendi işlemini açar ve
     ///   <see cref="ScopeLockResource"/> kilidini o işlemde alır; kilit denemeler arasında bırakılır, yüklem bu yüzden
@@ -580,10 +592,8 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         }
 
         // Çekim ret döndü ama anahtar bu arada defterde olabilir: kayıtlı anahtar ret almaz, kazananın sonucu
-        // oynatılır (§4.2). null → anahtar yok ya da defterde değil, ret geçerli. Bu Lookup DrawAsync'in korunan
-        // denemesinin dışında ve oynatmada PoolBalanceAsync CustomerBalances'ı da okur: yazarların X kilidinin
-        // arkasında kilitlenme kurbanı (1205) olabilir (plan fark 18k). Hiçbir şey yazılmadı → 503 balance-busy,
-        // WPF aynı anahtarla yeniden dener (500 değil; panel reverse'in üyelik okumasıyla aynı karar).
+        // oynatılır (§4.2, plan fark 18n). null → anahtar yok ya da defterde değil, ret geçerli. DuplicateKey de aynı
+        // yolu kullanır: foreign 404 (ön oynatmayla aynı), 1205 503 (ReplayDeadlocked).
         async Task<IActionResult?> ReplayWrittenKeyAsync()
         {
             if (req.IdempotencyKey is not { } writtenKey) return null;
@@ -597,7 +607,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             }
             catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
             {
-                return BalanceBusy(licenseId, "apply");
+                return ReplayDeadlocked(licenseId, writtenKey);
             }
         }
 
@@ -986,10 +996,28 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// Havuz kipinde apply'ın oynatma Lookup'ı (ön oynatma ya da çekimden sonraki son Lookup) kilitlenme kurbanı
+    /// (1205) oldu: oynatma <c>PoolBalanceAsync</c> ile CustomerBalances'ı okur ve yazarların X kilidinin arkasında
+    /// kalabilir; bu okuma <c>DrawAsync</c>'in korunan denemesinin dışında. Hiçbir şey yazılmadı → 503
+    /// <c>balance-busy</c>, WPF aynı anahtarla yeniden dener (500 değil; panel iptalinin üyelik okumasıyla aynı karar,
+    /// plan fark 18k). Servis bu kaynakta bir şey yazmadığı için ayırt edici satır burada.
+    /// </summary>
+    private ObjectResult ReplayDeadlocked(Guid licenseId, Guid key)
+    {
+        _log.LogInformation(
+            "customer-balance/apply: oynatma Lookup'ı kilitlenme kurbanı (1205), 503 balance-busy "
+            + "(key={Key}, license={LicenseId})",
+            key, licenseId);
+        return BalanceBusy(licenseId, "apply");
+    }
+
     private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
     {
         _metrics.BalanceBusy.Add(1, new KeyValuePair<string, object?>("endpoint", endpoint));
-        // Uyarı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü.
+        // Ayırt edici satır çağıranda: DrawAsync/ReverseGroupAsync'in Busy kolunda servisin uyarısı (neden ve çapayla),
+        // servis dışı okuma kilitlenmesinde çağıranın kendi satırı (ReplayDeadlocked; panelde üyelik okuması). Burada
+        // yalnız hangi ucun 503 döndüğü.
         _log.LogDebug(
             "customer-balance/{Endpoint}: 503 balance-busy (license={LicenseId})",
             endpoint, licenseId);

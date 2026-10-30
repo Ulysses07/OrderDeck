@@ -58,7 +58,7 @@ public sealed class OrderDeckMetrics
             description: "Balance requests rejected with 409 client-update-required, tagged by gate (sales-sync/person-balance) and endpoint.");
         BalanceBusy = _meter.CreateCounter<long>(
             "orderdeck.balance.busy_total",
-            description: "Balance writes that returned 503 balance-busy after exhausting their retries, tagged by endpoint.");
+            description: "Balance requests that returned 503 balance-busy, tagged by endpoint: a write exhausted its retries, or a read outside the retried attempt was chosen as a deadlock victim. Nothing was written in either case.");
         BalanceMultiLegDraws = _meter.CreateCounter<long>(
             "orderdeck.balance.multi_leg_draws_total",
             description: "Person-pool draws written across more than one balance row, tagged by legs (rows written, anchor included).");
