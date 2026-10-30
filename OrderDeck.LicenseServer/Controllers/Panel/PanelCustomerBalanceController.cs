@@ -82,7 +82,12 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        // Ortak bakiye S1, satır kipi (spec 2026-10-11 §4.6): bakiye ve hareketler rota satırınınki, hareketler
+        // Ortak bakiye kipi lisans başına, her istekte okunur (spec 2026-10-11 §4.0). Havuz kipi ayrı yöntemde;
+        // satır kipinin yolu aşağıda S1'deki gibi.
+        if (await _person.IsPoolModeAsync(licenseId, ct))
+            return Ok(await PoolDetailsAsync(wpfCustomerId, licenseId, canonicalId, take, ct));
+
+        // Ortak bakiye satır kipi (bayrak boş; spec 2026-10-11 §4.6): bakiye ve hareketler rota satırınınki, hareketler
         // gruplara toplanmış; take grup sayar. UpdatedAt son para hareketidir (M9): grup değişimi kancasının ve
         // birleştiricinin jeton dokunuşu "güncellendi" zamanını oynatmaz.
         var row = await _db.CustomerBalances.AsNoTracking()
@@ -323,6 +328,40 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         => await _customerIds.LocateForTenantAsync(callerCustomerId, wpfCustomerId, ct) is { } located
             ? (located.LicenseId, located.CanonicalId, true)
             : (Guid.Empty, Guid.Empty, false);
+
+    /// <summary>
+    /// GET, havuz kipi (spec 2026-10-11 §4.6, §6.1-f, M9, K3). <c>Balance = Σ_S</c>: eksi olabilir — borç operatöre
+    /// görünmeli (D3); silinmiş üyeler dahil. Hareketler S'nin bütün üyelerinden gruplara toplanmış: grup tutarı bu
+    /// kişideki bacakların toplamı (ayırmadan sonra öbür kişide kalan bacak sayılmaz), take grup sayar. UpdatedAt
+    /// S'nin son para hareketi; S'de hiç hareket yoksa S'nin bakiye satırlarının en yenisi, o da yoksa şimdi.
+    /// <c>Members</c> aynı okumadan (ikinci üyelik okuması yok); kişinin hangi üyesinden açılırsa açılsın aynı toplam
+    /// ve aynı liste. Salt okuma, kilit yok (READ COMMITTED, ayrı sorgular — satır kipinde de öyle).
+    /// </summary>
+    /// <param name="requestId">Rotadaki Id — yanıtta o döner (kopya Id'si olabilir; satır kipiyle aynı).</param>
+    private async Task<BalanceDetailsResponse> PoolDetailsAsync(
+        Guid requestId, Guid licenseId, Guid canonicalId, int take, CancellationToken ct)
+    {
+        var person = await _person.MembersAsync(licenseId, canonicalId, ct);
+        var ids = person.Members.Select(m => m.WpfCustomerId).ToList();
+
+        var lastMovement = await _person.LastMovementAtAsync(licenseId, ids, ct);
+        var updatedAt = lastMovement
+            ?? await _db.CustomerBalances.AsNoTracking()
+                .Where(b => b.LicenseId == licenseId && ids.Contains(b.WpfCustomerId))
+                .MaxAsync(b => (DateTimeOffset?)b.UpdatedAt, ct)
+            ?? DateTimeOffset.UtcNow;
+        var balance = new BalanceDto(requestId, licenseId, person.Members.Sum(m => m.Balance), updatedAt);
+
+        // Panel yayıncının kendisi: açıklama maskesiz.
+        var history = await _person.HistoryAsync(licenseId, ids, take, ct);
+        var transactions = history
+            .Select(h => new TransactionDto(h.Id, h.Amount, h.Kind, h.OriginalAmount, h.ShippingDeducted,
+                h.Reason, h.ReversesTransactionId, h.CreatedAt))
+            .ToArray();
+
+        var members = person.Members.Select(m => new MemberDto(m.WpfCustomerId, m.Balance, m.Purged)).ToArray();
+        return new BalanceDetailsResponse(balance, transactions, members);
+    }
 
     /// <summary>
     /// Ledger satırı yazar + CustomerBalance.Balance'ı günceller (tek transaction).
