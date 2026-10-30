@@ -491,9 +491,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     ///   sonucu oynatılır, havuz boşaldı diye <c>no-balance</c> dönülmez (§4.2 adım 6). Sonra kapsam yolunda
     ///   <see cref="LatestScopeDeductionAsync"/>: geri alınmamış çapa varsa 409 <c>scope-has-deduction</c>, tutar
     ///   <c>−Σ(grup)</c> (§4.2 "Her denemede", §15-2).</item>
-    ///   <item><b><c>no-balance</c>'tan önce</b> anahtar varsa son bir <see cref="LookupAsync"/>: kapsamsız yolda
-    ///   1. deneme kilitsiz ön oynatmaya dayanır; ondan sonra commit edip havuzu tüketen aynı anahtarlı istek
-    ///   oynatılır, kayıtlı anahtar <c>no-balance</c> almaz (§4.2 adım 6'nın amacı).</item>
+    ///   <item><b><c>no-balance</c> ve <c>customer-not-synced</c>'ten önce</b> anahtar varsa son bir
+    ///   <see cref="LookupAsync"/>: kapsamsız yolda 1. deneme kilitsiz ön oynatmaya dayanır; ondan sonra commit eden
+    ///   aynı anahtarlı istek oynatılır, kayıtlı anahtar ret almaz (§4.2 adım 6'nın amacı). Bu Lookup'ta kilitlenme
+    ///   kurbanı (1205) 503 <c>balance-busy</c> döner.</item>
     ///   <item><b>Kapsam kuralı</b> yalnız satış senkronu mod On ∧ kapsam dolu (<c>legacy:</c> muaf değil, §15-18);
     ///   çapa düzeyinde (M10): aynı kişinin başka satırındaki çapa tetiklemez. Her deneme kendi işlemini açar ve
     ///   <see cref="ScopeLockResource"/> kilidini o işlemde alır; kilit denemeler arasında bırakılır, yüklem bu yüzden
@@ -578,6 +579,28 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             return Problem(title: rejection.Code, detail: rejection.Message, statusCode: rejection.StatusCode);
         }
 
+        // Çekim ret döndü ama anahtar bu arada defterde olabilir: kayıtlı anahtar ret almaz, kazananın sonucu
+        // oynatılır (§4.2). null → anahtar yok ya da defterde değil, ret geçerli. Bu Lookup DrawAsync'in korunan
+        // denemesinin dışında ve oynatmada PoolBalanceAsync CustomerBalances'ı da okur: yazarların X kilidinin
+        // arkasında kilitlenme kurbanı (1205) olabilir (plan fark 18k). Hiçbir şey yazılmadı → 503 balance-busy,
+        // WPF aynı anahtarla yeniden dener (500 değil; panel reverse'in üyelik okumasıyla aynı karar).
+        async Task<IActionResult?> ReplayWrittenKeyAsync()
+        {
+            if (req.IdempotencyKey is not { } writtenKey) return null;
+            try
+            {
+                var (replay, foreign, conflict) = await LookupAsync(
+                    licenseId, req, canonicalId, writtenKey, pool: true, ct);
+                if (foreign) return NotFound();
+                if (conflict) return ContentConflict();
+                return replay is null ? null : Ok(replay);
+            }
+            catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
+            {
+                return BalanceBusy(licenseId, "apply");
+            }
+        }
+
         // §8.6: çok bacaklı çekim (yalnız Drawn ve Legs > 1); yanıt değişmez.
         CountMultiLegDraw(result);
         switch (result.Status)
@@ -588,41 +611,31 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             case PersonBalance.DrawStatus.Stopped:
                 return stopped!;
             case PersonBalance.DrawStatus.NoBalance:
-            {
                 // §4.2 adım 6'nın amacı 1. denemede de: kapsamsız yolda 1. denemenin tek Lookup'ı kilitsiz ön
                 // oynatmadır. Aynı anahtarlı istek ön oynatmadan sonra commit edip havuzu tükettiyse ne jeton
                 // çakışması ne PK ihlali olur. Σ ≤ 0 okuması o commit'i gördüyse aynı commit'teki çapayı bu Lookup da
-                // görür; kayıtlı anahtar ret almaz, kazananın sonucu oynatılır.
-                if (req.IdempotencyKey is { } spentKey)
-                {
-                    var (spentReplay, spentForeign, spentConflict) = await LookupAsync(
-                        licenseId, req, canonicalId, spentKey, pool: true, ct);
-                    if (spentForeign) return NotFound();
-                    if (spentConflict) return ContentConflict();
-                    if (spentReplay is not null) return Ok(spentReplay);
-                }
-                // Bugünkü başlık; WPF bunu kesin "bakiye yok" sayar (§4.2 adım 2, §4.0-1 kesin kol).
-                return Problem(title: PersonBalance.CodeNoBalance, statusCode: 409);
-            }
+                // görür. Değilse bugünkü başlık; WPF bunu kesin "bakiye yok" sayar (§4.2 adım 2, §4.0-1 kesin kol).
+                return await ReplayWrittenKeyAsync()
+                    ?? Problem(title: PersonBalance.CodeNoBalance, statusCode: 409);
             case PersonBalance.DrawStatus.NothingToApply:
                 return Problem(title: "nothing-to-apply", statusCode: 409);
             case PersonBalance.DrawStatus.CustomerNotSynced:
-                return CustomerNotSynced(licenseId, "apply", result.RejectedRowIds);
+                // Aynı pencere: aynı anahtarlı istek ön oynatmadan sonra commit etti, bu arada üyelik ya da S∖P'nin bir
+                // bakiyesi değişti (kural 3, 3b). Kazananın kendi çekimi bunu doğurmaz ama ilgisiz bir yazım doğurabilir.
+                return await ReplayWrittenKeyAsync()
+                    ?? CustomerNotSynced(licenseId, "apply", result.RejectedRowIds);
             case PersonBalance.DrawStatus.DuplicateKey:
             {
                 // Aynı anahtarla yarışan iki istek: PK ihlali bütün bacaklarla birlikte geri alındı (DrawAsync
                 // izleyiciyi temizledi), kaybeden hiçbir iz bırakmaz. Kazananın sonucunu oynatabiliyorsak yarış
                 // hikâyesi tutuyor demektir; tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
-                var duplicateKey = req.IdempotencyKey!.Value;
-                var (winner, _, winnerConflict) = await LookupAsync(
-                    licenseId, req, canonicalId, duplicateKey, pool: true, ct);
-                if (winnerConflict) return ContentConflict();
-                if (winner is null)
-                    throw new InvalidOperationException("Bakiye apply: anahtar PK ihlali verdi ama kazanan bulunamadı");
-                _log.LogWarning(
-                    "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
-                    duplicateKey, licenseId);
-                return Ok(winner);
+                var winner = await ReplayWrittenKeyAsync()
+                    ?? throw new InvalidOperationException("Bakiye apply: anahtar PK ihlali verdi ama kazanan bulunamadı");
+                if (winner is OkObjectResult)
+                    _log.LogWarning(
+                        "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
+                        req.IdempotencyKey, licenseId);
+                return winner;
             }
             case PersonBalance.DrawStatus.Busy:
                 return BalanceBusy(licenseId, "apply");

@@ -428,6 +428,100 @@ public sealed class PersonBalanceDrawRaceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// §4.2 "kayıtlı anahtar hiçbir zaman customer-not-synced almaz", 1. denemede: yukarıdaki pencerenin aynısı, ret
+    /// kural 3'ten. Kişide WPF'in bilmediği artı bir üye Z var; X (anahtar K) <c>memberIds</c>'te Z'yi göndermez, tek
+    /// başına 409 <c>customer-not-synced</c> alırdı. Aynı anahtarlı rakip Z'yi de göndererek ön oynatmadan SONRA commit
+    /// eder. Beklenen: X ret değil, kazananın sonucunu alır — <c>CustomerNotSynced</c> dalındaki son Lookup K'yı bulur.
+    /// </summary>
+    [Fact]
+    public async Task Ilk_denemede_ayni_anahtarli_rakip_yazdiysa_customer_not_synced_yerine_oynatilir()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var g = Kit.NewGroup();
+        var t = await kit.MemberAsync(g);
+        var i = await kit.MemberAsync(g, 100m, platform: "instagram");
+        var y = await kit.MemberAsync(g, 30m);
+        // Rakibin çekiminden sonra da artıda kalır (130 < 500): X'in kural 3 reddi rakibin planına bağlı değil.
+        var z = await kit.MemberAsync(g, 500m);
+        await kit.EnablePoolAsync();
+        var k = Guid.NewGuid();
+        var rakipler = new List<Outcome>();
+        _factory.Queries.Arm(
+            sql => sql.Contains("FROM [CustomerBalanceTransactions]", StringComparison.Ordinal),
+            () =>
+            {
+                _factory.Queries.Arm(
+                    sql => sql.Contains("FROM [CustomerBalances]", StringComparison.Ordinal),
+                    async () => rakipler.Add(
+                        await StatusAsync(() => kit.ApplyAsync(t, 130m, 130m, k, null, [t, i, y, z]))));
+                return Task.CompletedTask;
+            });
+
+        var dis = await StatusAsync(() => kit.ApplyAsync(t, 130m, 130m, k, null, [t, i, y]));
+        _factory.Queries.Disarm();
+
+        var rakip = rakipler.Should().ContainSingle("rakip X'in 1. deneme bakiye okumasından önce koşmalı").Subject;
+        rakip.Status.Should().Be(HttpStatusCode.OK, rakip.Title);
+        rakip.TransactionId.Should().Be(k);
+        rakip.Applied.Should().Be(130m);
+        dis.Should().Be(new Outcome(HttpStatusCode.OK, null, k, 130m, await PoolAsync(kit, t, i, y)),
+            "customer-not-synced değil: dalın son Lookup'ı kazananı oynatır, kalan X'in W'sinin o anki havuzu ({0})",
+            dis.Title);
+        ReplayLogCount(k).Should().Be(1, "tek oynatma: CustomerNotSynced dalının son Lookup'ı");
+        (await DeductionsAsync(kit)).Should().OnlyContain(r => r.Id == k || r.DrawGroupId == k,
+            "ikinci düşüm yok: K'dan başka grup yazılmadı");
+        (await PoolAsync(kit, t, i, y, z)).Should().Be(500m, "630 − 130, bir kez");
+        await ShouldHoldLedgerAsync(kit, t, i, y, z);
+    }
+
+    /// <summary>
+    /// Plan fark 18k, çekimden sonraki Lookup: yukarıdaki <c>NoBalance</c> penceresinde rakip commit ettikten sonra
+    /// X'in son Lookup'ı kilitlenme kurbanı olur (kanca o komutta bir kez <c>SqlException(1205)</c> fırlatır). Lookup
+    /// <c>DrawAsync</c>'in korunan denemesinin dışında; X hiçbir şey yazmadı. Beklenen 503 <c>balance-busy</c> (WPF aynı
+    /// anahtarla yeniden dener ve oynatılır), 500 değil.
+    /// </summary>
+    [Fact]
+    public async Task Cekimden_sonraki_Lookup_kilitlenme_kurbani_olursa_503_balance_busy()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var (t, i, y) = await Ornek1OncesiAsync(kit);
+        var k = Guid.NewGuid();
+        var rakipler = new List<Outcome>();
+        _factory.Queries.Arm(
+            sql => sql.Contains("FROM [CustomerBalanceTransactions]", StringComparison.Ordinal),
+            () =>
+            {
+                _factory.Queries.Arm(
+                    sql => sql.Contains("FROM [CustomerBalances]", StringComparison.Ordinal),
+                    async () =>
+                    {
+                        rakipler.Add(await StatusAsync(() => kit.ApplyAsync(t, 130m, 130m, k, null, [t, i, y])));
+                        // 3. halka: X'in bundan sonraki ilk defter okuması = NoBalance dalındaki son Lookup (kapsamsız
+                        // 1. denemede DrawAsync defter okumaz, geri çağrı Lookup koşmaz).
+                        _factory.Queries.Arm(
+                            sql => sql.Contains("FROM [CustomerBalanceTransactions]", StringComparison.Ordinal),
+                            () => throw SqlExceptionFactory.Create(
+                                1205, "Transaction was deadlocked and has been chosen as the deadlock victim."));
+                    });
+                return Task.CompletedTask;
+            });
+
+        var dis = await StatusAsync(() => kit.ApplyAsync(t, 130m, 130m, k, null, [t, i, y]));
+        _factory.Queries.Disarm();
+
+        rakipler.Should().ContainSingle().Which.Should().Be(new Outcome(HttpStatusCode.OK, null, k, 130m, 0m));
+        dis.Should().Be(new Outcome(HttpStatusCode.ServiceUnavailable, "balance-busy"),
+            "son Lookup'ın 1205'i 500 değil, yeniden denenecek 503 ({0})", dis.Title);
+        ReplayLogCount(k).Should().Be(0, "kurban Lookup oynatmaya varmadı");
+        (await kit.GroupRowsAsync(k)).Select(r => (r.WpfCustomerId, r.Amount)).Should()
+            .BeEquivalentTo(new[] { (t, 0m), (i, -100m), (y, -30m) }, "yalnız rakibin grubu");
+        await ShouldHoldLedgerAsync(kit, t, i, y);
+
+        (await StatusAsync(() => kit.ApplyAsync(t, 130m, 130m, k, null, [t, i, y]))).Should()
+            .Be(new Outcome(HttpStatusCode.OK, null, k, 130m, 0m), "WPF'in yeniden denemesi kazananı oynatır");
+    }
+
+    /// <summary>
     /// §4.2 adım 6 / §4.13: üç denemede de jeton çakışması → 503 <c>balance-busy</c>; SaveChanges tek işlem olduğu için
     /// hiçbir şey yazılmaz. Servis tek uyarı yazar, sayaç <c>endpoint=apply</c> ile bir artar (Görev 13; InMemory'de üç
     /// çakışma kurulamadığı için sayaç burada doğrulanır).

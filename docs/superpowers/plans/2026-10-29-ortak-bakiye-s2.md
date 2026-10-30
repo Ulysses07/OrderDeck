@@ -13210,7 +13210,7 @@ Expected: `Build succeeded.` `0 Warning(s)`. (Bu görev üretim koduna dokunmaz;
 S1'e otomatik geri almanın güvenliği genişlet/daralt kuralına, yani S2'nin göçsüz deploy edilmesine dayanır. Bunu merge'den önce dalın kendisinden kanıtla (deploy sonrası `__EFMigrationsHistory` kontrolü ancak ikinci kanıttır). Worktree kökünden:
 
 ```bash
-git diff --stat "$(git merge-base master HEAD)" -- OrderDeck.LicenseServer/Data/Migrations/
+git diff --stat "$(git merge-base origin/master HEAD)" -- OrderDeck.LicenseServer/Data/Migrations/
 git status --porcelain -- OrderDeck.LicenseServer/Data/Migrations/
 ```
 
