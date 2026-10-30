@@ -61,6 +61,17 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 ///   <c>scope-has-deduction</c> (DM6, M8). Ayrı tablo yok; kural defterin
 ///   kendisini okur ve imaj geri alınsa da bayat durum bırakmaz.</item>
 /// </list></para>
+///
+/// <para><b>Ortak bakiye, havuz kipi (spec 2026-10-11 §4.0–§4.2).</b> Kip
+/// sahiplik sorgusunun ikinci alanıdır (<c>License.PersonBalancePoolSince</c>);
+/// boşsa her uç yukarıdaki gibi çalışır. Doluysa preview ve yeni yazım yapacak
+/// apply, satış senkronu kapısından ayrı olarak <c>PersonBalance:MinClientVersion</c>
+/// kapısından ve <c>memberIds</c> denetiminden geçer (yeniden oynatma bu iki
+/// denetimden ÖNCE; kayıtlı anahtar engellenmez). Apply çekimi
+/// <c>PersonBalance.DrawAsync</c>'e bırakır: çok bacaklı yazım, kişi kilidi,
+/// her denemede anahtarın yeniden aranması ve §6.6 kapsam kuralı çapa
+/// düzeyinde, deneme başına işlem ve kilitle. <c>scope</c>, <c>transactions/{id}</c>
+/// ve <c>reverse</c>'e havuz kapısı konmaz.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/customer-balance")]
@@ -446,12 +457,196 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             if (replay is not null) return Ok(replay);
         }
 
-        // §6.6: anahtar yeni (yok ya da defterde değil). Kural yalnız mod On'da
-        // ve kapsamlı istekte; kapsamsız istek ve mod Off bugünkü yoldan.
+        // Ortak bakiye, havuz kipi (spec 2026-10-11 §4.0, §4.2): havuz sürüm kapısı yeniden oynatmadan SONRA (kayıtlı
+        // anahtar client-update-required almaz, plan fark 4), memberIds denetiminden ÖNCE (memberIds göndermeyen eski
+        // sürüm de 409 alır, plan fark 3). Çekim DrawAsync'ten geçer; §6.6 kapsam kuralı orada deneme başına.
+        if (pool)
+        {
+            if (!PoolClientMeetsMinimum()) return PoolClientUpdateRequired(licenseId, "apply");
+            if (!HasMemberIds(req.MemberIds)) return MemberIdsRequired(licenseId, "apply");
+            return await ApplyPoolAsync(licenseId, req, canonicalId, mode, ct);
+        }
+
+        // Satır kipi, bugünkü yol birebir (plan fark 8). §6.6: anahtar yeni (yok ya da
+        // defterde değil). Kural yalnız mod On'da ve kapsamlı istekte; kapsamsız istek ve
+        // mod Off bugünkü yoldan.
         if (mode == SalesSyncMode.On && req.SaleScope is { } saleScope)
             return await ApplyOncePerScopeAsync(licenseId, req, canonicalId, saleScope, ct);
 
         return (await WriteDeductionAsync(licenseId, req, canonicalId, ct)).Result;
+    }
+
+    /// <summary>
+    /// Ortak bakiye apply'ı, havuz kipi (spec 2026-10-11 §4.2). Çekim <c>PersonBalance.DrawAsync</c>'ten geçer: para
+    /// <c>P</c>'den (§4.0-4, <c>W</c> = <c>memberIds</c>), çapa istekteki asıl kayıtta (payı 0 olabilir), bacaklar
+    /// <c>P</c>'nin öbür üyelerinde; <c>S∖P</c>'nin eksileri havuza sayılır ve kilitlenir; tek <c>SaveChanges</c>.
+    /// Çağıran izleyicide bir şey bırakmaz (sahiplik, asıl kayıt ve oynatma okumaları izlemesiz) — <c>DrawAsync</c>'in
+    /// önkoşulu.
+    /// <list type="bullet">
+    ///   <item><b>Her denemenin başında</b> (kilitten sonra, okumalardan önce; <c>beforeAttempt</c>): anahtar varsa ve
+    ///   deneme 2.+ ya da kapsam yolundaysa <see cref="LookupAsync"/> — aynı anahtarlı istek araya girip yazdıysa onun
+    ///   sonucu oynatılır, havuz boşaldı diye <c>no-balance</c> dönülmez (§4.2 adım 6). Sonra kapsam yolunda
+    ///   <see cref="LatestScopeDeductionAsync"/>: geri alınmamış çapa varsa 409 <c>scope-has-deduction</c>, tutar
+    ///   <c>−Σ(grup)</c> (§4.2 "Her denemede", §15-2).</item>
+    ///   <item><b><c>no-balance</c>'tan önce</b> anahtar varsa son bir <see cref="LookupAsync"/>: kapsamsız yolda
+    ///   1. deneme kilitsiz ön oynatmaya dayanır; ondan sonra commit edip havuzu tüketen aynı anahtarlı istek
+    ///   oynatılır, kayıtlı anahtar <c>no-balance</c> almaz (§4.2 adım 6'nın amacı).</item>
+    ///   <item><b>Kapsam kuralı</b> yalnız satış senkronu mod On ∧ kapsam dolu (<c>legacy:</c> muaf değil, §15-18);
+    ///   çapa düzeyinde (M10): aynı kişinin başka satırındaki çapa tetiklemez. Her deneme kendi işlemini açar ve
+    ///   <see cref="ScopeLockResource"/> kilidini o işlemde alır; kilit denemeler arasında bırakılır, yüklem bu yüzden
+    ///   her denemede yeniden koşar (plan fark 7). Kilit zaman aşımı 409 <c>stale</c>, hiçbir şey yazılmaz.</item>
+    ///   <item>Üç çakışmadan sonra 503 <c>balance-busy</c> (WPF'in dayanıklılık katmanı aynı anahtarla yeniden dener);
+    ///   aynı anahtarla PK yarışında bütün bacaklar geri alınır ve kazananın sonucu oynatılır.</item>
+    /// </list>
+    /// Yanıt: <c>TransactionId</c> = çapa, <c>AppliedAmount</c> = bütün bacakların toplamı,
+    /// <c>RemainingBalance = max(0, Σ − applied)</c> (§4.2 adım 7).
+    /// </summary>
+    private async Task<IActionResult> ApplyPoolAsync(
+        Guid licenseId, ApplyRequest req, Guid canonicalId, SalesSyncMode mode, CancellationToken ct)
+    {
+        // §6.6: kural yalnız mod On'da ve kapsamlı istekte. Kapsam mod Off'ta da çapaya yazılır (satır yolu da yazar).
+        var scope = mode == SalesSyncMode.On ? req.SaleScope : null;
+        var request = new PersonBalance.DrawRequest(
+            LicenseId: licenseId,
+            AnchorRowId: canonicalId,
+            // Anahtar VARSA çapanın PK'sı odur — rezervasyon budur (bugünkü sözleşme).
+            AnchorTransactionId: req.IdempotencyKey ?? Guid.NewGuid(),
+            AnchorIdIsIdempotencyKey: req.IdempotencyKey is not null,
+            Kind: PersonBalance.KindPurchaseDeduction,
+            // Sipariş tutarından fazla düşülmez; havuz sınırı DrawAsync'te (UpToPool).
+            Requested: Math.Min(req.Amount, req.ProductTotal),
+            Rule: PersonBalance.DrawAmountRule.UpToPool,
+            MemberIds: req.MemberIds,
+            OriginalAmount: req.ProductTotal,
+            SaleScope: req.SaleScope,
+            Reason: null,
+            ReversesTransactionId: null,
+            CreatedByCustomerId: User.GetTenantCustomerId(),
+            ScopeLockResource: scope is null ? null : ScopeLockResource(licenseId, canonicalId, scope));
+
+        IActionResult? stopped = null;
+
+        async Task<bool> BeforeAttempt(int attempt, CancellationToken token)
+        {
+            // 1. denemenin kapsamsız Lookup'ı Apply'ın ön oynatmasıdır; kapsam yolunda 1. deneme de kilit altında
+            // yeniden arar (aynı anahtarlı istek kilitte beklerken kazanan yazmış olabilir).
+            if (req.IdempotencyKey is { } key && (attempt > 1 || scope is not null))
+            {
+                var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, key, pool: true, token);
+                if (foreign)
+                {
+                    stopped = NotFound();
+                    return true;
+                }
+                if (conflict)
+                {
+                    stopped = ContentConflict();
+                    return true;
+                }
+                if (replay is not null)
+                {
+                    stopped = Ok(replay);
+                    return true;
+                }
+            }
+
+            if (scope is not null
+                && await LatestScopeDeductionAsync(licenseId, canonicalId, scope, personPool: true, token) is { } existing)
+            {
+                stopped = ScopeHasDeduction(licenseId, existing);
+                return true;
+            }
+
+            return false;
+        }
+
+        PersonBalance.DrawResult result;
+        try
+        {
+            result = await _person.DrawAsync(request, BeforeAttempt, ct);
+        }
+        catch (SalesCommandRejection rejection)
+        {
+            // Kapsam kilidi zaman aşımı (§6.6): aynı kişinin aynı satışında başka bir apply sürüyor; deneme işlemi
+            // commit edilmeden atıldı, hiçbir şey yazılmadı. İstemci yeniden dener.
+            _log.LogInformation(
+                "customer-balance/apply: kapsam kilidi alınamadı, 409 {Code} (license={LicenseId})",
+                rejection.Code, licenseId);
+            return Problem(title: rejection.Code, detail: rejection.Message, statusCode: rejection.StatusCode);
+        }
+
+        switch (result.Status)
+        {
+            case PersonBalance.DrawStatus.Drawn:
+                return Ok(new ApplyResponse(
+                    result.AnchorTransactionId, result.Applied, Math.Max(0m, result.Pool - result.Applied)));
+            case PersonBalance.DrawStatus.Stopped:
+                return stopped!;
+            case PersonBalance.DrawStatus.NoBalance:
+            {
+                // §4.2 adım 6'nın amacı 1. denemede de: kapsamsız yolda 1. denemenin tek Lookup'ı kilitsiz ön
+                // oynatmadır. Aynı anahtarlı istek ön oynatmadan sonra commit edip havuzu tükettiyse ne jeton
+                // çakışması ne PK ihlali olur. Σ ≤ 0 okuması o commit'i gördüyse aynı commit'teki çapayı bu Lookup da
+                // görür; kayıtlı anahtar ret almaz, kazananın sonucu oynatılır.
+                if (req.IdempotencyKey is { } spentKey)
+                {
+                    var (spentReplay, spentForeign, spentConflict) = await LookupAsync(
+                        licenseId, req, canonicalId, spentKey, pool: true, ct);
+                    if (spentForeign) return NotFound();
+                    if (spentConflict) return ContentConflict();
+                    if (spentReplay is not null) return Ok(spentReplay);
+                }
+                // Bugünkü başlık; WPF bunu kesin "bakiye yok" sayar (§4.2 adım 2, §4.0-1 kesin kol).
+                return Problem(title: PersonBalance.CodeNoBalance, statusCode: 409);
+            }
+            case PersonBalance.DrawStatus.NothingToApply:
+                return Problem(title: "nothing-to-apply", statusCode: 409);
+            case PersonBalance.DrawStatus.CustomerNotSynced:
+                return CustomerNotSynced(licenseId, "apply", result.RejectedRowIds);
+            case PersonBalance.DrawStatus.DuplicateKey:
+            {
+                // Aynı anahtarla yarışan iki istek: PK ihlali bütün bacaklarla birlikte geri alındı (DrawAsync
+                // izleyiciyi temizledi), kaybeden hiçbir iz bırakmaz. Kazananın sonucunu oynatabiliyorsak yarış
+                // hikâyesi tutuyor demektir; tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
+                var duplicateKey = req.IdempotencyKey!.Value;
+                var (winner, _, winnerConflict) = await LookupAsync(
+                    licenseId, req, canonicalId, duplicateKey, pool: true, ct);
+                if (winnerConflict) return ContentConflict();
+                if (winner is null)
+                    throw new InvalidOperationException("Bakiye apply: anahtar PK ihlali verdi ama kazanan bulunamadı");
+                _log.LogWarning(
+                    "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
+                    duplicateKey, licenseId);
+                return Ok(winner);
+            }
+            case PersonBalance.DrawStatus.Busy:
+                return BalanceBusy(licenseId, "apply");
+            default:
+                // Insufficient yalnız AllOrNothing'de, AlreadyReversed yalnız çekim türü iptalde (K5) döner.
+                throw new System.Diagnostics.UnreachableException(
+                    $"Bakiye apply: DrawAsync beklenmeyen sonuç döndü ({result.Status})");
+        }
+    }
+
+    /// <summary>
+    /// §6.6, DM6: kapsamda geri alınmamış düşüm var → 409 <c>scope-has-deduction {transactionId, appliedAmount,
+    /// productTotal}</c>; istemci onu benimser (W3). <c>appliedAmount</c> grubun toplamıdır (<c>−Σ</c>, spec 2026-10-11
+    /// §4.2, §15-2) — <see cref="LatestScopeDeductionAsync"/>'ten. Satır kipi (<see cref="ApplyOncePerScopeAsync"/>)
+    /// ve havuz kipi (<see cref="ApplyPoolAsync"/>) aynı gövdeyi döner.
+    /// </summary>
+    private ObjectResult ScopeHasDeduction(Guid licenseId, ScopeResponse existing)
+    {
+        _log.LogInformation(
+            "customer-balance/apply: kapsamda geri alınmamış düşüm var, 409 scope-has-deduction "
+            + "(license={LicenseId}, transaction={TransactionId})",
+            licenseId, existing.TransactionId);
+        var problem = Problem(title: CodeScopeHasDeduction, statusCode: 409,
+            detail: "Bu satışta geri alınmamış bir bakiye düşümü var.");
+        var details = (ProblemDetails)problem.Value!;
+        details.Extensions["transactionId"] = existing.TransactionId;
+        details.Extensions["appliedAmount"] = existing.AppliedAmount;
+        details.Extensions["productTotal"] = existing.ProductTotal;
+        return problem;
     }
 
     /// <summary>
@@ -511,17 +706,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // Satır kipinin yolu; yanıt bayrağı burada kullanılmaz (409 uzantıları PersonPool taşımaz).
         if (await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, personPool: false, ct) is { } existing)
         {
-            _log.LogInformation(
-                "customer-balance/apply: kapsamda geri alınmamış düşüm var, 409 scope-has-deduction "
-                + "(license={LicenseId}, transaction={TransactionId})",
-                licenseId, existing.TransactionId);
-            var problem = Problem(title: CodeScopeHasDeduction, statusCode: 409,
-                detail: "Bu satışta geri alınmamış bir bakiye düşümü var.");
-            var details = (ProblemDetails)problem.Value!;
-            details.Extensions["transactionId"] = existing.TransactionId;
-            details.Extensions["appliedAmount"] = existing.AppliedAmount;
-            details.Extensions["productTotal"] = existing.ProductTotal;
-            return problem;
+            return ScopeHasDeduction(licenseId, existing);
         }
 
         var (result, wrote) = await WriteDeductionAsync(licenseId, req, canonicalId, ct);
