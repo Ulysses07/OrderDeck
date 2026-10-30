@@ -147,6 +147,33 @@ public sealed class PersonBalanceVerifyJobTests
     }
 
     [Fact]
+    public async Task Havuz_kipindeki_lisansin_D3_uyarisi_e_postaya_girer_kisisel_veri_yok()
+    {
+        using var factory = new ApiFactory();
+        var kit = await Kit.CreateAsync(factory);
+        await kit.EnablePoolAsync();
+        // İşaret yok: D3 tabandan bağımsız uyarır (plan S2 fark 16); eksi satır kalemi taban yokken yalnız sayı.
+        var group = Kit.NewGroup();
+        var username = $"u{Guid.NewGuid():N}";
+        await kit.MemberAsync(group, 10m);
+        var negative = await kit.MemberAsync(group, -60m, username: username);
+
+        var (email, report) = await RunJobAsync(factory);
+
+        var licenseReport = report.Licenses.Single(l => l.LicenseId == kit.LicenseId);
+        licenseReport.HasBaseline.Should().BeFalse();
+        licenseReport.Alerts.Should().Equal("D3: havuzu < 0 kişi 1 (tabanla açıklanamayan, havuz kipi)");
+        var sent = email.Sent.Should().ContainSingle().Subject;
+        sent.ToEmail.Should().Be(AlertTo);
+        sent.PlainBody.Should().Contain(kit.LicenseId.ToString()).And.Contain("D3: havuzu < 0 kişi 1");
+        sent.HtmlBody.Should().Contain(kit.LicenseId.ToString()).And.Contain("D3: havuzu &lt; 0 kişi 1");
+        // Gövdede yalnız lisans Id'si ve sayı (§8.1): üyenin kullanıcı adı, satır Id'si ve numarası girmez.
+        foreach (var body in new[] { sent.PlainBody, sent.HtmlBody })
+            body.ToLowerInvariant().Should().NotContainAny(
+                username, negative.ToString("D"), negative.ToString("N"), group.ToLowerInvariant());
+    }
+
+    [Fact]
     public async Task Sapma_yoksa_e_posta_gitmez()
     {
         using var factory = new ApiFactory();
