@@ -19,8 +19,16 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
 /// Token öncesi davranış gerçek SQL Server'da tekrar üretilmişti: paralel
 /// iadeler birbirinin bakiye yazımını eziyor, cache ledger toplamından
 /// kopuyordu (invariant: Balance = SUM(Transactions.Amount)).
+///
+/// <para>Ortak bakiye §8.2-14: her test satır kipinde (bayrak boş) ve havuz kipinde
+/// (<c>License.PersonBalancePoolSince</c> dolu) koşar; iddialar iki kipte aynıdır. Havuz kipinde eksi ayar
+/// <c>PersonBalance.DrawAsync</c>'ten (tek üyeli kişide <c>P = S = {a}</c>), eski tek bacaklı düşümün panel
+/// iptali grup geri almasından geçer; iade ve WPF reverse kipe bakmaz. Kişi tek üyeli olduğu için havuz
+/// kipinin çok bacaklı yarışları burada değil, <c>PersonBalancePanelDrawRaceTests</c>'te sınanır.</para>
+/// Canlı yayın sırasında ÇALIŞTIRILMAZ.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
+[Trait("Category", "Testcontainers")]
 public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
 {
     private const int ParallelAttempts = 8;
@@ -39,10 +47,13 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    [Fact]
-    public async Task Paralel_iadeler_bakiyeyi_ledger_toplamindan_koparamaz()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Paralel_iadeler_bakiyeyi_ledger_toplamindan_koparamaz(bool pool)
     {
-        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 0m);
+        // §8.2-14: havuz kipinde de. İade (artı hareket) kipe bakmaz: iki kipte aynı tek satır yazıcısı.
+        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 0m, pool: pool);
         var clients = BuildClients(jwt);
 
         // Isınma turu: var olmayan müşteriye istek — yönlendirme, model bağlama
@@ -81,12 +92,16 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         balance.Should().Be(ledgerSum, "invariant: Balance = SUM(ledger)");
     }
 
-    [Fact]
-    public async Task Esazamanli_iki_negatif_ayarlamadan_yalnizca_biri_gecer()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Esazamanli_iki_negatif_ayarlamadan_yalnizca_biri_gecer(bool pool)
     {
         // Bakiye 100 — iki paralel -100 manuel ayar. Token öncesi ikisi de
         // ön kontrolde 100 görüp geçiyordu → bakiye -100 (kural delindi).
-        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 100m);
+        // §8.2-14: havuz kipinde de. Orada eksi ayar DrawAsync'ten geçer (AllOrNothing, P = S = {a}: kişi tek
+        // üyeli); tek kazanan commit eder, kaybedenler en çok bir kez çakışır ve taze planda 0 görüp 409 alır.
+        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 100m, pool: pool);
         var clients = BuildClients(jwt);
 
         await Task.WhenAll(clients.Select(c => c.PostAsJsonAsync(
@@ -108,8 +123,10 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         ledgerSum.Should().Be(-100m);
     }
 
-    [Fact]
-    public async Task Ayni_hareket_esazamanli_yalnizca_bir_kez_reverse_edilebilir()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Ayni_hareket_esazamanli_yalnizca_bir_kez_reverse_edilebilir(bool pool)
     {
         // N01 (2026-09-10 denetimi): +100 başlangıç, -60 düşüm → bakiye 40.
         // Aynı -60 hareketine 8 paralel Reverse. Ön kontrol (AnyAsync)
@@ -117,7 +134,9 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         // unique index olmalı. İndex öncesi davranış: iki+ +60 reversal satırı,
         // bakiye 160+ (defter ile bakiye TUTARLI biçimde yanlış — F02 token'ı
         // bu hatayı yakalayamaz, o yüzden ledger==balance asserti yetmez).
-        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 40m);
+        // §8.2-14: havuz kipinde de. Orada eski tek bacaklı eksi hedef grup geri almasına gider
+        // (PersonBalance.ReverseGroupAsync, plan farkı 10); hakem yine N01, kaybedenler already-reversed.
+        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 40m, pool: pool);
         var deductionId = Guid.NewGuid();
         using (var scope = _factory.Services.CreateScope())
         {
@@ -190,8 +209,10 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         balance.Should().Be(ledgerSum, "invariant: Balance = SUM(ledger)");
     }
 
-    [Fact]
-    public async Task WPF_ucunda_ayni_hareket_esazamanli_yalnizca_bir_kez_reverse_edilebilir()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WPF_ucunda_ayni_hareket_esazamanli_yalnizca_bir_kez_reverse_edilebilir(bool pool)
     {
         // N01 — licenses-surface (WPF ucu) için kapsam doğrulaması.
         // Panel yüzeyi aynı unique index'e güveniyor; bu test WPF endpoint'inin
@@ -200,6 +221,7 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         //
         // +100 refund-full başlangıç, -60 purchase-deduction → bakiye 40.
         // 8 paralel Reverse → yalnız biri kazanır, 7'si 409 already-reversed alır.
+        // §8.2-14: havuz kipinde de. WPF reverse kipe bakmaz ve havuz sürüm kapısı yok (plan farkı 2, 4).
         var (_, customerId, jwt) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
 
         Guid licenseId, wpfCustomerId, deductionId;
@@ -216,6 +238,7 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
                 ActivationSlots = 1,
                 IssuedAt = DateTimeOffset.UtcNow,
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                PersonBalancePoolSince = PoolSince(pool),
             });
             wpfCustomerId = Guid.NewGuid();
             db.WpfCustomerProjections.Add(new WpfCustomerProjection
@@ -327,8 +350,11 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         return (balance, ledger.Sum(), ledger.Count);
     }
 
+    /// <summary>Ortak bakiye kipinin bayrağı (spec §4.0): dolu → lisans havuz kipinde, boş → satır kipinde.</summary>
+    private static DateTimeOffset? PoolSince(bool pool) => pool ? DateTimeOffset.UtcNow.AddMinutes(-1) : null;
+
     private async Task<(HttpClient client, Guid customerId, Guid wpfCustomerId, Guid licenseId, string jwt)>
-        SeedAsync(decimal initialBalance)
+        SeedAsync(decimal initialBalance, bool pool)
     {
         var (client, customerId, jwt) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         using var scope = _factory.Services.CreateScope();
@@ -344,6 +370,7 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
             ActivationSlots = 1,
             IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+            PersonBalancePoolSince = PoolSince(pool),
         });
         var wpfCustomerId = Guid.NewGuid();
         db.WpfCustomerProjections.Add(new WpfCustomerProjection
