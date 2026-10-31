@@ -50,6 +50,18 @@ public sealed class OrderDeckMetrics
         LicenseTelemetryTouchFailures = _meter.CreateCounter<long>(
             "orderdeck.license.telemetry_touch_failures_total",
             description: "LastSeen/AppVersion touches from /validate that failed and were swallowed (R9-OPS03).");
+        BalanceCustomerNotSynced = _meter.CreateCounter<long>(
+            "orderdeck.balance.customer_not_synced_total",
+            description: "Person-pool balance requests rejected with 409 customer-not-synced, tagged by endpoint.");
+        BalanceClientUpdateRequired = _meter.CreateCounter<long>(
+            "orderdeck.balance.client_update_required_total",
+            description: "Balance requests rejected with 409 client-update-required, tagged by gate (sales-sync/person-balance) and endpoint.");
+        BalanceBusy = _meter.CreateCounter<long>(
+            "orderdeck.balance.busy_total",
+            description: "Balance requests that returned 503 balance-busy, tagged by endpoint: a write exhausted its retries, or a read outside the retried attempt was chosen as a deadlock victim. Nothing was written in either case.");
+        BalanceMultiLegDraws = _meter.CreateCounter<long>(
+            "orderdeck.balance.multi_leg_draws_total",
+            description: "Person-pool draws written across more than one balance row, tagged by legs (rows written, anchor included).");
     }
 
     public Counter<long> LicensesActivated { get; }
@@ -60,4 +72,8 @@ public sealed class OrderDeckMetrics
     public Counter<long> RefreshTokensRotated { get; }
     public Counter<long> RefreshTokenRotationFailures { get; }
     public Counter<long> LicenseTelemetryTouchFailures { get; }
+    public Counter<long> BalanceCustomerNotSynced { get; }
+    public Counter<long> BalanceClientUpdateRequired { get; }
+    public Counter<long> BalanceBusy { get; }
+    public Counter<long> BalanceMultiLegDraws { get; }
 }

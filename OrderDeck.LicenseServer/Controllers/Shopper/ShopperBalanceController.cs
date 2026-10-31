@@ -69,6 +69,10 @@ public sealed class ShopperBalanceController : ControllerBase
         // için bugün çoğunlukla aynı Id; eski bir bağlantı kopyaya işaret edebilir.
         var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, link.WpfCustomerId, ct);
 
+        // Kip lisans başına, her istekte okunur (§4.0). Havuz kipi ayrı yöntemde; satır kipi aşağıda S1'deki gibi.
+        if (await _person.IsPoolModeAsync(licenseId, ct))
+            return Ok(await PoolDetailsAsync(licenseId, canonicalId, take, ct));
+
         var row = await _db.CustomerBalances.AsNoTracking()
             .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
             .Select(b => new { b.Balance, b.UpdatedAt })
@@ -86,5 +90,35 @@ public sealed class ShopperBalanceController : ControllerBase
             .ToArray();
 
         return Ok(new BalanceDetailsResponse(balance, transactions));
+    }
+
+    /// <summary>
+    /// GET, havuz kipi (spec 2026-10-11 §4.10, K3, K4). <c>Balance = Σ_S</c> (silinmiş üyeler dahil; panelle aynı
+    /// toplam, §6.1-f — eksi için ayrı kural yok). Hareketler S'nin bütün üyelerinden gruplara toplanmış, take grup
+    /// sayar; UpdatedAt S'nin son para hareketi (M9; yoksa S'nin bakiye satırlarının en yenisi, o da yoksa şimdi).
+    /// K4 maskesi satır kipindekiyle aynı ifade: açıklama yalnız grubun çapası bağlı satırdaysa döner — başka üyenin
+    /// hareketinde tutar ve tür görünür, serbest metin gizli. Salt okuma, kilit yok.
+    /// </summary>
+    private async Task<BalanceDetailsResponse> PoolDetailsAsync(
+        Guid licenseId, Guid canonicalId, int take, CancellationToken ct)
+    {
+        var person = await _person.MembersAsync(licenseId, canonicalId, ct);
+        var ids = person.Members.Select(m => m.WpfCustomerId).ToList();
+
+        var lastMovement = await _person.LastMovementAtAsync(licenseId, ids, ct);
+        var updatedAt = lastMovement
+            ?? await _db.CustomerBalances.AsNoTracking()
+                .Where(b => b.LicenseId == licenseId && ids.Contains(b.WpfCustomerId))
+                .MaxAsync(b => (DateTimeOffset?)b.UpdatedAt, ct)
+            ?? DateTimeOffset.UtcNow;
+        var balance = new BalanceDto(person.Members.Sum(m => m.Balance), updatedAt);
+
+        var history = await _person.HistoryAsync(licenseId, ids, take, ct);
+        var transactions = history
+            .Select(h => new TransactionDto(h.Id, h.Amount, h.Kind, h.OriginalAmount, h.ShippingDeducted,
+                h.AnchorWpfCustomerId == canonicalId ? h.Reason : null, h.CreatedAt))
+            .ToArray();
+
+        return new BalanceDetailsResponse(balance, transactions);
     }
 }

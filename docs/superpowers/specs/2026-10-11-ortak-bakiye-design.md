@@ -121,7 +121,7 @@ Yeni servis `Services/CustomerSync/PersonBalance.cs` (scoped):
 **`P` ve 409 kuralları (havuz kipi, preview/apply).** `a` = istekteki Id'nin asıl kaydı, `W` = asıl kayda çözülmüş `memberIds`. `a` her zaman `W`'ye eklenir.
 
 1. `a`'nın projeksiyonu sunucuda yoksa:
-   - `W`'nin hiçbir Id'si de sunucuda yoksa → **409 `no-balance`** (kesin). Bakiye satırı projeksiyona FK (`:851-852`); hiçbir üyede para olamaz. Yeni açılmış, henüz gönderilmemiş müşteri böylece bekletilmez.
+   - `W`'nin hiçbir Id'si de sunucuda yoksa → apply'da **409 `no-balance`** (kesin), preview'da **200, `Balance = 0`, `PersonPool = true`** (K7). Bakiye satırı projeksiyona FK (`:851-852`); hiçbir üyede para olamaz. Yeni açılmış, henüz gönderilmemiş müşteri böylece bekletilmez.
    - Sunucuda en az bir üye varsa → **409 `customer-not-synced`** (K2). Çapa yazılamaz (hareket projeksiyona FK, `LicenseDbContext.cs:867-868`).
 2. `W`'deki bir Id'nin projeksiyonu sunucuda yoksa o Id atılır. Henüz senkronlanmamış satırın bakiye satırı olamaz: bakiye satırı projeksiyona FK (`:851-852`), panel uçları projeksiyonu bulamayan Id'yi reddeder (`CustomerIdResolver.cs:69-81`).
 3. `W` ile `S(a)`'nın **canlı** (sunucuda silinmemiş) üyeleri karşılaştırılır:
@@ -598,7 +598,7 @@ InMemory tekil indeks ve jeton yarışını uygulamaz. Bu yüzden şunlar gerçe
 ### 8.3 InMemory ve birim
 
 - `PlanDraw` tablo testleri: çapa önce, silinmiş önce, büyük bakiye önce, Id ordinal eşitliği, eksi satır atlanır, tutar kırpma.
-- Preview havuzu; kural 1'in iki kolu (hiç üye yoksa kesin `no-balance`, en az bir üye varsa `customer-not-synced`); kural 3a ve 3b; `S∖W`'de yalnız sıfır ya da eksi üyeler varken kesişim ve `Σ`'ya eklenen eksiler (A = 100, B = −60, `W = {A}` → kullanılabilir 40); silinmiş üyelerin `S`'den alınması, `W`'deki silinmiş üyenin yok sayılması; `client-update-required` (`System.Version` sırası: "0.9.10" > "0.9.9", ekli ve ayrıştırılamayan sürüm); boş `MinClientVersion`; `member-ids-required`.
+- Preview havuzu; kural 1'in iki kolu (hiç üye yoksa preview 200 `Balance = 0` / apply kesin `no-balance` (K7), en az bir üye varsa `customer-not-synced`); kural 3a ve 3b; `S∖W`'de yalnız sıfır ya da eksi üyeler varken kesişim ve `Σ`'ya eklenen eksiler (A = 100, B = −60, `W = {A}` → kullanılabilir 40); silinmiş üyelerin `S`'den alınması, `W`'deki silinmiş üyenin yok sayılması; `client-update-required` (`System.Version` sırası: "0.9.10" > "0.9.9", ekli ve ayrıştırılamayan sürüm); boş `MinClientVersion`; `member-ids-required`.
 - Kişi sorgusunun ordinal süzgeci: `"g1"` ile `"g1 "` ve `"G1"` ayrı kişi.
 - Örnek 1–4'ün birebir satırları; `scope` yalnız çapada; `transactions/{id}` toplamı; Lookup `−Σ`; bacak anahtar → 404; çapanın bakiye satırı yoksa 0 ile açılır.
 - Geri alma biçimi: eski tek bacaklı düşümün geri alması `DrawGroupId = NULL` (havuz kipi açılmamış lisansta hiç `DrawGroupId` dolu satır oluşmaz); çok bacaklı grubun geri alması grup satırlarıyla.
@@ -670,6 +670,7 @@ Bu PR banka spec'ini **değiştirmez**. Aşağıdaki düzeltmeler #505 birleşti
 | K4 | Shopper | Shopper uygulaması kişi toplamını gösterir. Öbür kayıtlardan gelen hareketlerin tutarı ve türü görünür, `Reason` metni gizlenir. (§4.10) |
 | K5 | Panel eksi işlemler | İade iptali ya da eksi elle ayarda hedef kayıtta yeterli para yoksa kalan öbür üyelerden çekilir (çok bacaklı), bugünkü 409 yerine. (§4.8, §4.9) |
 | K6 | Banka | Havale fazlası onaylanan beklentinin sahip satırına yazılır. Banka spec'i §11.2'deki "bakiyede ne varsa" = havuz. (§9) |
+| K7 | Preview'da hiç üye yok (2026-10-29) | Kural 1'in kesin kolunda preview 200 `Balance = 0`, `PersonPool = true` döner; apply 409 `no-balance` kalır. Bugünkü WPF preview'ın her hatasını yutar ve `MarkNoBalance`'ı yalnız bakiye ≤ 0 iken yazar (`PaymentRequestService.cs:1397-1420`); böylece bugünkü ve W-havuz WPF istemci değişikliği olmadan doğru davranır, §6.1-b'ye eşleme gerekmez. (§4.0-1) |
 
 **Mühendislik kararları**
 

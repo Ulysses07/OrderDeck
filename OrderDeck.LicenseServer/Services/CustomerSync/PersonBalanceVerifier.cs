@@ -17,8 +17,9 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///
 /// <para><b>Uyarı (§8.1) yalnız YENİ sapmada:</b> D4/D5/D6/yetim ≠ 0 (her zaman); lisansın tabanı varken taban dışı
 /// eksi satır ya da tabandaki bir satırın (kopya dahil) tabandakinin altında eksi olması, taban dışı D1 ya da
-/// tabandaki satırın <c>Balance − LedgerSum</c> farkının değişmesi, taban dışı kopya satır. Havuz kipindeki D3
-/// uyarısı S2'de (S1 kip bayrağını okumaz); 6. madde yalnız sayı. 4. maddenin "grubunda canlı asıl üye kalmamış"
+/// tabandaki satırın <c>Balance − LedgerSum</c> farkının değişmesi, taban dışı kopya satır; havuz kipindeki lisansta
+/// (<see cref="LicenseRow.PoolSince"/> dolu) taban satırlarıyla açıklanamayan havuzu &lt; 0 kişi (D3'ün izi,
+/// tabandan bağımsız — plan S2 fark 16). Satır kipinde 6. madde yalnız sayı. 4. maddenin "grubunda canlı asıl üye kalmamış"
 /// kalemi de yalnız sayı: uyarıya çevrilmesi spec §10 açık kalanlarda (numara izlemesinin hakemi). <b>Tabanı
 /// var</b> ⇔ lisansın işaret satırı (<see cref="LicenseMarker"/>) var ya da lisans ilk yakalamadan SONRA verilmiş
 /// (S1 öncesi verisi olamaz). Kimlik birleştiricinin asıl kayda taşıdığı (bakiyesi 0, hareketi yok) kopyanın taban
@@ -27,7 +28,9 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// </summary>
 public sealed class PersonBalanceVerifier
 {
-    /// <summary>Aktif PC penceresi: satış senkronu kapısıyla aynı ölçüt (14 gün). Ayarı S2'nin <c>enable</c>'ı getirir.</summary>
+    /// <summary>Aktif PC penceresi (9. madde): satış senkronu kapısıyla aynı ölçüt, sabit 14 gün. §7.3-9 pencere
+    /// tanımlamaz; <c>PersonBalance:ActivePcWindowDays</c> yalnız <c>enable</c>'ın 1. koşulunu
+    /// (<see cref="PersonBalanceEnableGate"/>) besler, bu raporu değil (plan S2 fark 6).</summary>
     public static readonly TimeSpan ActivePcWindow = SalesModeGate.RecentWindow;
 
     /// <summary>Taban tablosunda lisansın "taban alındı" işareti.</summary>
@@ -39,7 +42,9 @@ public sealed class PersonBalanceVerifier
 
     // ── Anlık görüntü ────────────────────────────────────────────────────────
 
-    public sealed record LicenseRow(Guid Id, DateTimeOffset IssuedAt);
+    /// <param name="PoolSince">Kip bayrağı (<c>License.PersonBalancePoolSince</c>): dolu = havuz kipi, D3 uyarısı
+    /// açılır. Varsayılan null = satır kipi (S1'in testleri iki argümanla kurar).</param>
+    public sealed record LicenseRow(Guid Id, DateTimeOffset IssuedAt, DateTimeOffset? PoolSince = null);
     public sealed record ProjectionRow(Guid Id, Guid LicenseId, string? GroupId, Guid? MergedIntoId, bool Purged);
     public sealed record BalanceRow(Guid LicenseId, Guid WpfCustomerId, decimal Balance);
     public sealed record LedgerRow(Guid LicenseId, Guid WpfCustomerId, decimal Sum, int Count);
@@ -73,7 +78,7 @@ public sealed class PersonBalanceVerifier
         // Lisans süzgeci her sorguda parametre: null'da düşer (lisans Id listesi taşınmaz).
         var licenses = await _db.Licenses.AsNoTracking()
             .Where(l => licenseId == null || l.Id == licenseId)
-            .Select(l => new LicenseRow(l.Id, l.IssuedAt)).ToListAsync(ct);
+            .Select(l => new LicenseRow(l.Id, l.IssuedAt, l.PersonBalancePoolSince)).ToListAsync(ct);
 
         var projections = await _db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
             .Where(p => licenseId == null || p.LicenseId == licenseId)
@@ -387,6 +392,12 @@ public sealed class PersonBalanceVerifier
             if (copyOut.Count > 0)
                 alerts.Add($"kopya: taban dışı {copyOut.Count}");
         }
+        // D3'ün izi (§8.1 son madde): havuz kipindeki lisansta taban satırlarıyla açıklanamayan havuzu < 0 kişi
+        // (açıklanabilir = 6. maddenin "explained"ı). Tabandan bağımsız (plan S2 fark 16): "taban yoksa yalnız sayı"
+        // istisnası eksi/D1/kopya kalemleri içindir; havuz kipi tabanı olan lisansta açılır (enable 3. koşulu) ve orada
+        // açıklanamayan eksi kişi çalışma anı kuralının (kişi kilidi) bozulmasıdır. Satır kipinde yalnız sayı.
+        if (license.PoolSince is not null && negativePersons.Count > explained)
+            alerts.Add($"D3: havuzu < 0 kişi {negativePersons.Count - explained} (tabanla açıklanamayan, havuz kipi)");
 
         // Adlandırılmış argümanlar: kayıtların çoğu alanı aynı türde (int, Tally, List<Guid>); yer değiştirme sessizce
         // derlenirdi.

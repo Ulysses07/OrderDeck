@@ -6,13 +6,15 @@ using Microsoft.Extensions.Configuration;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.Sync;
 
 namespace OrderDeck.LicenseServer.Tools;
 
 /// <summary>
 /// Konteyner içinde elle koşulur:
-///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify [seçenekler]
-/// Ortak bakiye denetimi (spec 2026-10-11 §7.3; çekirdek <see cref="PersonBalanceVerifier"/>):
+///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance &lt;verify|enable|disable&gt; [seçenekler]
+/// Ortak bakiye denetimi ve havuz kipinin anahtarı (spec 2026-10-11 §7.2, §7.3; çekirdekler
+/// <see cref="PersonBalanceVerifier"/> ve <see cref="PersonBalanceEnableGate"/>):
 /// <list type="bullet">
 ///   <item><c>verify [--license &lt;guid&gt;] [--details]</c> — salt okunur rapor (§7.3 maddeleri 1–10). Lisans
 ///   verilmezse bütün lisanslar, verisizler dahil (plan fark 16). <c>--details</c> şu satırların
@@ -27,13 +29,23 @@ namespace OrderDeck.LicenseServer.Tools;
 ///   <item><c>--mark-reviewed --license &lt;guid&gt; [--details] [--apply]</c> — sahip incelemesi (§7.1 adım 4):
 ///   lisansın incelenmemiş taban satırlarının <c>ReviewedAt</c>'i. <c>--details</c> işaretlenecek satırların
 ///   <c>WpfCustomerId</c>'lerini de basar (işaret hariç).</item>
+///   <item><c>enable --license &lt;guid&gt; [--apply]</c> — havuz kipini açar (§7.2, §7.1 adım 7): kuru koşu kapının dört
+///   koşulunu (<see cref="PersonBalanceEnableGate"/>) sayılarla basar, koşul tutmasa da 0 döner; <c>--apply</c>
+///   koşulları yeniden değerlendirir (önceki kuru koşuya güvenmez), biri tutmazsa hiçbir şey yazmadan 1; tutarsa
+///   <c>PersonBalancePoolSince</c> = şimdi, tek koşullu UPDATE'le (yalnız bayrak hâlâ boşsa).</item>
+///   <item><c>disable --license &lt;guid&gt; [--apply]</c> — kill switch (§7.2, §7.4): <c>PersonBalancePoolSince</c>
+///   boşalır, lisans satır kipine iner. Kapı yok, yapılandırma okunmaz, veri işlemi yok; çok bacaklı geçmiş S1
+///   okuyucularıyla okunur ve geri alınır.</item>
 /// </list>
-/// Yazan bayraklar <c>--apply</c> olmadan yazacağını basar; yalnız <c>PersonBalanceBaselines</c>'a yazar. Rapora
-/// <c>--apply</c> vermek kullanım hatasıdır. Çıkış: 0 tamam; 1 eşzamanlı yazım ya da silme, ya da işaretsiz
-/// lisansta inceleme, hiçbir şey yazılmadı; 2 kullanım, yapılandırma ya da bilinmeyen lisans. Öbür veritabanı
-/// hataları yutulmaz: işlenmemiş istisna olarak yükselir (yığın izi, 0/1/2 dışı çıkış kodu). Argümanlar katı (<see cref="SalesSync"/>
-/// deseni). Bağlantı dizesi web host'unkiyle aynı kaynaktan (<c>ConnectionStrings:LicenseDb</c>). Çıktıda ad, telefon,
-/// makine adı YOK — yalnız sayılar, tutarlar, Id'ler. <c>enable</c>/<c>disable</c> S2'de bu sınıfa eklenir.
+/// Yazan yollar <c>--apply</c> olmadan yazacağını basar. <c>verify</c>'ın bayrakları yalnız
+/// <c>PersonBalanceBaselines</c>'a, <c>enable</c>/<c>disable</c> yalnız <c>Licenses.PersonBalancePoolSince</c>'a yazar.
+/// Rapora <c>--apply</c> vermek kullanım hatasıdır. Çıkış: 0 tamam, kuru koşu ya da yapılacak bir şey yok (zaten
+/// açıkken <c>enable</c>, zaten kapalıyken <c>disable</c>; S2 planı fark 18e); 1 eşzamanlı yazım ya da silme, işaretsiz
+/// lisansta inceleme, ya da <c>enable --apply</c>'da tutmayan koşul — hiçbir şey yazılmadı; 2 kullanım, yapılandırma
+/// ya da bilinmeyen lisans. Öbür veritabanı hataları yutulmaz: işlenmemiş istisna olarak yükselir (yığın izi, 0/1/2
+/// dışı çıkış kodu). Argümanlar katı (<see cref="SalesSync"/> deseni). Bağlantı dizesi web host'unkiyle aynı kaynaktan
+/// (<c>ConnectionStrings:LicenseDb</c>); <c>enable</c> ayrıca <c>PersonBalance:*</c> ve <c>SalesSync:*</c> bölümlerini
+/// okur. Çıktıda ad, telefon, makine adı, parmak izi YOK — yalnız sayılar, tutarlar, sürümler, Id'ler.
 /// </summary>
 public static class PersonBalanceCommand
 {
@@ -41,14 +53,22 @@ public static class PersonBalanceCommand
         "Kullanım:\n"
         + "  person-balance verify [--license <guid>] [--details]\n"
         + "  person-balance verify [--license <guid>] [--details] --capture-baseline [--apply]\n"
-        + "  person-balance verify --license <guid> [--details] --mark-reviewed [--apply]";
+        + "  person-balance verify --license <guid> [--details] --mark-reviewed [--apply]\n"
+        + "  person-balance enable --license <guid> [--apply]\n"
+        + "  person-balance disable --license <guid> [--apply]";
 
     /// <summary>Ayrıştırılmış <c>verify</c>.</summary>
     public sealed record VerifyArgs(Guid? License, bool Details, bool CaptureBaseline, bool MarkReviewed, bool Apply);
 
+    /// <summary>Ayrıştırılmış <c>enable</c>/<c>disable</c>.</summary>
+    /// <param name="Enable">true = <c>enable</c>, false = <c>disable</c>.</param>
+    /// <param name="Apply">false = kuru koşu.</param>
+    public sealed record ToggleArgs(bool Enable, Guid License, bool Apply);
+
     public static async Task<int> RunAsync(string[] args)
     {
-        if (!TryParseArgs(args, out var parsed))
+        // enable/disable kendi ayrıştırıcısında; verify'ınki onları reddetmeye devam eder (S2 planı fark 13).
+        if (!TryParseAnyArgs(args, out var verify, out var toggle))
         {
             Console.Error.WriteLine(Usage);
             return 2;
@@ -67,7 +87,18 @@ public static class PersonBalanceCommand
 
         var options = new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(conn).Options;
         await using var db = new LicenseDbContext(options);
-        return await RunAsync(db, parsed, Console.Out, Console.Error, CancellationToken.None);
+        var output = Console.Out;
+        var error = Console.Error;
+        var ct = CancellationToken.None;
+        if (toggle is null) return await RunAsync(db, verify!, output, error, ct);
+        // disable kill switch'tir: yapılandırma okumaz, kullanmadığı bir ayarın bozukluğuyla kilitlenmez.
+        if (!toggle.Enable) return await RunDisableAsync(db, toggle, output, error, ct);
+
+        // Web host'un ValidateOnStart'ı CLI'da koşmaz; pencerenin denetimi RunEnableAsync'in başında (gövdede).
+        var personBalance = config.GetSection(PersonBalanceOptions.Section).Get<PersonBalanceOptions>()
+            ?? new PersonBalanceOptions();
+        var salesSync = config.GetSection(SalesSyncOptions.Section).Get<SalesSyncOptions>() ?? new SalesSyncOptions();
+        return await RunEnableAsync(db, toggle, personBalance, salesSync, output, error, ct);
     }
 
     /// <summary>Gövde: argümanlar ayrıştırılmış, bağlam kurulmuş. Testler buradan girer. Ayrıştırıcının reddedeceği
@@ -209,6 +240,155 @@ public static class PersonBalanceCommand
         return 0;
     }
 
+    // ── enable / disable (§7.2) ──────────────────────────────────────────────
+
+    /// <summary><c>enable</c>'ın gövdesi: argümanlar ayrıştırılmış, bağlam ve iki ayar bölümü verilmiş. Testler buradan
+    /// girer. Pencere (<c>PersonBalance:ActivePcWindowDays</c>) 0 ya da eksiyse lisans okunmadan 2: kapı
+    /// (<see cref="PersonBalanceEnableGate"/>) 1. koşulu bu durumda zaten kapalı-hata ile tutmaz sayar; bu denetim ek
+    /// güvencedir ve operatöre "koşul 1 tutmuyor" yerine asıl sebebi (yapılandırma hatası) gösterir. Zaten açıksa
+    /// kapıyı değerlendirmez, yazmaz, 0 (S2 planı fark 18e). Kuru koşu dört koşulu basar ve koşul tutmasa da 0 döner;
+    /// <c>--apply</c> koşulları bu koşuda yeniden değerlendirir, biri tutmazsa 1. Yazım tek koşullu UPDATE'tir (yalnız
+    /// bayrak hâlâ boşsa): eşzamanlı bir <c>enable</c> önce yazdıysa 0 satır → 1, hiçbir şey yazılmadı.</summary>
+    public static async Task<int> RunEnableAsync(
+        LicenseDbContext db, ToggleArgs args, PersonBalanceOptions personBalance, SalesSyncOptions salesSync,
+        TextWriter output, TextWriter error, CancellationToken ct)
+    {
+        // Web host'ta ValidateOnStart bunu açılışta yakalar; CLI'da ve doğrudan çağıranda savunma burada.
+        if (personBalance.ActivePcWindowDays <= 0)
+        {
+            error.WriteLine("PersonBalance:ActivePcWindowDays 0'dan büyük olmalı.");
+            return 2;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var license = await db.Licenses.AsNoTracking()
+            .Where(l => l.Id == args.License)
+            .Select(l => new { l.PersonBalancePoolSince })
+            .SingleOrDefaultAsync(ct);
+        if (license is null)
+        {
+            error.WriteLine($"Lisans bulunamadı: {args.License}. Hiçbir şey yazılmadı.");
+            return 2;
+        }
+
+        output.WriteLine($"{(args.Apply ? "UYGULAMA" : "KURU ÇALIŞTIRMA")} — person-balance enable — {Time(now)}");
+        output.WriteLine($"Lisans: {args.License}");
+        if (license.PersonBalancePoolSince is { } since)
+        {
+            output.WriteLine($"Havuz kipi zaten açık (PersonBalancePoolSince={Time(since)}); hiçbir şey yazılmadı.");
+            return 0;
+        }
+
+        var gate = await PersonBalanceEnableGate.EvaluateAsync(db, args.License, personBalance, salesSync, now, ct);
+        WriteGate(output, gate);
+
+        if (!args.Apply)
+        {
+            output.WriteLine("Kuru çalıştırma: hiçbir şey yazılmadı. Açmak için --apply ekle.");
+            return 0;
+        }
+        if (!gate.Passes)
+        {
+            error.WriteLine($"Havuz kipi açılmadı: koşul {string.Join(", ", gate.Failing)} tutmuyor; hiçbir şey yazılmadı.");
+            return 1;
+        }
+
+        // Tek koşullu deyim (atomik): yalnız bayrak hâlâ boşsa yazar. Eşzamanlı bir enable önce yazdıysa 0 satır.
+        var updated = await db.Licenses
+            .Where(l => l.Id == args.License && l.PersonBalancePoolSince == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(l => l.PersonBalancePoolSince, now), ct);
+        if (updated == 0)
+        {
+            error.WriteLine("Havuz kipi bu arada değişti (başka bir enable?); hiçbir şey yazılmadı, yeniden çalıştır.");
+            return 1;
+        }
+        output.WriteLine($"UYGULANDI: havuz kipi açık, PersonBalancePoolSince={Time(now)}");
+        return 0;
+    }
+
+    /// <summary><c>disable</c>'ın gövdesi — kill switch (§7.2, §7.4): kapı yok, veri işlemi yok, yalnız
+    /// <c>PersonBalancePoolSince = NULL</c>. Zaten kapalıysa yazmaz, 0 (S2 planı fark 18e). Yazım tek koşullu UPDATE'tir
+    /// (yalnız bayrak hâlâ doluysa): eşzamanlı bir <c>disable</c> önce boşalttıysa 0 satır → 1.</summary>
+    public static async Task<int> RunDisableAsync(
+        LicenseDbContext db, ToggleArgs args, TextWriter output, TextWriter error, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var license = await db.Licenses.AsNoTracking()
+            .Where(l => l.Id == args.License)
+            .Select(l => new { l.PersonBalancePoolSince })
+            .SingleOrDefaultAsync(ct);
+        if (license is null)
+        {
+            error.WriteLine($"Lisans bulunamadı: {args.License}. Hiçbir şey yazılmadı.");
+            return 2;
+        }
+
+        output.WriteLine($"{(args.Apply ? "UYGULAMA" : "KURU ÇALIŞTIRMA")} — person-balance disable — {Time(now)}");
+        output.WriteLine($"Lisans: {args.License}");
+        if (license.PersonBalancePoolSince is not { } since)
+        {
+            output.WriteLine("Havuz kipi zaten kapalı; hiçbir şey yazılmadı.");
+            return 0;
+        }
+        if (!args.Apply)
+        {
+            output.WriteLine($"Kuru çalıştırma: havuz kipi kapatılacak (PersonBalancePoolSince={Time(since)} → boş); "
+                + "veri işlemi yok. Kapatmak için --apply ekle.");
+            return 0;
+        }
+
+        var updated = await db.Licenses
+            .Where(l => l.Id == args.License && l.PersonBalancePoolSince != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(l => l.PersonBalancePoolSince, (DateTimeOffset?)null), ct);
+        if (updated == 0)
+        {
+            error.WriteLine("Havuz kipi bu arada değişti (başka bir disable?); hiçbir şey yazılmadı, yeniden çalıştır.");
+            return 1;
+        }
+        output.WriteLine("UYGULANDI: havuz kipi kapalı (satır kipi); çok bacaklı geçmiş okunur ve geri alınır, "
+            + "veri işlemi yapılmadı.");
+        return 0;
+    }
+
+    /// <summary>Kapının dört koşulu (§7.2) ve sonuç satırı. Yalnız sayı, sürüm ve etkinleştirme Id'si; makine adı,
+    /// parmak izi, müşteri yok (kapı onları okumaz).</summary>
+    private static void WriteGate(TextWriter o, PersonBalanceEnableGate.Result gate)
+    {
+        var clients = gate.Clients;
+        o.WriteLine($"Koşul 1 — istemci sürümü (son {gate.WindowDays} gün): {Verdict(clients.Passes)}");
+        // Ham değer (kırpılmış) 4. koşulun satırıyla aynı; yazılı ama ayrıştırılamıyorsa (R06 "bozuk") Clients'ın
+        // alt sınırı null'dır, operatör yazdığı değeri "tanımsız" görmesin.
+        var limit = gate.Superset.PersonBalanceMin;
+        o.WriteLine($"  PersonBalance:MinClientVersion: {limit ?? "tanımsız"}"
+            + (limit is not null && clients.MinClientVersion is null ? " (ayrıştırılamıyor)" : ""));
+        o.WriteLine($"  görülen etkin etkinleştirme: {clients.RecentActivations}; alt sınırın altında ya da sürümsüz: "
+            + (clients.MinClientVersion is null
+                ? "karşılaştırılamadı"
+                : clients.Old.Count.ToString(CultureInfo.InvariantCulture)));
+        foreach (var a in clients.Old.OrderBy(a => a.Id.ToString(), StringComparer.Ordinal))
+            o.WriteLine($"    {a.Id} (sürüm={a.AppVersion ?? "bilinmiyor"})");
+
+        var v = gate.Verify;
+        o.WriteLine($"Koşul 2 — verify: D4={v.D4} D5={v.D5} D6={v.D6} yetim={v.OrphanLegs} kırpma={v.TrimMismatches} "
+            + $"kontrol karakteri={v.ControlCharGroups}: {Verdict(v.Passes)}");
+
+        var b = gate.Baseline;
+        o.WriteLine($"Koşul 3 — taban: {(b.HasBaseline ? "var" : "YOK — önce verify --capture-baseline")}; "
+            + $"incelenmemiş {b.Unreviewed}; taban dışı eksi {b.NegativeOutside}; daha da eksiye inen {b.Worsened}; "
+            + $"taban dışı D1 {b.LedgerMismatchOutside}; farkı değişen D1 {b.ChangedMismatch}; "
+            + $"taban dışı kopya {b.CopyOutside}: {Verdict(b.Passes)}");
+
+        var s = gate.Superset;
+        o.WriteLine($"Koşul 4 — Wh ⊇ Ws: PersonBalance:MinClientVersion={s.PersonBalanceMin ?? "tanımsız"} "
+            + $"SalesSync:MinClientVersion={s.SalesSyncMin ?? "tanımsız"}: {Verdict(s.Passes)}");
+
+        o.WriteLine(gate.Passes
+            ? "Sonuç: bütün koşullar tutuyor"
+            : $"Sonuç: koşul {string.Join(", ", gate.Failing)} tutmuyor");
+    }
+
+    private static string Verdict(bool passes) => passes ? "TUTUYOR" : "TUTMUYOR";
+
     private static string Breakdown(PersonBalanceVerifier.Details d, Func<Guid, bool> include) =>
         $"eksi {d.NegativeOutside.Count(include)}, D1 {d.LedgerMismatchOutside.Count(include)}, "
         + $"kopya {d.CopyOutside.Count(include)}";
@@ -258,8 +438,9 @@ public static class PersonBalanceCommand
 
     // ── Ayrıştırma ────────────────────────────────────────────────────────────
 
-    /// <summary>args[0] komut adı, args[1] alt komut (yalnız <c>verify</c>; S2 <c>enable</c>/<c>disable</c>
-    /// ekler). Tanınmayan argüman, ikinci kez verilen seçenek, değersiz ya da GUID olmayan <c>--license</c>, rapora
+    /// <summary>args[0] komut adı, args[1] alt komut (yalnız <c>verify</c>; <c>enable</c>/<c>disable</c>
+    /// <see cref="TryParseToggleArgs"/>'ta, bu ayrıştırıcı onları reddeder — S2 planı fark 13). Tanınmayan argüman, ikinci
+    /// kez verilen seçenek, değersiz ya da GUID olmayan <c>--license</c>, rapora
     /// <c>--apply</c>, birlikte <c>--capture-baseline</c> ve <c>--mark-reviewed</c>, lisanssız <c>--mark-reviewed</c>
     /// → false. <c>public</c>: geçerli argümanlı yol yapılandırmaya ve veritabanına gider; kabul edilen biçimler yalnız
     /// saf fonksiyon olarak sınanabilir.</summary>
@@ -302,4 +483,53 @@ public static class PersonBalanceCommand
         !(a.CaptureBaseline && a.MarkReviewed)
         && (!a.Apply || a.CaptureBaseline || a.MarkReviewed)
         && (!a.MarkReviewed || a.License is not null);
+
+    /// <summary>Dağıtım (S2 planı fark 13): <c>args[1]</c> <c>enable</c> ya da <c>disable</c> ise
+    /// <see cref="TryParseToggleArgs"/>, değilse <see cref="TryParseArgs"/>. true'da çıktılardan tam biri dolu; false'ta
+    /// ikisi de boş. Tek kullanıcısı <c>RunAsync(string[])</c>; <c>public</c>: dağıtım yapılandırma ve veritabanı
+    /// olmadan saf fonksiyon olarak sınanır.</summary>
+    public static bool TryParseAnyArgs(string[] args, out VerifyArgs? verify, out ToggleArgs? toggle)
+    {
+        verify = null;
+        toggle = null;
+        return args.Length > 1 && args[1] is ("enable" or "disable")
+            ? TryParseToggleArgs(args, out toggle)
+            : TryParseArgs(args, out verify);
+    }
+
+    /// <summary><c>enable</c>/<c>disable</c>'ın ayrıştırıcısı (args[0] komut adı, args[1] alt komut): <c>--license
+    /// &lt;guid&gt;</c> tam bir kez ve zorunlu, <c>--apply</c> en çok bir kez. Başka her argüman, ikinci kez verilen
+    /// seçenek, değersiz ya da GUID olmayan <c>--license</c> → false (<see cref="TryParseArgs"/>'ın katılığı).
+    /// <c>public</c>: kabul edilen biçimler saf fonksiyon olarak sınanır.</summary>
+    public static bool TryParseToggleArgs(string[] args, [NotNullWhen(true)] out ToggleArgs? parsed)
+    {
+        parsed = null;
+        if (args.Length < 2 || args[1] is not ("enable" or "disable")) return false;
+
+        Guid? license = null;
+        var apply = false;
+        for (var i = 2; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg == "--license")
+            {
+                if (license is not null || i + 1 >= args.Length || !Guid.TryParse(args[i + 1], out var id)) return false;
+                license = id;
+                i++;
+            }
+            else if (arg == "--apply")
+            {
+                if (apply) return false;
+                apply = true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        if (license is not { } licenseId) return false;
+        parsed = new ToggleArgs(args[1] == "enable", licenseId, apply);
+        return true;
+    }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -5,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.Observability;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -32,15 +34,17 @@ public sealed class PanelCustomerBalanceController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
     private readonly PersonBalance _person;
+    private readonly OrderDeckMetrics _metrics;
     private readonly ILogger<PanelCustomerBalanceController> _log;
 
     public PanelCustomerBalanceController(
         LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person,
-        ILogger<PanelCustomerBalanceController> log)
+        OrderDeckMetrics metrics, ILogger<PanelCustomerBalanceController> log)
     {
         _db = db;
         _customerIds = customerIds;
         _person = person;
+        _metrics = metrics;
         _log = log;
     }
 
@@ -82,7 +86,12 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        // Ortak bakiye S1, satır kipi (spec 2026-10-11 §4.6): bakiye ve hareketler rota satırınınki, hareketler
+        // Ortak bakiye kipi lisans başına, her istekte okunur (spec 2026-10-11 §4.0). Havuz kipi ayrı yöntemde;
+        // satır kipinin yolu aşağıda S1'deki gibi.
+        if (await _person.IsPoolModeAsync(licenseId, ct))
+            return Ok(await PoolDetailsAsync(wpfCustomerId, licenseId, canonicalId, take, ct));
+
+        // Ortak bakiye satır kipi (bayrak boş; spec 2026-10-11 §4.6): bakiye ve hareketler rota satırınınki, hareketler
         // gruplara toplanmış; take grup sayar. UpdatedAt son para hareketidir (M9): grup değişimi kancasının ve
         // birleştiricinin jeton dokunuşu "güncellendi" zamanını oynatmaz.
         var row = await _db.CustomerBalances.AsNoTracking()
@@ -190,6 +199,22 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
+        // Ortak bakiye S2 (spec 2026-10-11 §4.8, K5): havuz kipinde eksi ayar kişinin havuzundan çok bacaklı
+        // çekimdir. Kip yalnız eksi tutarda okunur; artı tutar iki kipte de aşağıdaki yoldan (R47). Reason yukarıda
+        // doğrulandı: TrimReason boş dönmez.
+        if (req.Amount < 0 && await _person.IsPoolModeAsync(licenseId, ct))
+        {
+            // DrawAsync kuruş altı tutarda istisna atar (decimal(18,2) bacağı ve satırı ayrı yuvarlar, D1 bozulurdu):
+            // apply'ın emsaliyle (LicensesCustomerBalanceApplyController) 400, 500 değil. Satır kipi bugünkü gibi.
+            if (decimal.Round(req.Amount, 2) != req.Amount)
+                return Problem(title: "invalid-money-scale", statusCode: 400,
+                    detail: "Amount kuruş hassasiyetini aşamaz.");
+
+            return await DrawManualAdjustmentAsync(
+                licenseId, canonicalId, customerId, req.Amount, TrimReason(req.Reason)!, ct);
+        }
+
+        // Satır kipi (bayrak boş) ve artı tutar: bugünkü yol, birebir.
         // Negatif manuel ayar bakiyeyi sıfırın altına düşürmesin — kontrol
         // ApplyTransactionAsync'in retry döngüsünün İÇİNDE yapılır (F02):
         // buradaki ayrı bir ön okuma, eşzamanlı yazımlarda bayat değere bakardı.
@@ -205,6 +230,57 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         if (!applied) return Problem(title: "insufficient-balance", statusCode: 409);
 
         return Ok();
+    }
+
+    /// <summary>
+    /// Havuz kipinde eksi elle ayar (spec 2026-10-11 §4.8, K5): <see cref="PersonBalance.DrawAsync"/> ile kişinin
+    /// havuzundan çok bacaklı çekim, <c>P = S</c> (panelde <c>W</c> yok → <c>MemberIds = null</c>). Çapa rota
+    /// satırının asıl kaydında (<c>manual-adjustment</c>, <c>Reason</c> yalnız çapada; çapanın bakiye satırı yoksa 0
+    /// ile açılır); kalan <c>S</c>'nin öbür pozitif üyelerinden, M7 sırasıyla (silinmişler önce, sonra canlılar bakiye
+    /// büyükten küçüğe). Hep-ya-hiç (<c>AllOrNothing</c>): <c>max(0, Σ_S) &lt; |tutar|</c> → hiçbir şey yazılmaz,
+    /// 409 <c>insufficient-balance</c> (bugünkü kural, kısmi ayar yok; <c>Σ_S</c> eksi üyeleri içerir). Kişi kilidi
+    /// <c>S</c>'nin bakiye satırı olan bütün üyelerine (§4.13); tek <c>SaveChanges</c>, ortak <c>CreatedAt</c>.
+    ///
+    /// <para>Tek satır yazıcısı <see cref="ApplyTransactionAsync"/> burada KULLANILMAZ (M12, iskelet farkı 11): onun
+    /// "yeniden yükle + deltayı yeniden uygula" kalıbı çok bacaklı kayıtta deltayı çakışmayan satırlara iki kez
+    /// yazardı ve hareketi okumadan önce izleyiciye ekler. Bu yöntem <c>DrawAsync</c>'ten önce izleyiciye hiçbir
+    /// şey eklemez (servis denemeler arasında izleyiciyi temizler). Çakışmada servis planı baştan kurar; üç
+    /// denemeden sonra 503 <c>balance-busy</c> (iskelet farkı 12; satır kipinin 3. çakışmadaki 500'ü değişmez).</para>
+    ///
+    /// <para>Öbür sonuçlar oluşmaz: <c>AllOrNothing</c> + <c>MemberIds = null</c> ile <c>NoBalance</c> ve
+    /// <c>CustomerNotSynced</c> (kural 1–4 yalnız WPF'in <c>W</c>'sinde), <c>ReversesTransactionId</c> boş ve anahtar
+    /// istemcinin değil → <c>AlreadyReversed</c> ve <c>DuplicateKey</c>, geri çağrı yok → <c>Stopped</c>, tutar &gt; 0 →
+    /// <c>NothingToApply</c>.</para>
+    /// </summary>
+    /// <param name="amount">İstekteki eksi tutar; çekilen <c>−amount</c>.</param>
+    /// <param name="reason">Kırpılmış, boş olmayan açıklama (çağıran doğruladı).</param>
+    private async Task<IActionResult> DrawManualAdjustmentAsync(
+        Guid licenseId, Guid canonicalId, Guid customerId, decimal amount, string reason, CancellationToken ct)
+    {
+        var result = await _person.DrawAsync(new PersonBalance.DrawRequest(
+            LicenseId: licenseId,
+            AnchorRowId: canonicalId,
+            AnchorTransactionId: Guid.NewGuid(),
+            AnchorIdIsIdempotencyKey: false,
+            Kind: PersonBalance.KindManualAdjustment,
+            Requested: -amount,
+            Rule: PersonBalance.DrawAmountRule.AllOrNothing,
+            MemberIds: null,
+            OriginalAmount: null,
+            SaleScope: null,
+            Reason: reason,
+            ReversesTransactionId: null,
+            CreatedByCustomerId: customerId,
+            ScopeLockResource: null), beforeAttempt: null, ct);
+
+        CountMultiLegDraw(result);
+        return result.Status switch
+        {
+            PersonBalance.DrawStatus.Drawn => Ok(),
+            PersonBalance.DrawStatus.Insufficient => Problem(title: "insufficient-balance", statusCode: 409),
+            PersonBalance.DrawStatus.Busy => BalanceBusy(licenseId, "manual-adjustment"),
+            _ => throw new UnreachableException($"manual-adjustment: beklenmeyen çekim sonucu {result.Status}"),
+        };
     }
 
     // ── POST reverse (yanlış kayıt iptal) ───────────────────────────────────
@@ -224,10 +300,18 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             .FirstOrDefaultAsync(t => t.Id == transactionId && t.LicenseId == licenseId, ct);
         if (target is null) return NotFound();
 
-        // Ortak bakiye S1 tabanı (spec 2026-10-11 §4.9): çekim grubuna ait hedef iki kipte de grup olarak ele
-        // alınır — tek satırı geri almak yarım bir geri alma bırakırdı.
+        // Ortak bakiye S2 (spec 2026-10-11 §4.9, K5): kip lisans başına, her istekte okunur. Bayrak boşken aşağıdaki
+        // iki yol S1'deki koduyla, aynı sırayla çalışır.
+        var pool = await _person.IsPoolModeAsync(licenseId, ct);
+
+        // Ortak bakiye S1 tabanı (§4.9): çekim grubuna ait hedef iki kipte de grup olarak ele alınır — tek satırı
+        // geri almak yarım bir geri alma bırakırdı. Üyelik kipe göre (rota satırı ya da S(rota)).
         if (target.DrawGroupId is { } anchorId)
-            return await ReverseDrawGroupAsync(licenseId, canonicalId, customerId, anchorId, target, ct);
+            return await ReverseDrawGroupAsync(licenseId, canonicalId, customerId, anchorId, target, pool, ct);
+
+        // Havuz kipinde eski, tek satırlık hedef: S(rota) üyeliği, grup geri alması ya da çekim türü iptal (K5).
+        if (pool)
+            return await ReverseInPoolAsync(licenseId, canonicalId, customerId, target, ct);
 
         // Eski, tek satırlık hedef: bugünkü yol, birebir (satır kipi).
         if (target.WpfCustomerId != canonicalId) return NotFound();
@@ -268,21 +352,42 @@ public sealed class PanelCustomerBalanceController : ControllerBase
     }
 
     /// <summary>
-    /// Çekim grubuna ait hedef (spec §4.9, M8). Üyelik: grubun herhangi bir satırı rota satırında olmalı (S1 kip
-    /// bayrağını okumaz → satır kipi koşulu; havuz kipinin S(rota) genişlemesi S2'de). Panel listesi grubu çapa
-    /// Id'siyle gösterdiği için (§4.6) çapa başka satırda olsa da rota satırındaki bacaktan açılan iptal bulunur;
-    /// <c>disable</c> sonrası düzeltme yolu da budur. Düşüm ve elle eksi grubu grup olarak geri alınır
-    /// (<see cref="PersonBalance.ReverseGroupAsync"/>, §4.5); <c>reversal</c> grupları 409 <c>not-reversible</c>.
+    /// Çekim grubuna ait hedef (spec §4.9, M8). Üyelik: grubun herhangi bir satırı satır kipinde rota satırında,
+    /// havuz kipinde <c>S(rota)</c>'nın bir üyesinde olmalı — panel kişinin birleşik listesini gösterir. Panel listesi
+    /// grubu çapa Id'siyle gösterdiği için (§4.6) çapa başka satırda olsa da rota satırındaki bacaktan açılan iptal
+    /// bulunur; <c>disable</c> sonrası (bayrak boş → satır kipi koşulu) düzeltme yolu da budur. Düşüm ve elle eksi
+    /// grubu grup olarak geri alınır (<see cref="PersonBalance.ReverseGroupAsync"/>, §4.5); <c>reversal</c> grupları
+    /// iki kipte 409 <c>not-reversible</c>. Havuz kipinin üyelik okuması (<see cref="PersonBalance.MembersAsync"/>)
+    /// kilitlenme kurbanı (1205) olursa 503 <c>balance-busy</c>: okuma yazımdan önce, hiçbir şey yazılmamıştır.
     /// </summary>
     private async Task<IActionResult> ReverseDrawGroupAsync(
         Guid licenseId, Guid canonicalId, Guid customerId, Guid anchorId, CustomerBalanceTransaction target,
-        CancellationToken ct)
+        bool pool, CancellationToken ct)
     {
         var group = await _db.CustomerBalanceTransactions
             .AsNoTracking()
             .Where(t => t.LicenseId == licenseId && (t.Id == anchorId || t.DrawGroupId == anchorId))
             .ToListAsync(ct);
-        if (!group.Any(t => t.WpfCustomerId == canonicalId)) return NotFound();
+        if (pool)
+        {
+            // Havuz kipi (S2): grubun bir satırı S(rota)'da olmalı (silinmiş üyeler dahil, MembersAsync).
+            // Üyelik okuması ReverseGroupAsync'in korunan denemesinin dışında ve CustomerBalances'ı da okur: yazarların
+            // X kilidinin arkasında kilitlenme kurbanı (1205) olabilir. Okuma her yazımdan önce, hiçbir şey yazılmadı →
+            // 503 balance-busy, yeniden denensin (500 değil).
+            HashSet<Guid> members;
+            try
+            {
+                members = (await _person.MembersAsync(licenseId, canonicalId, ct)).Members
+                    .Select(m => m.WpfCustomerId)
+                    .ToHashSet();
+            }
+            catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
+            {
+                return ReadDeadlocked(licenseId, target.Id, "üyelik okuması");
+            }
+            if (!group.Any(t => members.Contains(t.WpfCustomerId))) return NotFound();
+        }
+        else if (!group.Any(t => t.WpfCustomerId == canonicalId)) return NotFound();
         // Çapa kendi grubundadır (DrawGroupId = Id, §3.2). Öyle bir satır yoksa bacak yetimdir — verify sayar
         // (§7.3-7); DrawGroupId'si boş bir satırı çapa saymak yalnız onu geri alıp bacağı açıkta bırakırdı (D5).
         var anchor = group.FirstOrDefault(t => t.Id == anchorId && t.DrawGroupId == anchorId);
@@ -300,17 +405,187 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             case PersonBalance.ReverseOutcome.AlreadyReversed:
                 return Problem(title: "already-reversed", statusCode: 409);
             case PersonBalance.ReverseOutcome.Busy:
-                // Uyarı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü.
-                _log.LogDebug(
-                    "panel balance/reverse: 503 balance-busy (license={LicenseId})", licenseId);
-                return Problem(title: "balance-busy", statusCode: 503,
-                    detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+                return BalanceBusy(licenseId, "reverse");
             default:
                 return NotFound();
         }
     }
 
+    /// <summary>
+    /// Havuz kipinde <c>DrawGroupId</c>'si boş (eski, tek satırlık) hedef — spec 2026-10-11 §4.9, K5. Üyelik: hedef
+    /// <c>S(rota)</c>'nın herhangi bir üyesinde olmalı (panel kişinin birleşik listesini gösterir, §4.6). Sıra:
+    /// <list type="number">
+    /// <item>Eski <c>reversal</c> satırı → 409 <c>not-reversible</c> (M8): "iptalin iptali" havuz kipinde kapalı; satır
+    /// kipinde bugünkü gibi geri alınır.</item>
+    /// <item>Geri alınmış hedef → 409 <c>already-reversed</c> (hızlı yol; asıl hakem N01 indeksi). Soru denetleyicide
+    /// ayrı bir okuma değil, servisin kilitlenmeye (1205) karşı korunan denemesinin içinde: eksi dalda
+    /// <see cref="PersonBalance.ReverseGroupAsync"/>'in kendi hızlı yolu, artı dalda her denemenin geri çağrısı.</item>
+    /// <item>Eksi hedef (düşüm, elle eksi) → grup geri alması (<see cref="PersonBalance.ReverseGroupAsync"/>, §4.5):
+    /// eski tek bacaklıda <c>DrawGroupId = NULL</c> (M13), para hedefin GÜNCEL satırına döner (K1) — rota satırına
+    /// değil (plan farkı 10).</item>
+    /// <item>Artı hedef (iade, artı elle ayar) → çekim türü iptal (<see cref="PersonBalance.DrawAsync"/>, §3.2): çapa
+    /// hedefin KENDİ satırında, <c>Kind = reversal</c>, <c>ReversesTransactionId</c> = hedef ve açıklama
+    /// <c>"Reverse of {id:N}"</c> yalnız çapada (fark 18d); kalan S'nin öbür pozitif üyelerinden; hep-ya-hiç →
+    /// yetmezse 409 <c>insufficient-balance</c>, hiçbir şey yazılmaz.</item>
+    /// </list>
+    /// Hakem N01: eşzamanlı ikinci iptal bütün bacaklarıyla geri alınır → 409 <c>already-reversed</c> (§4.9). Kaybeden
+    /// "havuz yetmez"e de düşebilir (fark 18k): jeton çakışması N01'den önce gelirse taze planda, ya da kazanan bu
+    /// isteğin bakiye okumalarından önce commit ederse 1. denemede. Bu yüzden geri çağrı "geri alındı mı"yı HER
+    /// denemede sorar, ve <c>Insufficient</c> sonrası da yeniden sorulur: kazanan kaybedenin okumalarından önce commit
+    /// ettiyse yanıt <c>already-reversed</c> olur. Tek satır yazıcısı
+    /// (<see cref="ApplyTransactionAsync"/>) kullanılmaz (M12, fark 11): çağırmadan önce izleyiciye hiçbir şey
+    /// eklenmez (hedef <c>AsNoTracking</c> okundu). Üç denemede kurulamazsa 503 <c>balance-busy</c> (fark 12). Baştaki
+    /// üyelik okuması (<see cref="PersonBalance.MembersAsync"/>, bakiyeler dahil) kilitlenme kurbanı (1205) olursa da
+    /// 503 <c>balance-busy</c>: okuma her yazımdan önce gelir, hiçbir şey yazılmamıştır, istemci yeniden dener.
+    /// </summary>
+    private async Task<IActionResult> ReverseInPoolAsync(
+        Guid licenseId, Guid canonicalId, Guid customerId, CustomerBalanceTransaction target, CancellationToken ct)
+    {
+        // Üyelik okuması servislerin korunan denemesinin dışında ve CustomerBalances'ı da okur: yazarların X kilidinin
+        // arkasında kilitlenme kurbanı (1205) olabilir. Okuma her yazımdan önce, hiçbir şey yazılmadı → 503
+        // balance-busy, yeniden denensin (500 değil).
+        HashSet<Guid> members;
+        try
+        {
+            members = (await _person.MembersAsync(licenseId, canonicalId, ct)).Members
+                .Select(m => m.WpfCustomerId)
+                .ToHashSet();
+        }
+        catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
+        {
+            return ReadDeadlocked(licenseId, target.Id, "üyelik okuması");
+        }
+        if (!members.Contains(target.WpfCustomerId)) return NotFound();
+
+        if (target.Kind == PersonBalance.KindReversal)
+            return Problem(title: "not-reversible", statusCode: 409,
+                detail: "Bu hareket bir iptal; havuz kipinde iptal edilemez.");
+
+        var targetId = target.Id;
+        // "Geri alındı mı" — hızlı yol; yarışta iki istek de geçebilir, asıl hakem N01 indeksi (servisler
+        // IsDuplicateReversal'ı yakalar, işlem bütünüyle geri alınır). Burada ayrı okunmaz: N01 anahtarlarını kilitleyen
+        // yazarların kuyruğundaki okuma 1205 kurbanı olabilir (§4.2-6 S2 notu); servislerin try'ı içinde sorulur.
+        Task<bool> IsReversedAsync(CancellationToken token) =>
+            _db.CustomerBalanceTransactions.AnyAsync(t => t.ReversesTransactionId == targetId, token);
+
+        if (target.Amount <= 0m)
+        {
+            // Düşüm ya da elle eksi: eski tek bacaklı satır kendi çapasıdır (PersonBalance.IsAnchor). "Geri alındı mı"
+            // ReverseGroupAsync'in kendi korunan hızlı yolunda → AlreadyReversed.
+            switch (await _person.ReverseGroupAsync(licenseId, targetId, customerId, ct))
+            {
+                case PersonBalance.ReverseOutcome.Reversed:
+                    return Ok();
+                case PersonBalance.ReverseOutcome.AlreadyReversed:
+                    return Problem(title: "already-reversed", statusCode: 409);
+                case PersonBalance.ReverseOutcome.Busy:
+                    return BalanceBusy(licenseId, "reverse");
+                default:
+                    return NotFound();
+            }
+        }
+
+        var result = await _person.DrawAsync(
+            new PersonBalance.DrawRequest(
+                LicenseId: licenseId,
+                AnchorRowId: target.WpfCustomerId,
+                AnchorTransactionId: Guid.NewGuid(),
+                AnchorIdIsIdempotencyKey: false,
+                Kind: PersonBalance.KindReversal,
+                Requested: target.Amount,
+                Rule: PersonBalance.DrawAmountRule.AllOrNothing,
+                MemberIds: null,
+                OriginalAmount: null,
+                SaleScope: null,
+                Reason: $"Reverse of {targetId:N}",
+                ReversesTransactionId: targetId,
+                CreatedByCustomerId: customerId,
+                ScopeLockResource: null),
+            // HER denemenin başında (kilitten sonra, okumalardan önce; DrawAsync'in try'ı içinde, 1205 → yeniden deneme):
+            // ilk denemede hızlı yol, sonrakilerde jeton çakışmasından sonra kazananı görür (fark 18k).
+            beforeAttempt: (_, token) => IsReversedAsync(token),
+            ct);
+
+        // §8.6: çok bacaklı iptal çekimi (yalnız Drawn ve Legs > 1); yanıt değişmez.
+        CountMultiLegDraw(result);
+
+        // Havuz yetmedi: kazanan bu isteğin bakiye okumalarından önce commit ettiyse jeton çakışması olmaz, ikinci
+        // deneme gelmez (Örnek 4: kazanandan sonra havuz 10 < 80). Kazananın commit'i okumalardan önce geldiği için
+        // iptali bu sorguda kesin görünür → already-reversed (§4.9 "Hakem N01"). Yalnız havuz dalı; satır kipi aynen.
+        if (result.Status == PersonBalance.DrawStatus.Insufficient)
+        {
+            bool reversed;
+            try
+            {
+                reversed = await IsReversedAsync(ct);
+            }
+            catch (Exception ex) when (PersonBalance.IsDeadlock(ex))
+            {
+                // Okuma kilitlenme kurbanı (hiçbir şey yazılmadı): 500 değil, yeniden denensin.
+                return ReadDeadlocked(licenseId, targetId, "geri alındı mı okuması");
+            }
+            if (reversed) return Problem(title: "already-reversed", statusCode: 409);
+        }
+
+        return result.Status switch
+        {
+            PersonBalance.DrawStatus.Drawn => Ok(),
+            // Stopped: hedef deneme başında geri alınmış bulundu (hızlı yol ya da çakışmadan sonra kazanan);
+            // AlreadyReversed: N01 ihlali.
+            PersonBalance.DrawStatus.Stopped or PersonBalance.DrawStatus.AlreadyReversed =>
+                Problem(title: "already-reversed", statusCode: 409),
+            PersonBalance.DrawStatus.Insufficient => Problem(title: "insufficient-balance", statusCode: 409),
+            PersonBalance.DrawStatus.Busy => BalanceBusy(licenseId, "reverse"),
+            // NoBalance/NothingToApply yalnız UpToPool'da, CustomerNotSynced/DuplicateKey yalnız WPF girişinde doğar.
+            _ => throw new UnreachableException($"panel reverse: beklenmeyen çekim sonucu {result.Status}"),
+        };
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Servisin korunan denemesinin dışındaki bir okuma (havuz kipinde iptalin üyelik okuması ya da
+    /// <c>Insufficient</c> sonrası "geri alındı mı") kilitlenme kurbanı (1205) oldu: hiçbir şey yazılmadı → 503
+    /// <c>balance-busy</c>, yeniden denensin (plan fark 18k). Servis bu kaynakta bir şey yazmadığı için ayırt edici
+    /// satır burada (WPF denetleyicisinin <c>ReplayDeadlocked</c>'ının ikizi).
+    /// </summary>
+    /// <param name="read">Hangi okuma; günlükte kaynağı ayırır.</param>
+    private ObjectResult ReadDeadlocked(Guid licenseId, Guid targetId, string read)
+    {
+        _log.LogInformation(
+            "panel balance/reverse: {Read} kilitlenme kurbanı (1205), 503 balance-busy "
+            + "(target={TargetId}, license={LicenseId})",
+            read, targetId, licenseId);
+        return BalanceBusy(licenseId, "reverse");
+    }
+
+    /// <summary>
+    /// 503 <c>balance-busy</c> (spec §4.5, §4.13; iskelet farkı 12): servis yazımı üç denemede de kuramadı ya da
+    /// servis dışı bir okuma kilitlenme kurbanı oldu; iki durumda da hiçbir şey yazılmadı. Ayırt edici satır çağıranda:
+    /// servisin Busy kolunda servisin uyarısı (neden ve çapayla), okuma kilitlenmesinde <see cref="ReadDeadlocked"/>;
+    /// burada yalnız hangi ucun 503 döndüğü. Başlık ve metin WPF denetleyicisinin <c>BalanceBusy</c>'siyle aynı.
+    /// </summary>
+    /// <param name="endpoint"><c>reverse</c> ya da <c>manual-adjustment</c>.</param>
+    private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
+    {
+        // §8.6: panel uçları WPF'inkilerden "panel/" önekiyle ayrılır.
+        _metrics.BalanceBusy.Add(1, new KeyValuePair<string, object?>("endpoint", $"panel/{endpoint}"));
+        _log.LogDebug(
+            "panel balance/{Endpoint}: 503 balance-busy (license={LicenseId})", endpoint, licenseId);
+        return Problem(title: "balance-busy", statusCode: 503,
+            detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+    }
+
+    /// <summary>
+    /// Çok bacaklı çekim sayacı (spec §8.6, plan S2 fark 18h): yalnız yazılmış (<c>Drawn</c>) ve birden çok satıra
+    /// dokunan çekim; etiket <c>legs</c> çapa dahil yazılan hareket satırı sayısıdır. Yalnız çapaya yazılan çekim
+    /// sayılmaz.
+    /// </summary>
+    private void CountMultiLegDraw(PersonBalance.DrawResult result)
+    {
+        if (result.Status == PersonBalance.DrawStatus.Drawn && result.Legs > 1)
+            _metrics.BalanceMultiLegDraws.Add(1, new KeyValuePair<string, object?>("legs", result.Legs));
+    }
 
     /// <summary>
     /// Rotadaki Id → (lisans, asıl kayıt). WpfCustomerProjection → License →
@@ -323,6 +598,40 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         => await _customerIds.LocateForTenantAsync(callerCustomerId, wpfCustomerId, ct) is { } located
             ? (located.LicenseId, located.CanonicalId, true)
             : (Guid.Empty, Guid.Empty, false);
+
+    /// <summary>
+    /// GET, havuz kipi (spec 2026-10-11 §4.6, §6.1-f, M9, K3). <c>Balance = Σ_S</c>: eksi olabilir — borç operatöre
+    /// görünmeli (D3); silinmiş üyeler dahil. Hareketler S'nin bütün üyelerinden gruplara toplanmış: grup tutarı bu
+    /// kişideki bacakların toplamı (ayırmadan sonra öbür kişide kalan bacak sayılmaz), take grup sayar. UpdatedAt
+    /// S'nin son para hareketi; S'de hiç hareket yoksa S'nin bakiye satırlarının en yenisi, o da yoksa şimdi.
+    /// <c>Members</c> aynı okumadan (ikinci üyelik okuması yok); kişinin hangi üyesinden açılırsa açılsın aynı toplam
+    /// ve aynı liste. Salt okuma, kilit yok (READ COMMITTED, ayrı sorgular — satır kipinde de öyle).
+    /// </summary>
+    /// <param name="requestId">Rotadaki Id — yanıtta o döner (kopya Id'si olabilir; satır kipiyle aynı).</param>
+    private async Task<BalanceDetailsResponse> PoolDetailsAsync(
+        Guid requestId, Guid licenseId, Guid canonicalId, int take, CancellationToken ct)
+    {
+        var person = await _person.MembersAsync(licenseId, canonicalId, ct);
+        var ids = person.Members.Select(m => m.WpfCustomerId).ToList();
+
+        var lastMovement = await _person.LastMovementAtAsync(licenseId, ids, ct);
+        var updatedAt = lastMovement
+            ?? await _db.CustomerBalances.AsNoTracking()
+                .Where(b => b.LicenseId == licenseId && ids.Contains(b.WpfCustomerId))
+                .MaxAsync(b => (DateTimeOffset?)b.UpdatedAt, ct)
+            ?? DateTimeOffset.UtcNow;
+        var balance = new BalanceDto(requestId, licenseId, person.Members.Sum(m => m.Balance), updatedAt);
+
+        // Panel yayıncının kendisi: açıklama maskesiz.
+        var history = await _person.HistoryAsync(licenseId, ids, take, ct);
+        var transactions = history
+            .Select(h => new TransactionDto(h.Id, h.Amount, h.Kind, h.OriginalAmount, h.ShippingDeducted,
+                h.Reason, h.ReversesTransactionId, h.CreatedAt))
+            .ToArray();
+
+        var members = person.Members.Select(m => new MemberDto(m.WpfCustomerId, m.Balance, m.Purged)).ToArray();
+        return new BalanceDetailsResponse(balance, transactions, members);
+    }
 
     /// <summary>
     /// Ledger satırı yazar + CustomerBalance.Balance'ı günceller (tek transaction).
