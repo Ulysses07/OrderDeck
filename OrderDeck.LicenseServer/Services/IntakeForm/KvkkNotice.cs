@@ -38,10 +38,28 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 /// yeni sekmede giden bağlantıydı; <c>kvkk-2026-10-14</c> politika metni
 /// formun içinde açılan kutuda; <c>kvkk-2026-10-19</c> banka hesap
 /// hareketleri (politika Bölüm 1.4, saklama ve haklar) ve form paragrafında
-/// havale cümlesi. TASLAK: tarih yer tutucu, yayın günü gerçek tarihe
-/// çekilir (yürürlük tarihiyle birlikte).</para>
+/// havale cümlesi; <c>kvkk-2026-10-21</c> hukuki ön inceleme notuna göre
+/// düzeltilmiş sürüm (v2): Bölüm 1.4 kodun davranışına göre yeniden yazıldı
+/// (rol amaca göre ayrıldı, yanlış olgu beyanları çıktı), yeni Bölüm 1.2a
+/// (yayıncının sunucuda tutulan müşteri ve satış kayıtları), 1.5 (müşteri
+/// uygulaması ve dekontlar, yayıncılar arası dekont özeti karşılaştırması),
+/// 1.6 (hizmet sağlayıcılar ve yurt dışına aktarım) ve 1.7 (WhatsApp
+/// yazışmaları; geçmiş sohbet ve rehber aktarımı, hesapla silinen dosyalar), 1.2'de
+/// Instagram kayıt bağlantısı istisnası, 1.3 ve
+/// 1.5'te hukuki sebepler, Bölüm 5–7 ve 9 yeniden yazıldı; form paragrafı iki
+/// katmanlı (veri sorumlusu, amaç, havale / izinler), onay etiketi
+/// "Yukarıdaki bilgilendirmeyi okudum".</para>
+///
+/// <para><b>kvkk-2026-10-21 TASLAKTIR, yayın kapılıdır.</b> Anlattığı kod
+/// (#534 banka verisi, #542 silme ve saklama) master'da; metin ayrıca canlıda
+/// doğrulanacak ve elle yapılacak prod adımlarına dayanır; "[YER TUTUCU: …]"
+/// işaretli yerleri avukat ve Burak kararı bekler. Yayın kapısının tam listesi bu metnin PR açıklamasında. Tarih
+/// yer tutucudur: yayın günü gerçek tarihe çekilir (iki kopyanın yürürlük
+/// tarihi ve "Son değişiklik" satırı, Veri Silme sayfaları, İngilizce sayfanın
+/// EFFECTIVE_DATE ve TURKISH_EFFECTIVE_DATE'i, IntakeFormKvkkTests'in
+/// özetleriyle birlikte).</para>
 /// </summary>
 public static class KvkkNotice
 {
-    public const string TextVersion = "kvkk-2026-10-19";
+    public const string TextVersion = "kvkk-2026-10-21";
 }

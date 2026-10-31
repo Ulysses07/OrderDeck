@@ -31,8 +31,17 @@ export const ROUTE_MAP: Record<string, { tr: string; en: string }> = {
 };
 
 export const SITE_URL = 'https://orderdeckapp.com';
-export const CONTACT_EMAIL = 'support@orderdeckapp.com';
-export const LEGAL_NAME = 'Musa Sevinç';
+export const CONTACT_EMAIL = 'musa@emarglobal.com';
+/**
+ * Veri sorumlusu ve hizmet sağlayıcısı: şirketin TAM resmî unvanı. Hukuki
+ * metinlerde (gizlilik politikası, kullanım koşulları, veri silme) yalnız bu
+ * kullanılır; değişirse kayıt formundaki politika kopyası
+ * (OrderDeck.LicenseServer/Pages/Public/_GizlilikPolitikasi.cshtml) da aynı
+ * değişikliği alır (IntakeFormKvkkTests iki kopyayı karşılaştırıyor).
+ */
+export const LEGAL_NAME = 'EMAR GLOBAL TEKSTİL GIDA İNŞAAT TURİZM YAZILIM VE TİCARET LİMİTED ŞİRKETİ';
+/** Yalnız alt bilgi / iletişim satırı için kısa unvan (tam unvan orada taşıyor); hukuki metinde LEGAL_NAME. */
+export const LEGAL_NAME_SHORT = 'EMAR GLOBAL Ltd. Şti.';
 export const BRAND = 'OrderDeck';
 
 /**

@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `How to delete data collected by ${BRAND}, including via Facebook Login.`,
 };
 
-const EFFECTIVE_DATE = '2026-07-02';
+const EFFECTIVE_DATE = '2026-10-21';
 
 export default function DataDeletionEn() {
   return (
@@ -31,7 +31,9 @@ export default function DataDeletionEn() {
         <li>receives the commenter&apos;s Facebook-provided <strong>name and page-scoped
           ID (PSID)</strong>,</li>
         <li>stores the <strong>Page access token</strong> granted via Facebook Login
-          (encrypted, on the operator&apos;s machine).</li>
+          (encrypted, on the operator&apos;s machine); if the operator turned on the Instagram
+          registration-link flow, a Page access token is also stored encrypted on the
+          {' '}{BRAND} server.</li>
       </ul>
       <p>
         The live chat stream itself is transient and is deleted when the app is closed.
@@ -46,11 +48,18 @@ export default function DataDeletionEn() {
           records is not performed from that screen; request it by email as described
           below.</li>
         <li>Use <strong>“Disconnect”</strong> under Settings → Facebook to remove the
-          Page access token and OAuth data.</li>
+          Page access token and OAuth data from your computer. The token kept on the server for
+          the Instagram registration link is not removed by this; it stays until your account is
+          deleted, and you can email the address below to have it deleted sooner.</li>
         <li>To permanently delete specific customer/order records, or your entire
           account and associated data, email{' '}
-          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. After verifying your
-          request, we delete the data <strong>within 30 days</strong>.</li>
+          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. We conclude your request{' '}
+          <strong>within 30 days</strong> of receiving it. When your account is deleted, the following files in
+          Cloudflare R2 are deleted as well: if you connected your WhatsApp line to {BRAND}, the photos, audio,
+          video and documents in those conversations (Privacy Policy, Section 1.7, in Turkish); the payment
+          receipts your customers uploaded to you from the customer app (Privacy Policy, Section 1.5, in Turkish);
+          the photos and videos in your broadcast posts and the photos in your product catalogue. Files that
+          cannot be deleted at that moment are retried until the deletion succeeds.</li>
       </ul>
 
       <h2>3. If you are a viewer / commenter</h2>
@@ -61,8 +70,8 @@ export default function DataDeletionEn() {
       <ul>
         <li>Contact the <strong>operator (Page owner)</strong> who processes your data, or</li>
         <li>Email <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> with your Facebook
-          name and any comment details. After verifying your request, we delete the
-          relevant records <strong>within 30 days</strong>.</li>
+          name and any comment details. We conclude your request{' '}
+          <strong>within 30 days</strong> of receiving it.</li>
       </ul>
 
       <h2>4. Facebook Login data</h2>
@@ -71,6 +80,19 @@ export default function DataDeletionEn() {
         <a href="https://www.facebook.com/settings?tab=business_tools" target="_blank" rel="noopener noreferrer">
           Facebook → Settings → Business Integrations</a>. Once removed, {BRAND} can no
         longer access your data, and any token stored on the machine becomes invalid.
+      </p>
+
+      <h2>5. If you sent a bank transfer to a broadcaster</h2>
+      <p>
+        For broadcasters with a bank connection, the details of incoming transfers to the broadcaster&apos;s account are
+        processed on the {BRAND} server (<a href="/gizlilik-politikasi/#banka">Privacy Policy, Section 1.4</a>, in
+        Turkish). You can ask the broadcaster you paid, or{' '}
+        <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>, to delete this data; you can apply even if you do not
+        have a {BRAND} account. If you do not know which broadcaster&apos;s account it was, the date and amount of the
+        transfer are enough; do not write your IBAN in the body of an email, we will tell you a secure way if needed.
+        Application channels and the scope of deletion:{' '}
+        <a href="/gizlilik-politikasi/#haklar">Privacy Policy, Section 6</a> (in Turkish). Where this English page and
+        the Turkish version differ, the Turkish version prevails.
       </p>
     </LegalLayout>
   );
