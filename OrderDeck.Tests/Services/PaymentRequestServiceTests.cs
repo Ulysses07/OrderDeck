@@ -146,6 +146,13 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// <summary>A9: preview cevabından önce beklenir (yarış rendezvous'u).</summary>
         public Func<Task>? OnPreviewAsync { get; set; }
 
+        /// <summary>W-havuz (spec 2026-10-11 §6.1-b): önizlemenin çağrı başına cevabı (parametre kaçıncı önizleme olduğu, 1'den;
+        /// sayaç <c>_sync</c> altında). Dolu dönerse o cevap gider (ör. 409 <c>customer-not-synced</c>, havuz kipinin
+        /// <c>personPool</c>'lu 200'ü); null → normal yol (<see cref="PreviewBalance"/> / <see cref="RowBalances"/>). Fonksiyon
+        /// fırlatırsa istek ağ hatasıyla düşer.</summary>
+        public Func<int, HttpResponseMessage?>? PreviewResponse { get; set; }
+        private int _previewCount;
+
         /// <summary>R4-01: apply cevabından önce beklenir. Parametre kaçıncı
         /// apply çağrısı olduğudur (1'den başlar) — tek bir cevabı yolda
         /// bekletip gecikmiş cevap senaryosunu kurmak için.</summary>
@@ -236,6 +243,10 @@ public partial class PaymentRequestServiceTests : IDisposable
                     PreviewMemberIds.Add(memberIds?.Select(v => Guid.Parse(v)).ToList() ?? new List<Guid>());
                 }
                 if (OnPreviewAsync is not null) await OnPreviewAsync();
+                int onizlemeSira;
+                lock (_sync) onizlemeSira = ++_previewCount;
+                // W-havuz: senaryolu cevap (409 customer-not-synced, client-update-required, havuzun 200'ü, ağ hatası).
+                if (PreviewResponse?.Invoke(onizlemeSira) is { } scriptedPreview) return scriptedPreview;
                 decimal balance;
                 lock (_sync)
                     balance = RowBalances is { } rows ? rows.GetValueOrDefault(CanonicalOf(previewed)) : PreviewBalance;
@@ -423,7 +434,8 @@ public partial class PaymentRequestServiceTests : IDisposable
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
 
-        private static HttpResponseMessage Problem(
+        /// <summary>Sunucunun problem+json reddi (<c>title</c> = <c>ValidationException.Code</c>). Varsayılan 409.</summary>
+        public static HttpResponseMessage Problem(
             string title, HttpStatusCode status = (HttpStatusCode)409) => new(status)
         {
             Content = new StringContent(

@@ -325,6 +325,30 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().BeEmpty("bugünkü davranış: wa.me açılmaz");
     }
 
+    [Fact] // W-havuz §6.1-b (K2), mod On: eşitlenmeme kirayı abandoned ile kapatır; iş taze, mesaj yok; sonraki tıklama yeni kirayla sürer
+    public async Task Mod_On_esitlenmeme_kira_abandoned_is_taze_sonraki_tiklama_surer()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, $"alici-{Guid.NewGuid():N}", 120m);
+        _server.BalancePreview = 50m;
+        _server.EnqueueProblem(FakeSalesServer.BalancePreviewEndpoint, 409, "customer-not-synced");
+        var scope = Scope(live);
+
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.BalanceNotSynced);
+
+        FinishOutcomes().Should().Equal(new[] { "abandoned" }, "mesaj gitmedi: kira gönderim denemesinden önce kapanır");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Calls(FakeSalesServer.BalanceApplyEndpoint).Should().BeEmpty();
+        var job = pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], scope).Jobs.Should().ContainSingle().Subject;
+        job.State.Should().Be(PaymentJobState.Created, "MarkNoBalance yazılmadı");
+        job.ApplyKey.Should().BeNull();
+
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.Opened);
+        FinishOutcomes().Should().Equal("abandoned", "delivered");
+        _server.Calls(FakeSalesServer.BalanceApplyEndpoint).Should().ContainSingle();
+    }
+
     [Fact]
     public async Task Tamami_bakiyeden_odenen_istegin_finishi_fullyFromBalance_ve_dusumu_tasir()
     {

@@ -25,12 +25,21 @@ namespace OrderDeck.App.Services;
 /// </summary>
 public static class PaymentResultPresenter
 {
+    /// <summary>Spec 2026-10-11 §6.1-b (K2): <see cref="PaymentRequestResult.BalanceNotSynced"/> uyarısının başlığı.</summary>
+    public const string NotSyncedTitle = "Henüz eşitlenmedi";
+
+    /// <summary>Spec §6.1-b: sunucu kişinin bir hesabını henüz tanımıyor (birleştirmeden hemen sonra) — kısa metin.</summary>
+    public const string NotSyncedText =
+        "Kişinin hesapları sunucuyla henüz eşitlenmedi; mesaj gönderilmedi. Birazdan tekrar deneyin — bakiye kaybolmaz, çift düşüm olmaz.";
+
     /// <summary>
     /// Sonucun tamamıyla bildirim (spec 2026-10-13 §6.4; W3-07): <see cref="PaymentRequestResult.Blocked"/> açılır pencere
     /// AÇMAZ — metni çağıran satır içi gösterir (<see cref="InlineProblem"/>; sahibin #508 tercihi).
     /// <see cref="PaymentRequestResult.PaymentInProgress"/> başka bilgisayarın kirasında makine adlı metni
-    /// (<see cref="PaymentRequestOutcome.Message"/>) gösterir; öbür sonuçlar <see cref="Notify(IDialogService, PaymentRequestResult)"/>
-    /// ile bugünkü gibi.
+    /// (<see cref="PaymentRequestOutcome.Message"/>) gösterir. <see cref="PaymentRequestResult.BalanceNotSynced"/> (spec 2026-10-11
+    /// §6.1-b) "Henüz eşitlenmedi" uyarısını servisin metniyle (<see cref="PaymentRequestOutcome.Message"/>; aynı kişide 5
+    /// dakikadan uzun sürüyorsa), yoksa kısa metinle gösterir. Öbür sonuçlar
+    /// <see cref="Notify(IDialogService, PaymentRequestResult)"/> ile bugünkü gibi.
     /// </summary>
     public static void Notify(IDialogService dialogs, PaymentRequestOutcome outcome)
     {
@@ -40,6 +49,9 @@ public static class PaymentResultPresenter
                 return;
             case PaymentRequestResult.PaymentInProgress when !string.IsNullOrWhiteSpace(outcome.Message):
                 dialogs.ShowInfo(outcome.Message);
+                return;
+            case PaymentRequestResult.BalanceNotSynced:
+                dialogs.Show(outcome.Message ?? NotSyncedText, NotSyncedTitle, DialogSeverity.Warning);
                 return;
             default:
                 Notify(dialogs, outcome.Result);
@@ -83,6 +95,13 @@ public static class PaymentResultPresenter
                     "Bağlantıyı kontrol edip tekrar deneyin — çift düşüm olmaz.",
                     "Bakiye doğrulanamadı",
                     DialogSeverity.Warning);
+                break;
+
+            case PaymentRequestResult.BalanceNotSynced:
+                // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir hesabını henüz tanımıyor; mesaj gönderilmedi, iş taze ya da
+                // anahtarlı-belirsiz. BalanceUncertain gibi UYARI: kayıp yok, operatör biraz sonra tekrar dener. Kişi burada
+                // bilinmez: 5 dakika metni yalnız Notify(dialogs, outcome) yolundan (Message) gelir.
+                dialogs.Show(NotSyncedText, NotSyncedTitle, DialogSeverity.Warning);
                 break;
 
             case PaymentRequestResult.ListStale:

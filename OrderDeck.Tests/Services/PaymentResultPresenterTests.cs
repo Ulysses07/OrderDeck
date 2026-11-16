@@ -237,4 +237,31 @@ public sealed class PaymentResultPresenterTests
         message.Should().StartWith(
             "Bu kişiye bu yayın için 2 istek gitmiş (50,00 TL, 150,00 TL (gitmiş olabilir)); tek istekte birleştirilsin mi?");
     }
+
+    [Fact] // §6.1-b (K2): "Henüz eşitlenmedi" uyarısı spec'in metniyle birebir, Uyarı önemiyle (hata değil)
+    public void Esitlenmedi_uyarisi_baslik_ve_metin_birebir()
+    {
+        const string metin =
+            "Kişinin hesapları sunucuyla henüz eşitlenmedi; mesaj gönderilmedi. Birazdan tekrar deneyin — bakiye kaybolmaz, çift düşüm olmaz.";
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService();
+
+        PaymentResultPresenter.Notify(dialogs, new PaymentRequestOutcome(PaymentRequestResult.BalanceNotSynced));
+
+        dialogs.Shown.Should().ContainSingle().Which.Should().Be(("Henüz eşitlenmedi", metin, DialogSeverity.Warning));
+        PaymentResultPresenter.NotSyncedTitle.Should().Be("Henüz eşitlenmedi");
+        PaymentResultPresenter.NotSyncedText.Should().Be(metin);
+        dialogs.ErrorsShown.Should().BeEmpty();
+        dialogs.InfosShown.Should().BeEmpty();
+    }
+
+    [Fact] // §6.1-b: sonuç tek başına bildirilirse (kişi bilinmiyor) kısa metin
+    public void Esitlenmedi_sonucu_tek_basina_kisa_metin()
+    {
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService();
+
+        PaymentResultPresenter.Notify(dialogs, PaymentRequestResult.BalanceNotSynced);
+
+        dialogs.Shown.Should().ContainSingle().Which.Should().Be(
+            (PaymentResultPresenter.NotSyncedTitle, PaymentResultPresenter.NotSyncedText, DialogSeverity.Warning));
+    }
 }

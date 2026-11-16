@@ -67,6 +67,12 @@ public enum PaymentRequestResult
     /// <see cref="PaymentRequestOutcome.Message"/>'da ve SATIR İÇİ gösterilir (açılır pencere yok — sahibin #508
     /// tercihi).</summary>
     Blocked,
+
+    /// <summary>Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor (409 <c>customer-not-synced</c>; yalnız
+    /// havuz kipi — birleştirme ya da ayırma sunucuya henüz ulaşmadı). Mesaj GÖNDERİLMEDİ, <c>MarkNoBalance</c> yazılmadı: iş
+    /// taze ya da anahtarlı-belirsiz; sonraki tıklama kaldığı yerden sürdürür, çift düşüm olmaz. Banka W2 açısından
+    /// <see cref="BalanceUncertain"/> gibidir (beklenti yazılmaz). Yeni üye EN SONDA: var olan üyelerin değerleri değişmez.</summary>
+    BalanceNotSynced,
 }
 
 /// <summary>Operatöre sorulacak soru (<see cref="PaymentRequestResult.AlreadyRequested"/> /
@@ -161,6 +167,10 @@ public sealed class PaymentRequestService
     /// <summary>Aynı kişinin başka bir akışını bekleme süresi; dolarsa
     /// <see cref="PaymentRequestResult.PaymentInProgress"/>. Testler kısaltır.</summary>
     internal TimeSpan PersonGateTimeout { get; set; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>Spec 2026-10-11 §6.1-b: havuz kipinin "kişinin bir üyesi sunucuda henüz yok" reddinin problem başlığı
+    /// (<c>ValidationException.Code</c>; önizlemede ve yeni anahtarlı apply'da 409).</summary>
+    private const string CustomerNotSyncedCode = "customer-not-synced";
 
     /// <param name="shipping">Kargo eşiği ve ücretinin kaynağı (spec 2026-10-13 §6.2): mod Off'ta yerel ayar, mod On'da
     /// lisans geneli ayar. Mesaj şablonu ve hesap bilgileri <paramref name="settingsStore"/>'dan okunmaya devam eder.</param>
@@ -707,8 +717,11 @@ public sealed class PaymentRequestService
                         ? PaymentRequestResult.MergeRequired
                         : PaymentRequestResult.AlreadyRequested,
                     prompt, ownerId, demoted);
+            // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor (409 customer-not-synced) — mesaj gitmez,
+            // MarkNoBalance yazılmadı; operatöre ayrı uyarı ("Henüz eşitlenmedi"). Banka W2 açısından BalanceUncertain gibidir.
             if (outcome.Uncertain)
-                return new(PaymentRequestResult.BalanceUncertain, null, ownerId, demoted);
+                return new(outcome.NotSynced ? PaymentRequestResult.BalanceNotSynced : PaymentRequestResult.BalanceUncertain,
+                    null, ownerId, demoted);
             deliveryJob = outcome.Job;
             appliedBalance = outcome.AppliedBalance;
             totalAmount -= appliedBalance;
@@ -883,6 +896,12 @@ public sealed class PaymentRequestService
         /// (<see cref="Job"/>) benimsendi — akış revizyon adımına döner (<see cref="ReviseAndSettleAsync"/>). Sonuç tek
         /// başına kesin değildir (Uncertain=true): dönüşü işlemeyen bir çağıran mesajı engeller.</summary>
         public bool ScopeDeductionAdopted { get; init; }
+
+        /// <summary>Spec 2026-10-11 §6.1-b (K2): belirsizliğin (<see cref="Uncertain"/>) nedeni 409 <c>customer-not-synced</c> —
+        /// sunucu kişinin bir üyesini henüz tanımıyor (önizleme ya da apply). Sonuç
+        /// <see cref="PaymentRequestResult.BalanceNotSynced"/>; <c>MarkNoBalance</c> yazılmadı, iş taze ya da
+        /// anahtarlı-belirsiz.</summary>
+        public bool NotSynced { get; init; }
     }
 
     /// <summary>Bir apply denemesinin (<see cref="ReplayAsync"/>) sonucu.</summary>
@@ -893,8 +912,12 @@ public sealed class PaymentRequestService
     /// (<see cref="IPaymentJobStore.AdoptRemoteResult(string, Guid, decimal, decimal, Guid, int)"/>).</param>
     /// <param name="LegacyScopeDeduction">Miras işte 409 <c>scope-has-deduction</c>: benimsenmedi, hiçbir şey yazılmadı —
     /// çağıran #506'nın birleştirme sorusunu sorar.</param>
+    /// <param name="NotSynced">Spec 2026-10-11 §6.1-b (K2): 409 <c>customer-not-synced</c> — sunucu kişinin bir üyesini henüz
+    /// tanımıyor, hiçbir şey yazmadı. İş anahtarıyla <c>apply_uncertain</c> kalır (sonraki tıklama aynı anahtarla oynatır);
+    /// <c>MarkNoBalance</c> YOK. Belirsiz dönüş bayrağı <see cref="BalanceOutcome.NotSynced"/>'a taşır.</param>
     private sealed record ApplyAttempt(
-        PaymentJob Job, bool Stale = false, bool Adopted = false, ScopeHasDeductionException? LegacyScopeDeduction = null);
+        PaymentJob Job, bool Stale = false, bool Adopted = false, ScopeHasDeductionException? LegacyScopeDeduction = null,
+        bool NotSynced = false);
 
     /// <summary>
     /// Lisans id'si çözülemediğinde (sunucuya ulaşılamıyor) verilecek karar. Kişi × kapsamın işi
@@ -1151,7 +1174,7 @@ public sealed class PaymentRequestService
                     continue;
                 }
                 if (attempt.Job.State == PaymentJobState.ApplyUncertain)
-                    return new(true, 0m, attempt.Job);
+                    return new(true, 0m, attempt.Job) { NotSynced = attempt.NotSynced };
                 resolved.Add(attempt.Job);
             }
 
@@ -1231,7 +1254,7 @@ public sealed class PaymentRequestService
             if (attempt.Adopted)
                 remoteConfirmed = true;
             else if (job.State == PaymentJobState.ApplyUncertain)
-                return new(true, 0m, job);
+                return new(true, 0m, job) { NotSynced = attempt.NotSynced };
         }
 
         // 4) R4-03 uzlaştırma (KİŞİ düzeyinde): iş hiç denenmemiş görünüyor ama
@@ -1406,6 +1429,16 @@ public sealed class PaymentRequestService
             var preview = await _api.GetBalancePreviewAsync(
                 licenseId, wpfCustomerId, MemberIdsOf(wpfCustomerId, person), ct);
             previewBalance = preview.Balance;
+        }
+        catch (ValidationException ex) when (ex.Code == CustomerNotSyncedCode)
+        {
+            // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor. Kesin "bakiye yok" DEĞİL: MarkNoBalance
+            // yazılırsa iş kesinleşir ve eşitlemeden sonra bakiye bir daha sorulmaz. Anahtar yazılmadı, iş created kalır —
+            // sonraki tıklama temiz dener.
+            _log?.LogInformation(
+                "Bakiye önizlemesi: kişinin bir üyesi sunucuya henüz ulaşmadı (customer-not-synced) — mesaj engellendi, iş taze "
+                + "kaldı (job={JobId})", job.Id);
+            return new(true, 0m, job) { NotSynced = true };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1638,7 +1671,9 @@ public sealed class PaymentRequestService
         }
         if (attempt.Adopted)
             return new(true, 0m, attempt.Job) { ScopeDeductionAdopted = true };
-        return ClassifySettledJob(attempt.Job, entryKey, entryRevision, requestedTotal);
+        // Spec 2026-10-11 §6.1-b: son denemenin customer-not-synced'i belirsiz sonuca taşınır (BalanceNotSynced).
+        var classified = ClassifySettledJob(attempt.Job, entryKey, entryRevision, requestedTotal);
+        return attempt.NotSynced && classified.Uncertain ? classified with { NotSynced = true } : classified;
     }
 
     /// <summary>Tek apply denemesi (<see cref="ReplayAsync"/>); kilit zaman aşımında (409 <c>stale</c>, hiçbir şey
@@ -1839,6 +1874,16 @@ public sealed class PaymentRequestService
                 "Bakiye apply'ı kilit zaman aşımı aldı (stale) — sunucu hiçbir şey yazmadı (job={JobId}, key={Key})",
                 job.Id, key);
             return new(_jobs.Get(job.Id)!, Stale: true);
+        }
+        catch (ValidationException ex) when (ex.Code == CustomerNotSyncedCode)
+        {
+            // Spec 2026-10-11 §6.1-b (K2): yeni anahtar sunucuda HİÇ yazılmadı (kayıtlı anahtarın oynatması üyelik denetiminden
+            // önce çalışır, bu 409'u almaz). "Bakiye yok" DEĞİL — MarkNoBalance yazılmaz; iş anahtarıyla apply_uncertain kalır,
+            // sonraki tıklama aynı anahtarla oynatır.
+            _log?.LogInformation(
+                "Bakiye apply: kişinin bir üyesi sunucuya henüz ulaşmadı (customer-not-synced) — iş anahtarıyla belirsiz kaldı "
+                + "(job={JobId}, key={Key})", job.Id, key);
+            return new(_jobs.Get(job.Id)!, NotSynced: true);
         }
         catch (ScopeHasDeductionException ex)
         {
