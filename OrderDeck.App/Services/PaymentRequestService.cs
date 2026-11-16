@@ -85,8 +85,10 @@ public enum PaymentRequestResult
 /// <param name="UnsentDeductions">Birleştirmede para taşıyan ama müşteriye hiç gitmemiş istek sayısı
 /// ("gitmiş" sayılmaz, ayrıca söylenir).</param>
 /// <param name="RefundsToOtherRow">Birleştirmenin iade edeceği düşümlerden biri başka bir satırın
-/// bakiyesinden yapılmış: bakiye satır başına tutulduğu için iade o satırda kalır, bu istekte
-/// kullanılmaz (ayrı kartken ayrı ürünler için yapılmış meşru düşüm de olabilir).</param>
+/// bakiyesinden yapılmış (ayrı kartken ayrı ürünler için yapılmış meşru düşüm de olabilir). Satır kipinde
+/// iade o satırda kalır, bu istekte kullanılmaz. Havuz kipinde kişinin bakiyesine döner ve birleşik istekte
+/// kullanılır. Notu <see cref="PersonPool"/> belirler (spec 2026-10-11 §6.1-d). Satır kipi geçiş boyunca
+/// sürdüğü için alan kalır.</param>
 /// <param name="RefundsDeductions">Birleştirme bir düşümü iade ediyor; değilse (parasız istekler
 /// birleşiyor) soru "önceki düşümler iade edilir" demez.</param>
 /// <param name="RemoteDeductions">Kişi düzeyindeki kapsam uzlaştırmasının (R4-03) sunucuda bulduğu

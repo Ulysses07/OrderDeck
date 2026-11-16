@@ -74,10 +74,12 @@ public enum PersonScopePromptKind
 ///
 /// <para><b>Kalan iş:</b> önce para taşıyan, sonra en son teslim edilen, sonra belirlenimli sahibin
 /// işi, sonra en eski (CreatedAt, Id). Sahibin el değmemiş işi para taşıyan ya da teslim edilmiş bir
-/// işin önüne GEÇMEZ: bakiye satır başına tutulur; başka üyenin bakiyesinden düşmüş işi geri alıp
-/// bakiyesi olmayan satırda yeniden uygulamak müşterinin indirimini yok ederdi. Eşitlikte sahibinki
-/// kalır: iki bilgisayar aynı (WpfCustomerId, ScopeKey) anahtarında buluşur. Kalan iş kendi sahip
-/// satırını korur. Kapsamın işi yoksa kalan iş de yoktur (onayda sahip satırda açılır).</para>
+/// işin önüne GEÇMEZ (ortak bakiye spec 2026-10-11 §6.1-g). Sunucu kayıtlı anahtarı (A11) çapa satırı
+/// düzeyinde karşılaştırır: düşüm yazıldığı satırın anahtarıdır, başka satırla oynatılamaz. Para taşıyan
+/// işi geri alıp sahip satırda yeniden uygulamak havuz kipinde gereksiz para hareketi, satır kipinde
+/// (bakiye satır başına) müşterinin indirim kaybı demek. Eşitlikte sahibinki kalır: iki bilgisayar aynı
+/// (WpfCustomerId, ScopeKey) anahtarında buluşur. Kalan iş kendi sahip satırını korur. Kapsamın işi yoksa
+/// kalan iş de yoktur (onayda sahip satırda açılır).</para>
 ///
 /// <para><b>Bu kapsamın miras işleri</b> (asıl kapsamı bu olan, <see cref="PaymentJob.PriorScopeKey"/>)
 /// kalan iş olamaz — zaten indirilmişlerdir. Açık olanlar (<see cref="PendingLegacies"/>: taşımanın
@@ -209,9 +211,13 @@ public sealed class PersonScopePlan
     /// para taşıyor). Yoksa soru "önceki düşümler iade edilir" demez.</summary>
     public bool RefundsDeductions { get; }
 
-    /// <summary>Birleştirme, kalan işin satırından BAŞKA bir satırdan yapılmış düşümü iade ediyor.
-    /// Bakiye satır başına tutulur: iade o satıra döner, kalan işin revizyonu onu kullanamaz. İki ayrı
-    /// kartken ayrı ürünler için yapılmış meşru düşümler de böyle görünür — operatör soruda görmeli.</summary>
+    /// <summary>Birleştirme, kalan işin satırından BAŞKA bir satırdan yapılmış düşümü iade ediyor. Bu kipten
+    /// bağımsız bir olgudur: kaybedenin düşümü kalan işin satırında değil. Sonucu kipe bağlıdır. Satır kipinde
+    /// iade o satıra döner, kalan işin revizyonu onu kullanamaz; havuz kipinde kişinin bakiyesine döner. Plan
+    /// sunucuya gitmeden kurulduğu için kipi bilmez. Metnin kipe göre seçimi sunucunun scope yanıtıyla
+    /// (<c>PaymentPrompt.PersonPool</c>, ortak bakiye spec 2026-10-11 §6.1-d) yalnız sunucu izlerinin sorusunda
+    /// yapılır; bu planın sorusu nötr not gösterir. İki ayrı kartken ayrı ürünler için yapılmış meşru düşümler
+    /// de böyle görünür; operatör soruda görmeli.</summary>
     public bool RefundsToOtherRow { get; }
 
     public PersonScopePromptKind Kind => IsLoudMerge ? PersonScopePromptKind.Merge : PersonScopePromptKind.Resend;

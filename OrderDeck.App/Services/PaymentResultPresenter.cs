@@ -174,9 +174,12 @@ public static class PaymentResultPresenter
     /// <para>Birleştirmede yalnız TESLİM edilmiş istekler "gitmiş" sayılır; para taşıyan ama hiç
     /// gönderilmemiş istek ayrıca söylenir (operatöre gitmemiş bir isteği gitmiş diye göstermemek
     /// için). "Fazladan düşülen" denmez: iki ayrı kartken ayrı ürünler için yapılmış düşümler de
-    /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın bakiyesine dönüyorsa
-    /// (bakiye satır başına) bu da söylenir: o tutar bu istekte kullanılmaz. İade edilecek düşüm yoksa
-    /// (parasız istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
+    /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın düşümüne dokunuyorsa
+    /// (<see cref="PaymentPrompt.RefundsToOtherRow"/>) notu kip belirler (<see cref="PaymentPrompt.PersonPool"/>,
+    /// spec 2026-10-11 §6.1-d). Satır kipinde iade o satırda kalır ve bu istekte kullanılmaz (bugünkü not).
+    /// Havuz kipinde kişinin bakiyesine döner ve birleşik istekte kullanılır (not yok). Kip bilinmiyorsa
+    /// (yerel planın sorusu) iki kipte de doğru nötr not gösterilir. İade edilecek düşüm yoksa (parasız
+    /// istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
     ///
     /// <para>Sunucunun bulduğu ayrı düşümler (<see cref="PaymentPrompt.RemoteDeductions"/>) "gitmiş
     /// istek" değildir — sunucu teslimi bilmez; bulunan düşüm olarak anlatılır.</para>
