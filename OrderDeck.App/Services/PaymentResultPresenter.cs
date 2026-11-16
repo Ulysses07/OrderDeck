@@ -32,6 +32,11 @@ public static class PaymentResultPresenter
     public const string NotSyncedText =
         "Kişinin hesapları sunucuyla henüz eşitlenmedi; mesaj gönderilmedi. Birazdan tekrar deneyin — bakiye kaybolmaz, çift düşüm olmaz.";
 
+    /// <summary>Spec §6.1-b: aynı kişide <c>customer-not-synced</c> 5 dakikadan uzun sürüyor (kalıcı eşitlenmeme: bozuk satır,
+    /// hiç inmeyen üye, yakınsamayan eski grup) — servis <see cref="PaymentRequestOutcome.Message"/>'a koyar.</summary>
+    public const string NotSyncedPersistentText =
+        "Bu kişinin hesaplarından biri sunucuya ulaşmıyor; mesaj gönderilmedi. Müşteri kaydını kontrol edin ya da grubu ayırıp yeniden birleştirin.";
+
     /// <summary>
     /// Sonucun tamamıyla bildirim (spec 2026-10-13 §6.4; W3-07): <see cref="PaymentRequestResult.Blocked"/> açılır pencere
     /// AÇMAZ — metni çağıran satır içi gösterir (<see cref="InlineProblem"/>; sahibin #508 tercihi).

@@ -264,4 +264,18 @@ public sealed class PaymentResultPresenterTests
         dialogs.Shown.Should().ContainSingle().Which.Should().Be(
             (PaymentResultPresenter.NotSyncedTitle, PaymentResultPresenter.NotSyncedText, DialogSeverity.Warning));
     }
+
+    [Fact] // §6.1-b: 5 dakikadan uzun sürenin metni servisten (Message) gelir — başlık ve önem aynı
+    public void Esitlenmedi_uzun_metin_sonucun_mesajindan()
+    {
+        const string uzun =
+            "Bu kişinin hesaplarından biri sunucuya ulaşmıyor; mesaj gönderilmedi. Müşteri kaydını kontrol edin ya da grubu ayırıp yeniden birleştirin.";
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService();
+
+        PaymentResultPresenter.Notify(dialogs, new PaymentRequestOutcome(PaymentRequestResult.BalanceNotSynced,
+            Message: PaymentResultPresenter.NotSyncedPersistentText));
+
+        dialogs.Shown.Should().ContainSingle().Which.Should().Be(("Henüz eşitlenmedi", uzun, DialogSeverity.Warning));
+        PaymentResultPresenter.NotSyncedPersistentText.Should().Be(uzun, "spec §6.1-b'nin metni birebir");
+    }
 }

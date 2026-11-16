@@ -973,6 +973,22 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         calls.Should().Be(1, "ek soru onaylanmaz — ikinci çağrı yok");
     }
 
+    [Fact] // W-havuz §6.1-b (K2): eşitlenmemiş bakiye toplu gönderimde BalanceUncertain gibi elle bırakılır — aynı metin
+    public async Task Resend_esitlenmemis_bakiye_belirsizle_ayni_metinle_elle_birakilir()
+    {
+        var (_, _, _, person) = GroupedPersonWithRequest();
+        var sut = Sut((_, _, _, _, _) =>
+            Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.BalanceNotSynced)));
+
+        var outcomes = await sut.ResendAsync("s1", DateTime.Now, new[] { Candidate(person.LeasedId) });
+
+        var o = outcomes.Should().ContainSingle().Subject;
+        o.Status.Should().Be(ResendStatus.Manual, "elle bakılmalı");
+        o.Note.Should().Be("bakiye doğrulanamadı (sunucuya ulaşılamıyor olabilir)",
+            "K2: WPF bunu BalanceUncertain gibi ele alır — yeni metin icat edilmez");
+        o.Note.Should().NotContain("BalanceNotSynced", "ham enum adı operatöre gösterilmez");
+    }
+
     [Fact]
     public async Task Resend_skips_everyone_while_the_balance_server_is_unreachable()
     {

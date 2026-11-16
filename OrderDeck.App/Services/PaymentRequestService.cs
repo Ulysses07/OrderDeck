@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
@@ -71,7 +72,8 @@ public enum PaymentRequestResult
     /// <summary>Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor (409 <c>customer-not-synced</c>; yalnız
     /// havuz kipi — birleştirme ya da ayırma sunucuya henüz ulaşmadı). Mesaj GÖNDERİLMEDİ, <c>MarkNoBalance</c> yazılmadı: iş
     /// taze ya da anahtarlı-belirsiz; sonraki tıklama kaldığı yerden sürdürür, çift düşüm olmaz. Banka W2 açısından
-    /// <see cref="BalanceUncertain"/> gibidir (beklenti yazılmaz). Yeni üye EN SONDA: var olan üyelerin değerleri değişmez.</summary>
+    /// <see cref="BalanceUncertain"/> gibidir (beklenti yazılmaz). Aynı kişide 5 dakikadan uzun sürerse metin
+    /// <see cref="PaymentRequestOutcome.Message"/>'ta. Yeni üye EN SONDA: var olan üyelerin değerleri değişmez.</summary>
     BalanceNotSynced,
 }
 
@@ -126,8 +128,10 @@ public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, boo
 /// indirilen her iş için (CustomerId, OriginalScopeKey) beklentisi iptal edilir. Sahip yeniden
 /// türetilmez.</para>
 /// <para><see cref="Message"/>: operatöre gösterilecek metin — <see cref="PaymentRequestResult.Blocked"/>'ta her zaman,
-/// <see cref="PaymentRequestResult.PaymentInProgress"/>'ta kirayı tutan bilgisayarın adı biliniyorsa; öbür sonuçlarda
-/// null (metni <see cref="PaymentResultPresenter"/> kurar).</para></summary>
+/// <see cref="PaymentRequestResult.PaymentInProgress"/>'ta kirayı tutan bilgisayarın adı biliniyorsa,
+/// <see cref="PaymentRequestResult.BalanceNotSynced"/>'ta aynı kişide <c>customer-not-synced</c> 5 dakikadan uzun sürüyorsa
+/// (<see cref="PaymentResultPresenter.NotSyncedPersistentText"/>; daha kısaysa null — spec 2026-10-11 §6.1-b); öbür
+/// sonuçlarda null (metni <see cref="PaymentResultPresenter"/> kurar).</para></summary>
 public sealed record PaymentRequestOutcome(
     PaymentRequestResult Result,
     PaymentPrompt? Prompt = null,
@@ -171,6 +175,27 @@ public sealed class PaymentRequestService
     /// <summary>Spec 2026-10-11 §6.1-b: havuz kipinin "kişinin bir üyesi sunucuda henüz yok" reddinin problem başlığı
     /// (<c>ValidationException.Code</c>; önizlemede ve yeni anahtarlı apply'da 409).</summary>
     private const string CustomerNotSyncedCode = "customer-not-synced";
+
+    /// <summary>Spec §6.1-b: aynı kişide <c>customer-not-synced</c> bundan UZUN sürerse metin değişir ve günlüğe kişinin satır
+    /// Id'leri yazılır (tam 5 dakika henüz kısa metindir).</summary>
+    internal static readonly TimeSpan NotSyncedPatience = TimeSpan.FromMinutes(5);
+
+    /// <summary>Spec §6.1-b'nin "sürerse"si: aynı kişinin art arda iki <c>customer-not-synced</c>'i arasında bundan uzun ara
+    /// varsa ilk görülme yeniden başlar (ör. ayırıp yeniden birleştirme sonrası, saatler sonraki ilk 409). Spec aralığı
+    /// vermez — mühendislik varsayılanı, değer Sahip sorusu.</summary>
+    internal static readonly TimeSpan NotSyncedStreakGap = TimeSpan.FromMinutes(30);
+
+    /// <summary>5 dakika kuralının saati (monoton zaman damgası: <see cref="TimeProvider.GetTimestamp"/>); testler elle
+    /// ilerletir (<see cref="PersonGateTimeout"/> deseni).</summary>
+    internal TimeProvider NotSyncedClock { get; set; } = TimeProvider.System;
+
+    /// <summary>Spec §6.1-b: kişinin <c>customer-not-synced</c>'i ilk ve son gördüğü an (<see cref="NotSyncedClock"/>'un
+    /// zaman damgası; duvar saati değil — NTP ya da elle saat düzeltmesi eşiği kaydırmaz), kişi anahtarı
+    /// (<see cref="PaymentPerson.MemberKey"/>) başına. Servis tekil: süreç ömrü boyunca bellekte. Kesin sonuç ya da soru kaydı
+    /// siler (<see cref="SendCoreAsync"/>); ağ belirsizliği silmez. Aynı üye kümesi aynı anahtarı üretir
+    /// (<see cref="PaymentPerson.KeyOf"/> sıralar): ayırıp yeniden birleştirme anahtarı değiştirmez; sayacı
+    /// <see cref="NotSyncedStreakGap"/> yeniden başlatır.</summary>
+    private readonly ConcurrentDictionary<string, (long First, long Last)> _notSyncedSince = new(StringComparer.Ordinal);
 
     /// <param name="shipping">Kargo eşiği ve ücretinin kaynağı (spec 2026-10-13 §6.2): mod Off'ta yerel ayar, mod On'da
     /// lisans geneli ayar. Mesaj şablonu ve hesap bilgileri <paramref name="settingsStore"/>'dan okunmaya devam eder.</param>
@@ -712,6 +737,10 @@ public sealed class PaymentRequestService
             if (outcome.MembershipChanged) return null;
             demoted = outcome.Demoted ?? demoted;
             ownerId = outcome.Job?.CustomerId ?? ownerId;
+            // Spec 2026-10-11 §6.1-b: 5 dakika sayacı yalnız art arda gelen customer-not-synced'lerle yaşar. Kesin sonuç ya da
+            // soru kişinin kaydını siler; ağ belirsizliği ve öbür belirsizlikler (sunucu kişiyi tanıdığını söylemedi) silmez.
+            if (!outcome.NotSynced && (!outcome.Uncertain || outcome.Prompt is not null))
+                _notSyncedSince.TryRemove(person.MemberKey, out _);
             if (outcome.Prompt is { } prompt)
                 return new(prompt.Kind == PersonScopePromptKind.Merge
                         ? PaymentRequestResult.MergeRequired
@@ -720,8 +749,9 @@ public sealed class PaymentRequestService
             // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor (409 customer-not-synced) — mesaj gitmez,
             // MarkNoBalance yazılmadı; operatöre ayrı uyarı ("Henüz eşitlenmedi"). Banka W2 açısından BalanceUncertain gibidir.
             if (outcome.Uncertain)
-                return new(outcome.NotSynced ? PaymentRequestResult.BalanceNotSynced : PaymentRequestResult.BalanceUncertain,
-                    null, ownerId, demoted);
+                return outcome.NotSynced
+                    ? NotSyncedOutcome(person, ownerId, demoted)
+                    : new PaymentRequestOutcome(PaymentRequestResult.BalanceUncertain, null, ownerId, demoted);
             deliveryJob = outcome.Job;
             appliedBalance = outcome.AppliedBalance;
             totalAmount -= appliedBalance;
@@ -879,6 +909,28 @@ public sealed class PaymentRequestService
         {
             _log?.LogWarning(ex, "Ödeme işinin teslimi yazılamadı (job={JobId})", job.Id);
         }
+    }
+
+    /// <summary>Spec 2026-10-11 §6.1-b: <see cref="PaymentRequestResult.BalanceNotSynced"/> sonucu ve 5 dakika kuralı. İlk ve
+    /// son görülme kişi anahtarı başına bellekte (<see cref="_notSyncedSince"/>); önceki 409'dan bu yana
+    /// <see cref="NotSyncedStreakGap"/> aşıldıysa ilk görülme yeniden başlar. İlk görülmeden bu yana
+    /// <see cref="NotSyncedPatience"/>'tan UZUN zaman geçtiyse metin <see cref="PaymentResultPresenter.NotSyncedPersistentText"/>
+    /// olur ve günlüğe kişinin satır Id'leri yazılır (ad, kullanıcı adı, telefon yok). Sunucu 409 gövdesinde Id döndürmez;
+    /// Id'ler bu PC'nin üyeleridir. Süreler monoton saatle (<see cref="TimeProvider.GetElapsedTime(long, long)"/>).</summary>
+    private PaymentRequestOutcome NotSyncedOutcome(PaymentPerson person, string? ownerId, IReadOnlyList<DemotedJob> demoted)
+    {
+        var clock = NotSyncedClock;
+        var now = clock.GetTimestamp();
+        var seen = _notSyncedSince.AddOrUpdate(person.MemberKey,
+            _ => (now, now),
+            (_, old) => clock.GetElapsedTime(old.Last, now) > NotSyncedStreakGap ? (now, now) : (old.First, now));
+        var elapsed = clock.GetElapsedTime(seen.First, now);
+        if (elapsed <= NotSyncedPatience)
+            return new(PaymentRequestResult.BalanceNotSynced, null, ownerId, demoted);
+        _log?.LogWarning("customer-not-synced 5 dakikadan uzun sürüyor ({Elapsed}) — kişinin satırları: {MemberIds}",
+            elapsed, string.Join(",", person.MemberIds));
+        return new(PaymentRequestResult.BalanceNotSynced, null, ownerId, demoted,
+            Message: PaymentResultPresenter.NotSyncedPersistentText);
     }
 
     private sealed record BalanceOutcome(bool Uncertain, decimal AppliedBalance, PaymentJob? Job)

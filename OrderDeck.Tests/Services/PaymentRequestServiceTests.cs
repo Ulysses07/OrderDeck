@@ -467,17 +467,19 @@ public partial class PaymentRequestServiceTests : IDisposable
     /// kısaltılır: kilide takılan bir test 20 sn asılı kalmasın, hızla düşsün.</summary>
     /// <param name="shipping">Kargo ayarı sağlayıcısı; verilmezse ayar dosyası (mod Off).</param>
     /// <param name="offRecords">Mod Off'taki kirasız ödeme kaydı (W3-06); verilmezse kayıt yok.</param>
+    /// <param name="log">Servisin günlüğü (W-havuz: "günlükte yalnız Id" denetimi); verilmezse günlük yok.</param>
     private PaymentRequestService SutOn(
         WhatsAppStubHandler handler, SettingsStore store, FakeUrlLauncher launcher,
         ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null,
         CustomerRepository? customers = null, CustomerBusySet? busy = null,
-        IShippingSettingsProvider? shipping = null, PaymentOffRecordWriter? offRecords = null)
+        IShippingSettingsProvider? shipping = null, PaymentOffRecordWriter? offRecords = null,
+        Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null)
     {
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
             api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs, shipping ?? LocalShipping.Of(store),
-            log: null, customers: customers, busy: busy, offRecords: offRecords)
+            log: log, customers: customers, busy: busy, offRecords: offRecords)
         {
             PersonGateTimeout = TimeSpan.FromSeconds(5),
         };
