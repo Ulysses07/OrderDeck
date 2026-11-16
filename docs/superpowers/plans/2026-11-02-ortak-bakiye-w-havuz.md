@@ -306,7 +306,7 @@ internal const string UnmergeButton = "Ayır";
 internal const string UnmergeFallbackMessage =
     "Bakiye dağılımı alınamadı. Ayırınca her hesap kendi satırındaki bakiyeyle kalır.";
 internal static string? UnmergeMessage(IReadOnlyList<Customer> localMembers, IReadOnlyList<CustomerBalanceMemberDto> serverMembers);
-// null → soru yok (bütün tutarlar 0); eşlenemeyen canlı üyede bakiye ≠ 0 → UnmergeFallbackMessage (Sahip sorusu 1'in önerisi);
+// null → soru yok (bütün tutarlar 0); eşlenemeyen canlı üyede bakiye ≠ 0 → UnmergeFallbackMessage (Sahip sorusu 1 = (A), 16.11.2026);
 // aksi: "Ayırınca her hesap kendi bakiyesiyle kalır: " + string.Join(" · ", canlılar.Concat(silinmişler))
 //     + ". Başka hesaptan bu kişinin alışverişine kullanılmış tutarlar, o satış geri alınmadıkça geri dönmez."
 // canlı: $"{CustomerIdentityText.PlatformLabel(c.Platform)} {(h.StartsWith('@') ? h : "@" + h)}: {TrFormats.Currency(m.Balance)}"
@@ -999,7 +999,7 @@ Var olan vektörler değişmez; alanları yok, yani `ok`.
     // Ortak bakiye §6.1-a (W-havuz planı fark 27): GUID'li ama sunucunun reddedeceği tek satırlı kişi artık sahip
     // adayı değil (OwnerId null) → SendCoreAsync'in iş dalı atlanır. O satırda önceden açılmış, teslim edilmiş iş
     // OKUNMAZ: "tekrar gönderilsin mi?" sorusu yok, teslim kaydı yazılmaz, ikinci mesaj sorusuz gider — GUID'siz kişinin
-    // yolu. BİLEREK kilitlenen satır kipi farkı; korumayı sürdürme kararı alınırsa bu test o görevde bilerek değişir.
+    // yolu. BİLEREK kilitlenen satır kipi farkı; Sahip sorusu 6 (Görev 1-b) = (A), 16.11.2026: koruma bu kişide sürmez.
     [Fact]
     public async Task Gonderilemeyen_tek_uyeli_kiside_eski_teslim_okunmaz_ikinci_tiklama_sorusuz_gider()
     {
@@ -2739,7 +2739,7 @@ MSG
 - Spec'in satırları 11.10 kesitinden: önizlemenin genel `catch`'i `:1037-1042` → bugün `:1403-1408`; `BalanceOutcome` `:619-630` → `:870-885`; `ReplayAsync`'in genel kolu `:1357-1360` → `:1847-1850`; `Notify` `:47-60` → `:57-115` (`BalanceUncertain` kolu `:73-86`); enum `:15` aynı. Kod eşlemesi spec'in dediği `ThrowMappedAsync` (önizleme) ve apply'ın kendi 409 okuması (`LicenseApiClient.cs:856-862`); ikisi de `MapProblem` (`:1210-1222`) üzerinden 4xx başlığını `ValidationException.Code` yapar — istemci kodu değişmez.
 - **Fark 7 (taşıma).** Apply tarafında `ReplayAsync`'in sonucu belirsiz dönüşe üç yoldan varır: miras işin oynatması (`:1151-1152`), belirsiz işin oynatması (`:1231-1232`), `SettleAsync` → `ClassifySettledJob` (`:1634`). Üçü de `ApplyAttempt.NotSynced`'i `BalanceOutcome.NotSynced`'e taşır. K3'ün anında tekrarı (`:1626-1630`) aynen kalır: `customer-not-synced` `stale` değildir, ikinci apply yine gider; son denemenin bayrağı geçerlidir. `ReplayOnceMoreIfStaleAsync` yalnız `stale`'de yineler (miras ve belirsiz işte tek apply). `no-balance`/`nothing-to-apply` kolu (`:1806-1812`) aynen: `MarkNoBalance` yalnız orada.
 - **Fark 8 (tüketiciler).** `PaymentResultPresenter.Notify` iki aşırı yükleme; `CorrectedPaymentRequests` `switch`'i (`_` kolu `outcome.Result.ToString()` gösterirdi) `BalanceNotSynced`'i `BalanceUncertain` satırının metnine eşler — K2 "WPF bunu `BalanceUncertain` gibi ele alır"; spec bu bağlam için metin vermiyor, yenisi icat edilmez. `PaymentLeaseCoordinator` sonuçla dallanmaz (Grep: yalnız `new PaymentRequestOutcome(…)` kurar, `:545`, `:555`, `:681`, `:734`, `:829`); kiranın çıkışı `LeaseExit`'in varsayılanı `abandoned` (`:617-631`) — gönderim denemesinden önceki her dönüş gibi. Mod On'da (sahadaki bütün lisanslar) bunu `PaymentLeaseTests.Mod_On_esitlenmeme_kira_abandoned_is_taze_sonraki_tiklama_surer` kanıtlar (Adım 2): finish `abandoned`, iş taze, apply ve mesaj yok, sonraki tıklama yeni kirayla `delivered`. `CustomerSearchViewModel.cs:327` ve `StreamReportViewModel.cs:265` `Notify(outcome)` çağırır; değişiklik yok.
-- **Fark 9 (5 dakika).** Anahtar `PaymentPerson.MemberKey`; ilk ve son görülme servis tekilinde bellekte (`ConcurrentDictionary<string, (long First, long Last)>`, monoton zaman damgası `TimeProvider.GetTimestamp`; süre `GetElapsedTime` ile — duvar saati NTP/elle düzeltmede sıçrar); "uzun" = ilk görülmeden bu yana **> 5 dk** (tam 5 dk kısa metin); saat `internal TimeProvider NotSyncedClock` (test sahtesi `ManualTimeProvider`). Kayıt, kişinin bakiye akışı kesin bir sonuç (mesaja çıkan) ya da soru (`Prompt`) üretince silinir; ağ belirsizliği ve öbür belirsizlikler silmez. **Ayırıp yeniden birleştirme anahtarı DEĞİŞTİRMEZ:** `PaymentPerson.KeyOf` (`OrderDeck.Core/Customers/PaymentPerson.cs:86-87`, master `7960eba3`; Görev 1'in `Single` genişletmesinden sonra birkaç satır aşağı kayar) Id'leri tekilleştirip sıralar, aynı üye kümesi aynı anahtarı üretir. Bu yüzden "art arda" tanımı gerekir: önceki 409'dan bu yana `NotSyncedStreakGap` (**30 dk**) aşıldıysa ilk görülme yeniden başlar — operatörün önerilen kurtarmadan (ayır + yeniden birleştir) sonraki ilk kısa 409'u ve saatler sonraki ilk 409 uzun metni anında göstermez. Spec "5 dakikadan uzun sürerse" der, aralığı vermez: 30 dk mühendislik varsayılanıdır (5 dk eşiğinin ve testlerin 6 dk adımlarının çok üstünde) — değer Sahip sorusu. Uzun metin servis tarafında `PaymentRequestOutcome.Message`'a konur (`PaymentInProgress` deseni, `PaymentResultPresenter.cs:41-43`), çünkü `Notify(…, PaymentRequestResult)` kişiyi bilmez.
+- **Fark 9 (5 dakika).** Anahtar `PaymentPerson.MemberKey`; ilk ve son görülme servis tekilinde bellekte (`ConcurrentDictionary<string, (long First, long Last)>`, monoton zaman damgası `TimeProvider.GetTimestamp`; süre `GetElapsedTime` ile — duvar saati NTP/elle düzeltmede sıçrar); "uzun" = ilk görülmeden bu yana **> 5 dk** (tam 5 dk kısa metin); saat `internal TimeProvider NotSyncedClock` (test sahtesi `ManualTimeProvider`). Kayıt, kişinin bakiye akışı kesin bir sonuç (mesaja çıkan) ya da soru (`Prompt`) üretince silinir; ağ belirsizliği ve öbür belirsizlikler silmez. **Ayırıp yeniden birleştirme anahtarı DEĞİŞTİRMEZ:** `PaymentPerson.KeyOf` (`OrderDeck.Core/Customers/PaymentPerson.cs:86-87`, master `7960eba3`; Görev 1'in `Single` genişletmesinden sonra birkaç satır aşağı kayar) Id'leri tekilleştirip sıralar, aynı üye kümesi aynı anahtarı üretir. Bu yüzden "art arda" tanımı gerekir: önceki 409'dan bu yana `NotSyncedStreakGap` (**30 dk**) aşıldıysa ilk görülme yeniden başlar — operatörün önerilen kurtarmadan (ayır + yeniden birleştir) sonraki ilk kısa 409'u ve saatler sonraki ilk 409 uzun metni anında göstermez. Spec "5 dakikadan uzun sürerse" der, aralığı vermez: 30 dk mühendislik varsayılanıydı (5 dk eşiğinin ve testlerin 6 dk adımlarının çok üstünde); değer Sahip sorusu 3 = (A), 16.11.2026: 30 dk. Uzun metin servis tarafında `PaymentRequestOutcome.Message`'a konur (`PaymentInProgress` deseni, `PaymentResultPresenter.cs:41-43`), çünkü `Notify(…, PaymentRequestResult)` kişiyi bilmez.
 - **Fark 5.** 409 gövdesinde satır Id'si yok; 5 dakika günlüğü istemcinin kendi üye Id'lerini (`PaymentPerson.MemberIds`; GUID'siz yerel Id'ler dahil, yalnız Id) yazar. Her 409 ayrıca `Information` düzeyinde iş/anahtar Id'siyle günlüğe girer (K2'ye göre geçici durum; `Warning` yalnız 5 dakikadan sonra).
 - **Fark 22 / K7.** Havuz kipinde kesin kolun önizlemesi 200 `{balance: 0, personPool: true}`: `previewBalance <= 0` → `MarkNoBalance` bugünkü yoldan doğru kapanır; `CustomerBalancePreview` değişmez (bilinmeyen alan yok sayılır). Kilit testi Adım 13.
 - **Fark 23 / §6.1-c.** 409 `client-update-required` (önizleme ve apply), 400 `member-ids-required`, 503 `balance-busy` ve 404 yeni bir sonuca eşlenmez: bugünkü genel belirsiz kollar (`BalanceUncertain`, "Bakiye doğrulanamadı", `MarkNoBalance` yok, apply'da iş anahtarıyla bekler). Kaynakları ayrı: 503 `balance-busy` ve 404 için S2 saha notu 5 "eşlenmez" der; `client-update-required` için spec §6.1-c genel `BalanceUncertain` yolunu yeterli sayar (metin değişmez); 400 `member-ids-required`'ı S2 saha notu 5 kesin sonuçtan ayrılması gerekenler arasında sayar — genel belirsiz kol bunu sağlar (`MarkNoBalance` yok, iş anahtarla bekler); Wh çapayı her zaman `memberIds`'e koyduğu için normalde gelmez. **Spec ↔ S2 notu:** S2 notu `client-update-required` ve `member-ids-required`'ın ayrılmasını ister; spec §6.1-c genel kolu yeterli sayar; ayrım `MarkNoBalance`'ın yazılmamasıyla sağlanır. Kod değişmez; Adım 13 kilitler. `client-update-required`'da güncelleme sorusu açılmaz.
@@ -3761,7 +3761,7 @@ Yeni:
 
     /// <summary>Spec §6.1-b'nin "sürerse"si: aynı kişinin art arda iki <c>customer-not-synced</c>'i arasında bundan uzun ara
     /// varsa ilk görülme yeniden başlar (ör. ayırıp yeniden birleştirme sonrası, saatler sonraki ilk 409). Spec aralığı
-    /// vermez — mühendislik varsayılanı, değer Sahip sorusu.</summary>
+    /// vermez; değer Sahip sorusu 3 = (A), 16.11.2026: 30 dk.</summary>
     internal static readonly TimeSpan NotSyncedStreakGap = TimeSpan.FromMinutes(30);
 
     /// <summary>5 dakika kuralının saati (monoton zaman damgası: <see cref="TimeProvider.GetTimestamp"/>); testler elle
@@ -6170,7 +6170,7 @@ public sealed class CustomerSearchUnmergeTests : IDisposable
         Ayrildi(ig).Should().BeTrue();
     }
 
-    [Fact] // Sahip sorusu 1, öneri (A): kartta olmayan canlı sunucu üyesinde bakiye ≠ 0 → liste yerine genel uyarı
+    [Fact] // Sahip sorusu 1 = (A), 16.11.2026: kartta olmayan canlı sunucu üyesinde bakiye ≠ 0 → liste yerine genel uyarı
     public async Task Kartta_olmayan_canli_uyede_bakiye_varsa_genel_uyari()
     {
         var ig = Satir("instagram");
@@ -6185,7 +6185,7 @@ public sealed class CustomerSearchUnmergeTests : IDisposable
         _dialogs.Confirmations.Should().ContainSingle().Which.Should().Be((Baslik, GenelUyari));
     }
 
-    [Fact] // Sahip sorusu 1, öneri (A): kartta olmayan canlı üyenin 0 bakiyesi listelenmez; sunucunun görmediği yerel satır da
+    [Fact] // Sahip sorusu 1 = (A), 16.11.2026: kartta olmayan canlı üyenin 0 bakiyesi listelenmez; sunucunun görmediği yerel satır da
     public async Task Kartta_olmayan_canli_uyenin_sifir_bakiyesi_listelenmez()
     {
         var ig = Satir("instagram");
@@ -6403,7 +6403,7 @@ Bugünkü `UnmergeGroup` (`:265-272`):
     /// null → soru yok (bütün tutarlar 0). Canlı üye "Instagram @kullanici: 70,00 TL", silinmiş üye
     /// "(silinmiş hesap): 10,00 TL — ayırınca kullanılamaz" (ek sahip kararı 12.10.2026: Ayır serbest, tutar
     /// gösterilir); önce canlılar, sonra silinmişler, her grup sunucunun sırasıyla. Kartta olmayan canlı üyenin
-    /// bakiyesi ≠ 0 ise liste yerine <see cref="UnmergeFallbackMessage"/> (Sahip sorusu 1, öneri A); 0 ise listelenmez.
+    /// bakiyesi ≠ 0 ise liste yerine <see cref="UnmergeFallbackMessage"/> (Sahip sorusu 1 = (A), 16.11.2026); 0 ise listelenmez.
     /// </summary>
     internal static string? UnmergeMessage(
         IReadOnlyList<Customer> localMembers, IReadOnlyList<CustomerBalanceMemberDto> serverMembers)
@@ -7330,8 +7330,8 @@ Get-ChildItem "$env:USERPROFILE\wh-olcum" -Recurse -Filter orderdeck.db | ForEac
 ```
 
   - Satır biçimi `Etki|Anahtar|Satir|Durum2|IsSayisi`. `Etki`: `her_kapsam` = `PriorScopeKey` NULL (kişinin bütün istekleri), `kendi_kapsami` = yalnız o kapsam. `Anahtar`: `ApplyKey` dolu mu. `Satir`: `silinmis` = `PurgedAt` dolu (öncelikli), `gonderilemez` = Platform/Username kuralı tutmuyor. `Durum2` işin durumu; asıl risk `apply_uncertain`'dır (`applied`/`reverse_pending` işin anahtarı bir kez sunucuya yazılmıştır, o an çapa sunucudaydı). `anahtarsiz` beklenmez (034 anahtarla taşır, `PaymentJobSql.DemoteToLegacy` parasız işi kapatır, `PaymentJobSql.cs:43-48`).
-  - Sayı üst sınırdır, yerel veriden daraltılamaz: silinmeden önce gönderilmiş satır sunucudadır; kişinin sahip adayı yoksa bakiye adımına hiç girilmez (`PaymentRequestService.cs:835`), miras iş oynatılmaz, tıklama engellenmez; kişinin hiçbir üyesi sunucuda değilse iş `no-balance` ile kapanır.
-  - **Karar kuralı:** `anahtarli` sayısı 0 değilse (ya da beklenmeyen `anahtarsiz` satır çıkarsa) pilot `enable`'dan (8. madde) ÖNCE Burak'a sorulur: satırı düzeltmek (Platform/Username doldurulunca satır güncelleme tetikleyicisiyle gönderim sırasına girer, `Customer_syncseq_au` — bugünkü hâli `045_customer_unit_stamps.sql:353-354`; çapa sunucuda oluşur, sıradaki oynatma kesin sonuç alır) ya da ayrı bir kod görevi. Silinmiş satır düzeltmeyle gönderilmez (`PurgedAt` atlaması), onun yolu kod görevidir. W-havuz'a kod düşmez.
+  - Sayı, sunucu durumu açısından üst sınırdır ve yerel veriden daraltılamaz: silinmeden önce gönderilmiş satır sunucudadır; kişinin sahip adayı yoksa bakiye adımına hiç girilmez (`PaymentRequestService.cs:835`), miras iş oynatılmaz, tıklama engellenmez; kişinin hiçbir üyesi sunucuda değilse iş `no-balance` ile kapanır. Sorgunun kendisi ise 1a'nın ilk sorgusuyla aynı yaklaşıklığı taşır (`IsNullOrWhiteSpace` yerine `trim`, UTF-16 birimi yerine karakter uzunluğu): yalnız sekme ya da satır sonundan oluşan bir kullanıcı adını ya da UTF-16'da 128 birimi aşan 128 karakterlik bir adı kaçırabilir. Sahada pratikte beklenmez; büyüklük ölçümü için yeterlidir.
+  - **Karar kuralı:** `anahtarli` sayısı 0 değilse (ya da beklenmeyen `anahtarsiz` satır çıkarsa) pilot `enable`'dan (8. madde) ÖNCE Burak'a sorulur. Kural bilerek temkinlidir: asıl risk `apply_uncertain`'dır; `applied`/`reverse_pending` satırlarının anahtarı sunucuda yazılıdır ve normalde takılmaz, ama geri alma yolu bu ölçüm için ayrıca doğrulanmadığından onlar da sorulur. Seçenekler: satırı düzeltmek (Platform/Username doldurulunca satır güncelleme tetikleyicisiyle gönderim sırasına girer, `Customer_syncseq_au` — bugünkü hâli `045_customer_unit_stamps.sql:353-354`; çapa sunucuda oluşur, sıradaki oynatma kesin sonuç alır) ya da ayrı bir kod görevi. Silinmiş satır düzeltmeyle gönderilmez (`PurgedAt` atlaması), onun yolu kod görevidir. W-havuz'a kod düşmez.
 - Kopyaları sil (ölçüm bitince):
 
 ```powershell
@@ -7594,7 +7594,7 @@ docker logs orderdeck-license --since 30m 2>&1 | grep '409 customer-not-synced'
 | R29 | Onay metni, [Ayır] [Vazgeç], 12.10 kararı (FARK-e2/e3) | 7 `Bakiye_varsa_dagilim_sorulur_metin_birebir`, `Eksi_bakiye_de_sorulur`, `Silinmis_hesapta_para_varken_ayir_serbest`, `YouTube_uyesinde_gorunen_tanitici_cift_at_yok`, `Vazgec_ile_grup_ayrilmaz`, `Ayir_ile_grup_ayrilir`, `Onay_dugmesi_yazisi_parametreden_gelir_varsayilan_Evet_bildirim_Tamam`, `Odeme_sorusunun_onay_dugmesi_Evet_kalir`; spec bayat satırları Görev 9 Adım 7 |
 | R30 | Sorusuz yollar | 7 `Butun_tutarlar_sifirsa_sorusuz_ayrilir`, `Gonderilebilir_uyesi_olmayan_kart_sunucuya_sorulmadan_ayrilir`, `Yalniz_gonderilemeyen_GUIDli_uyeler_sunucuya_sorulmadan_ayrilir`, `Istemci_yoksa_bugunku_gibi_sorusuz`, `Gonderilemeyen_GUIDli_uye_sahip_olmaz_dagilim_gonderilebilir_uyeyle_sorulur` |
 | R31 | Çağrı hatasında genel uyarı | 7 `Cagri_hatasinda_genel_uyari` (Ayır ve Vazgeç), `Members_alani_yoksa_genel_uyari` |
-| R32 | Bilgi amaçlı; eşlenmeyen canlı üye (SORU-e4) | 7 `Kartta_olmayan_canli_uyede_bakiye_varsa_genel_uyari`, `Kartta_olmayan_canli_uyenin_sifir_bakiyesi_listelenmez` (Sahip sorusu 1, öneri A) |
+| R32 | Bilgi amaçlı; eşlenmeyen canlı üye (SORU-e4) | 7 `Kartta_olmayan_canli_uyede_bakiye_varsa_genel_uyari`, `Kartta_olmayan_canli_uyenin_sifir_bakiyesi_listelenmez` (Sahip sorusu 1 = (A), 16.11.2026) |
 | R33 | GUID'siz satırdan açılan kart sahip satıra düşer (§6.1-f) | 8 `Guidsiz_satirdan_acilan_kart_kisinin_sahip_satirinin_bakiyesini_okur`, `Guidli_satirdan_acilan_kart_bugunku_gibi_o_satiri_okur`, `Sahip_kurali_gonderilemeyen_satiri_atlar` |
 | R34 | "Server eşlemesi yok" metni (SORU-f1) | 8 `Hic_guidli_uyesi_olmayan_kiside_server_eslemesi_yok_metni`, `Guidli_uyeleri_gonderilemeyen_kiside_server_eslemesi_yok_metni`, `Grupsuz_guidsiz_satir_bugunku_gibi_metin`, `Sahip_okumasi_atarsa_bakiye_yuklenemedi_metni` (fark 19) |
 | R35 | Kartlar aynı havuz | R33 testleri; saha notu 3, 8 |
