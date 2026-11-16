@@ -28,10 +28,11 @@ public sealed class PaymentPersonTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private string Insert(string? phone = null, string? groupId = null, string platform = "instagram")
+    private string Insert(string? phone = null, string? groupId = null, string platform = "instagram",
+        string? username = null)
     {
         var id = Guid.NewGuid().ToString("N");
-        _customers.Insert(new Customer(id, platform, "u" + id[..8], null, null, 1, 1, false, null, null,
+        _customers.Insert(new Customer(id, platform, username ?? "u" + id[..8], null, null, 1, 1, false, null, null,
             0, 0m, null, null, phone, GroupId: groupId));
         return id;
     }
@@ -126,5 +127,99 @@ public sealed class PaymentPersonTests : IDisposable
         _customers.GetPaymentPerson(blankA).MemberIds.Should().Equal(new[] { blankA }, "yalnız boşluk = gruplanmamış");
         _customers.GetPaymentPerson(plain).MemberIds.Should().BeEquivalentTo(new[] { plain, plain2 },
             "' g1' ayrı grup — kırpılmaz");
+    }
+
+    // Ortak bakiye §6.1-a: üye, sahip kuralının girdisi olan Platform/Username'i satırdan taşır
+    // (senkronlanan, yakınsayan alanlar — iki bilgisayar aynı girdiyi görür).
+    [Fact]
+    public void Uyeler_platform_ve_kullanici_adini_tasir()
+    {
+        var group = Guid.NewGuid().ToString("N");
+        var a = Insert(groupId: group);
+        var b = Insert(groupId: group, platform: "tiktok");
+
+        var person = _customers.GetPaymentPerson(a);
+
+        foreach (var id in new[] { a, b })
+        {
+            var row = _customers.GetById(id)!;
+            var member = person.Members.Single(m => m.Id == id);
+            member.Platform.Should().Be(row.Platform);
+            member.Username.Should().Be(row.Username);
+        }
+    }
+
+    [Fact] // §6.1-a: tek satırlık kişi de gönderilebilirliği taşır — yoksa GUID'li tek satır bile sahipsiz kalırdı
+    public void Tek_satirlik_kisi_platform_ve_kullanici_adini_tasir()
+    {
+        var id = Insert(phone: TestPhone.NewE164());
+        var customer = _customers.GetById(id)!;
+
+        var person = PaymentPerson.Single(customer);
+
+        person.Members.Should().ContainSingle();
+        person.Members[0].Platform.Should().Be(customer.Platform);
+        person.Members[0].Username.Should().Be(customer.Username);
+        person.OwnerId.Should().Be(customer.Id, "GUID'li ve gönderilebilir tek satır sahiptir");
+    }
+
+    // Ortak bakiye §6.1-a, M14: GUID'li ama sunucunun reddedeceği satır (Username boş) sahip seçilmez —
+    // telefon önceliği onu öne alsa da. Gönderilebilir öbür GUID'li üye sahip olur; kişiden çıkan satır yok.
+    [Fact]
+    public void Kullanici_adi_bos_guidli_satir_sahip_secilmez_gonderilebilir_uye_secilir()
+    {
+        var group = Guid.NewGuid().ToString("N");
+        var a = Insert(phone: TestPhone.NewE164(), groupId: group, username: "");
+        var b = Insert(groupId: group, platform: "tiktok");
+
+        var person = _customers.GetPaymentPerson(a);
+
+        person.OwnerId.Should().Be(b, "eski kural telefonlu A'yı seçerdi; A sunucuya hiç ulaşmaz");
+        person.MemberIds.Should().BeEquivalentTo(new[] { a, b }, "gönderilemeyen satır kişiden çıkmaz");
+    }
+
+    [Fact] // §6.1-a: hiçbir GUID'li üye gönderilemiyorsa sahip yok — o kişide bakiye işi açılmaz
+    public void Hicbir_uye_gonderilemezse_sahip_yok()
+    {
+        var group = Guid.NewGuid().ToString("N");
+        var a = Insert(phone: TestPhone.NewE164(), groupId: group, username: "");
+        var b = Insert(groupId: group, platform: new string('p', 33));
+
+        var person = _customers.GetPaymentPerson(a);
+
+        person.OwnerId.Should().BeNull();
+        person.MemberIds.Should().BeEquivalentTo(new[] { a, b });
+    }
+
+    // §8.4-3: kural yalnız YENİ işin sahibini seçer. Sahibi sonradan gönderilemez olan kişinin var olan işi
+    // üye taramasıyla bulunur; yeni sahip onu taşımaz, ikinci iş açılmaz. BİLEREK kilitlenen sınır: o iş
+    // gönderilemeyen satırda kalır (satır kipinde MarkNoBalance, havuz kipinde düşüm yazılamaz) — sahip
+    // sorusu Görev 1-a; Burak taşımayı seçerse bu test o görevde bilerek değişir.
+    [Fact]
+    public void Var_olan_isin_sahibi_kural_degisse_de_degismez()
+    {
+        var group = Guid.NewGuid().ToString("N");
+        var a = Insert(phone: TestPhone.NewE164(), groupId: group);
+        var b = Insert(groupId: group, platform: "tiktok");
+        var jobs = new PaymentJobRepository(_db);
+
+        var once = _customers.GetPaymentPerson(a);
+        once.OwnerId.Should().Be(a, "ön koşul: telefonlu ve gönderilebilir A sahip");
+        var ilk = jobs.FindOrCreateForPerson(new PersonJobRequest(
+            once.LeasedId, once.MemberKey, once.MemberIds, once.OwnerId!, "session:s1", 100m));
+        ilk.Status.Should().Be(PersonJobStatus.Ready);
+        ilk.Job!.CustomerId.Should().Be(a);
+
+        using (var conn = _db.Open())
+            conn.Execute("UPDATE Customer SET Username = '' WHERE Id = @a", new { a });
+
+        var sonra = _customers.GetPaymentPerson(a);
+        sonra.OwnerId.Should().Be(b, "yeni işin sahibi artık gönderilebilir B");
+        var ikinci = jobs.FindOrCreateForPerson(new PersonJobRequest(
+            sonra.LeasedId, sonra.MemberKey, sonra.MemberIds, sonra.OwnerId!, "session:s1", 100m));
+
+        ikinci.Status.Should().Be(PersonJobStatus.Ready);
+        ikinci.Job!.Id.Should().Be(ilk.Job!.Id, "iş üye taramasıyla bulunur — ikinci iş açılmaz");
+        ikinci.Job!.CustomerId.Should().Be(a, "var olan işin sahibi değişmez");
     }
 }

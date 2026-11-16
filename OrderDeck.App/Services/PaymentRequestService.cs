@@ -691,8 +691,9 @@ public sealed class PaymentRequestService
         // hak eder. Düşülecek bir şey yoksa aşağıdaki akış zaten ağa çıkmadan
         // "bakiye yok" ile kapanır.
         //
-        // Kişinin GUID'li bir üyesi varsa (sahip) bakiye akışına girilir — tıklanan satır GUID'siz
-        // olsa da. GUID'li üye yoksa iş yoktur (sunucu GUID olmayan Id'ye düşüm yazamaz).
+        // Kişinin GUID'li ve sunucuya gönderilebilir bir üyesi varsa (sahip) bakiye akışına girilir —
+        // tıklanan satır GUID'siz ya da gönderilemez olsa da. Yoksa iş yoktur: sunucu GUID olmayan Id'ye
+        // düşüm yazamaz, gönderilemeyen satır (ServerCustomerRule) sunucuya hiç ulaşmaz (ortak bakiye §6.1-a).
         if (person.OwnerId is not null)
         {
             // Kira tutuluyken kapsam uzlaştırmasının adaylarına begin'in sunucu üyeleri de katılır (§6.4).

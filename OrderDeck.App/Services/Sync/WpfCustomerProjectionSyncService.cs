@@ -1,6 +1,6 @@
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
@@ -94,24 +94,6 @@ public sealed class WpfCustomerProjectionSyncService
         _tracker?.RegisterPush(PushStatusName);
     }
 
-    // Sunucunun kabul sınırları (LicensesWpfCustomersSyncController "Validate
-    // input items minimally" bloğu). Burada AYNEN tekrarlanıyor, çünkü tek amaç
-    // "sunucu bunu reddeder mi?" sorusunu göndermeden önce cevaplamak. Sunucu
-    // sınırı bir gün gevşerse buradaki eleme fazladan kayıt atlar (hata değil,
-    // yalnız gecikme); sıkılaşırsa yine parti reddedilir ve bu sabitler
-    // güncellenmeli — bu yüzden değerler kaynağıyla birlikte anılıyor.
-    private const int MaxPlatformLength = 32;
-    private const int MaxUsernameLength = 128;
-
-    // [NotNullWhen(true)]: "kabul edilebilir" demek aynı zamanda "boş değil"
-    // demek. Bu olmadan aşağıdaki uyarı satırındaki `?.` derleyiciyi şüpheye
-    // düşürüp WpfCustomerSyncItem kurulumunda CS8604 veriyor.
-    private static bool IsServerAcceptable(
-        [NotNullWhen(true)] string? platform,
-        [NotNullWhen(true)] string? username)
-        => !string.IsNullOrWhiteSpace(platform) && platform.Length <= MaxPlatformLength
-        && !string.IsNullOrWhiteSpace(username) && username.Length <= MaxUsernameLength;
-
     /// <summary>
     /// Tek gönderim turu: depo BatchSize'dan az satır döndürene kadar parti parti gönderir;
     /// gönderilen toplam müşteri sayısını döner. İmleç her başarılı partiden sonra SyncCursor
@@ -197,22 +179,23 @@ public sealed class WpfCustomerProjectionSyncService
                     _log.LogWarning("Skipping customer with non-GUID Id={Id}", c.Id);
                     continue;
                 }
-                // Sunucu boş/aşırı uzun Platform veya Username gördüğünde
-                // PARTİNİN TAMAMINI 400'le reddediyor
-                // (LicensesWpfCustomersSyncController). Watermark hatada
-                // ilerlemediği için tek bir bozuk satır boru hattını KALICI
-                // kilitler: aynı parti her turda yeniden gönderilir, arkasındaki
-                // herkes rehin kalır ve tek belirti dakikada bir düşen bir
-                // uyarı satırı olur. 2026-08-14'te sahada tam olarak bu yaşandı
+                // Sunucu boş/aşırı uzun Platform veya Username taşıyan satırı
+                // yazmaz: bugün yazılmadan sayılır (LicensesWpfCustomersSyncController,
+                // 'invalid' kolu). Eski sunucu PARTİNİN TAMAMINI 400'le reddederdi;
+                // watermark hatada ilerlemediği için tek bir bozuk satır boru hattını
+                // KALICI kilitlerdi: aynı parti her turda yeniden gönderilir, arkasındaki
+                // herkes rehin kalırdı. 2026-08-14'te sahada tam olarak bu yaşandı
                 // — Facebook App Review onayından önce açılmış, Username'i boş
                 // TEK kayıt 565 müşteriyi 12 gün boyunca sunucuya ulaştırmadı.
                 //
-                // Bu yüzden bozuk satır burada elenir. Sunucudaki doğrulama
+                // Bu yüzden bozuk satır burada da elenir. Sunucudaki doğrulama
                 // aynen kalmalı: sınır orada, bu yalnız istemcinin kendi
                 // kuyruğunu zehirlememesi. Elenen kayıt zaten eşleşemezdi —
                 // sunucu tarafı match'i (LicenseId, Platform, Username) üçlüsüne
-                // dayanıyor, bu alanlar boşken eşleşecek bir şey yok.
-                if (!IsServerAcceptable(c.Platform, c.Username))
+                // dayanıyor, bu alanlar boşken eşleşecek bir şey yok. Tanım Core'da tek
+                // (ServerCustomerRule): ödeme sahibi kuralı da gönderilemeyen satırı aynı
+                // tanımla eler (ortak bakiye §6.1-a).
+                if (!ServerCustomerRule.IsServerAcceptable(c.Platform, c.Username))
                 {
                     _log.LogWarning(
                         "Skipping customer Id={Id}: sunucunun reddedeceği Platform/Username " +

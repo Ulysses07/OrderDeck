@@ -123,6 +123,47 @@ public partial class PaymentRequestServiceTests
         finally { Drop(db); }
     }
 
+    // Ortak bakiye §6.1-a (W-havuz planı fark 27): GUID'li ama sunucunun reddedeceği tek satırlı kişi artık sahip
+    // adayı değil (OwnerId null) → SendCoreAsync'in iş dalı atlanır. O satırda önceden açılmış, teslim edilmiş iş
+    // OKUNMAZ: "tekrar gönderilsin mi?" sorusu yok, teslim kaydı yazılmaz, ikinci mesaj sorusuz gider — GUID'siz kişinin
+    // yolu. BİLEREK kilitlenen satır kipi farkı; korumayı sürdürme kararı alınırsa bu test o görevde bilerek değişir.
+    [Fact]
+    public async Task Gonderilemeyen_tek_uyeli_kiside_eski_teslim_okunmaz_ikinci_tiklama_sorusuz_gider()
+    {
+        var db = FileDb();
+        try
+        {
+            var a = Uye(db, $"u{Guid.NewGuid():N}"[..12]);
+            var (sut, handler) = KisiSut(db);
+
+            // Ön koşul: satır gönderilebilirken iş açılır, bakiye yok, teslim edilir.
+            (await sut.OpenWhatsAppAsync(a, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            var once = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            once.CustomerId.Should().Be(a.Id);
+            once.IsDelivered.Should().BeTrue("ön koşul: istek teslim edildi");
+            handler.PreviewCustomerIds.Should().ContainSingle("ön koşul: ilk tıklama bakiye akışına girdi");
+
+            using (var conn = db.Factory.Open())
+                Dapper.SqlMapper.Execute(conn, "UPDATE Customer SET Username = '' WHERE Id = @id", new { id = a.Id });
+            db.Customers.GetPaymentPerson(a.Id).OwnerId.Should().BeNull("ön koşul: tek GUID'li üye gönderilemez");
+
+            var ikinci = await sut.RequestPaymentAsync(a, _ => 250m, T, "session:s1");
+
+            ikinci.Result.Should().Be(PaymentRequestResult.Opened,
+                "iş dalı atlanır: eski teslim sorulmaz (eski kural AlreadyRequested derdi)");
+            ikinci.Prompt.Should().BeNull();
+            ikinci.OwnerId.Should().BeNull("işsiz yolda beklentinin sahibi kişinin sahibidir: yok");
+            _launcher.LaunchedUrls.Should().HaveCount(2, "ikinci mesaj sorusuz gider");
+            _launcher.LaunchedUrls.Should().OnlyContain(u => u.Contains("250%2C00"), "bakiye yok: iki mesaj aynı tutar");
+            handler.PreviewCustomerIds.Should().ContainSingle("ikinci tıklama bakiye akışına hiç girmez");
+            var sonra = Isler(db, "session:s1").Should().ContainSingle("yeni iş açılmaz").Subject;
+            sonra.Id.Should().Be(once.Id);
+            sonra.Revision.Should().Be(once.Revision, "iş okunmaz, revize edilmez");
+            sonra.LastDeliveredAt.Should().Be(once.LastDeliveredAt, "teslim kaydı yazılmaz");
+        }
+        finally { Drop(db); }
+    }
+
     // Sahip kararı 4 + yargıçların zorunlu düzeltmesi: ayrı kartken iki iş düşülmüş ve teslim edilmiş;
     // birleşince birleştirme SESSİZ olamaz. Bir kez sorulur; ret → hiçbir şey değişmez. Onayda kaybeden
     // kendi sahip satırıyla tekrar oynatılıp geri alınır, kalan iş kişi toplamına revize edilir; kişiye

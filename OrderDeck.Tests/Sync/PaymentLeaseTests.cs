@@ -594,6 +594,33 @@ public sealed class PaymentLeaseTests : IDisposable
     }
 
     [Fact]
+    public async Task Begin_cevrimdisi_GUIDli_ama_gonderilemeyen_ve_yalniz_kendi_etiketleri_olan_kiside_yerel_yol_ve_kayit()
+    {
+        // Ortak bakiye §6.1-a: GUID'li ama Username'i boş satır sahip adayı değil (OwnerId null). Sunucu onu hiç
+        // görmez, düşüm yazılamaz: kişi GUID'siz kişinin yolundan gider (§5.8, Y3). Bugün FailClosed'du.
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var customer = new Customer(Guid.NewGuid().ToString("N"), "tiktok", "", "Örnek", null,
+            1, 1, false, null, null, 0, 0m, null, null, TestPhone.NewE164());
+        pc.Customers.Insert(customer);
+        var label = InsertLabel(pc, live, customer.Id, "tiktok", "", 100m, printed: true);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+
+        (await RequestAsync(pc, customer, Scope(live))).Result.Should().Be(PaymentRequestResult.Opened,
+            "sahip adayı olmayan, yalnız kendi etiketleri olan kişi kira alınamazsa yerel yoldan gider");
+
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+        var record = pc.PendingPaymentRecords.List().Where(r => r.Kind == PendingPaymentRecordKinds.Record)
+            .Select(PendingPaymentRecordCodec.DecodeRecord).Should().ContainSingle(
+                "RecordsLocally: kayıt bağlantı gelince yazılır (W3-06'nın kirasız kaydı)").Subject;
+        record.ScopeKey.Should().Be(Scope(live));
+        record.State.Should().Be(PaymentRequestStates.Delivered);
+        record.OrderIds.Should().Equal(Guid.ParseExact(label, "N"));
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty("sahip yok: bakiye işi açılmaz");
+    }
+
+    [Fact]
     public async Task Kira_ucu_yoksa_satir_ici_engel_mesaj_yok()
     {
         var pc = await PcAsync();
