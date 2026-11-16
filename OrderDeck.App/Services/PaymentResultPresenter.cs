@@ -261,11 +261,19 @@ public static class PaymentResultPresenter
         return ("Birden çok ödeme isteği", WithOtherRowNote(message, prompt));
     }
 
+    /// <summary>Birleştirme notu, kipe göre (spec 2026-10-11 §6.1-d tablosu). Not yalnız iade başka bir hesabın
+    /// düşümüne dokunuyorsa (<see cref="PaymentPrompt.RefundsToOtherRow"/>) kurulur. <see cref="PaymentPrompt.PersonPool"/>
+    /// <c>false</c> (satır kipi, eski sunucu): bugünkü metin, iade o hesapta kalır ve bu istekte kullanılmaz.
+    /// <c>true</c> (havuz kipi): not yok, iade kişinin bakiyesine döner ve birleşik istekte kullanılır.
+    /// <c>null</c> (bilinmiyor; yerel planın sorusu): iki kipte de doğru nötr metin.</summary>
     private static string WithOtherRowNote(string message, PaymentPrompt prompt)
-        => prompt.RefundsToOtherRow
-            ? message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
-              "iade o hesaba döner, bu istekte kullanılmaz."
-            : message;
+        => !prompt.RefundsToOtherRow ? message : prompt.PersonPool switch
+        {
+            false => message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
+                     "iade o hesaba döner, bu istekte kullanılmaz.",
+            true => message,
+            null => message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner.",
+        };
 
     /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim (rapordaki kişi toplamı, kargo notu):
     /// iki kuruş hanesi + "TL".</summary>

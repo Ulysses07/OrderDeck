@@ -139,6 +139,80 @@ public sealed class PaymentResultPresenterTests
             .And.NotContain("istek gitmiş");
     }
 
+    // ── Birleştirme notunun üç durumu (spec 2026-10-11 §6.1-d, M3; W-havuz) ─────────────────────────────
+    // Var olan iki not testi (yukarıda) PersonPool vermez: varsayılan false bugünkü metni korur.
+
+    private const string SatirKipiNotu =
+        " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner, bu istekte kullanılmaz.";
+
+    private const string NotrNot =
+        " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner.";
+
+    /// <summary>Yerel biçimli birleştirme sorusu (iki teslim edilmiş istek, başka satırın düşümü iade ediliyor).</summary>
+    private static PaymentPrompt YerelBirlestirme(bool? personPool)
+        => new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            new[] { Istek(50m, 60), Istek(150m) }, "t", RefundsToOtherRow: true) { PersonPool = personPool };
+
+    [Fact] // §6.1-d: havuz kipinde iade kişinin bakiyesine döner ve birleşik istekte kullanılır — not yok
+    public void Birlestirme_notu_havuz_kipinde_yok()
+    {
+        var (title, message) = PaymentResultPresenter.PromptText(YerelBirlestirme(true), Simdi);
+
+        title.Should().Be("Birden çok ödeme isteği");
+        message.Should().EndWith("Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir.")
+            .And.NotContain("Not:", "havuz kipinde iade bu istekte kullanılır; söylenecek bir istisna yok");
+    }
+
+    [Fact] // §6.1-d: kip bilinmiyorsa (yerel planın sorusu) iki kipte de doğru nötr not
+    public void Birlestirme_notu_bilinmiyorsa_notr_metin()
+    {
+        var (_, message) = PaymentResultPresenter.PromptText(YerelBirlestirme(null), Simdi);
+
+        message.Should().EndWith(
+                "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir." + NotrNot)
+            .And.NotContain("bu istekte kullanılmaz",
+                "havuz kipinde iade birleşik istekte kullanılır; nötr not bunun tersini iddia etmez");
+    }
+
+    [Fact] // §6.1-d: satır kipi (ve alanı göndermeyen eski sunucu) bugünkü metni aynen gösterir
+    public void Birlestirme_notu_satir_kipinde_bugunku_metin()
+    {
+        var (_, message) = PaymentResultPresenter.PromptText(YerelBirlestirme(false), Simdi);
+
+        message.Should().EndWith(
+            "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir." + SatirKipiNotu);
+    }
+
+    [Theory] // §6.1-d: sunucunun bulduğu ayrı düşümlerin sorusunda da aynı tablo
+    [InlineData(true, "")]
+    [InlineData(false, SatirKipiNotu)]
+    [InlineData(null, NotrNot)]
+    public void Uzak_dusumlerde_birlestirme_notu_kipe_gore(bool? personPool, string not)
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            Array.Empty<PriorPaymentRequest>(), "t", RefundsToOtherRow: true,
+            RemoteDeductions: new[] { 40m, 210m }) { PersonPool = personPool };
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        message.Should().Be(
+            "Sunucuda bu kişinin bu yayın için 2 ayrı bakiye düşümü bulundu (40,00 TL, 210,00 TL); " +
+            "müşteriye gidip gitmedikleri bilinmiyor. Tek istekte birleştirilsin mi? " +
+            "En eski düşüm kalır, ötekiler iade edilir; kişinin toplamı tek istekte yeniden istenir." + not);
+    }
+
+    [Fact] // §6.1-d: iade başka hesabın düşümüne dokunmuyorsa kip ne olursa olsun not yok
+    public void Iade_yoksa_kipten_bagimsiz_not_yok()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            new[] { Istek(50m, 60), Istek(150m) }, "t") { PersonPool = null };
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        message.Should().EndWith("Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir.")
+            .And.NotContain("Not:");
+    }
+
     // Son inceleme: sonucu yazılamamış gönderim olgu diye anlatılmaz. Operatör az önce "WhatsApp açılamadı"
     // görmüş olabilir; "zaten gönderildi / 150 TL istendi" derse "Hayır"la müşteriye hiç istek gitmeyebilir.
     // Tutar O denemenin tutarıdır (an verilmezse saat yazılmaz; verilirse denemenin anıdır).

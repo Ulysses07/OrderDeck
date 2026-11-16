@@ -109,6 +109,18 @@ public sealed record PaymentPrompt(
     /// </summary>
     public IReadOnlyList<string> AlsoConfirms { get; init; } = [];
 
+    /// <summary>
+    /// Lisansın bakiye kipi, birleştirme notu (<see cref="RefundsToOtherRow"/>) için (spec 2026-10-11 §6.1-d, M3):
+    /// <c>false</c> = satır kipi ya da eski sunucu (iade o hesaba döner, bu istekte kullanılmaz — bugünkü not);
+    /// <c>true</c> = havuz kipi (iade kişinin bakiyesine döner, birleşik istekte kullanılır — not yok);
+    /// <c>null</c> = bilinmiyor (iki kipte de doğru nötr not).
+    /// <para>Kaynak yalnız aynı akışta alınan <c>GET scope</c> yanıtlarıdır (sunucu izlerinin sorusu). Yerel planın sorusu
+    /// hiçbir sunucu çağrısından önce kurulduğu için her zaman <c>null</c>dır; önceki yanıtlardan bellekte değer TUTULMAZ:
+    /// <c>enable</c>/<c>disable</c> oturum ortasında kipi değiştirebilir, bayat değer yanlış not gösterirdi. Varsayılan
+    /// <c>false</c>: bu alanı kurmayan sorular (kiranın uzak sorusu, miras işin kapsam sorusu) zaten not taşımaz.</para>
+    /// </summary>
+    public bool? PersonPool { get; init; } = false;
+
     /// <summary>"Evet"in onayladığı bütün belirteçler: <see cref="Token"/> ve <see cref="AlsoConfirms"/>. Onaylayan her
     /// çağıran (soru, fiyat düzeltmesinin toplu gönderimi) yeniden çağrıya bunların HEPSİNİ verir.</summary>
     public IReadOnlyList<string> Tokens => AlsoConfirms.Count == 0 ? [Token] : [Token, .. AlsoConfirms];
@@ -1225,6 +1237,8 @@ public sealed class PaymentRequestService
                 NewTotal = merge ? null : remote.NewTotal,
                 PriorHadBalance = !merge && remote.PriorHadBalance,
                 AlsoConfirms = [plan.Token],
+                // Ortak bakiye §6.1-d: yerel plan, sunucunun scope yanıtından önce kurulur; kip bilinmez, nötr not.
+                PersonPool = null,
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1256,7 +1270,12 @@ public sealed class PaymentRequestService
             plan.RefundsToOtherRow,
             plan.RefundsDeductions,
             NewTotal: changed ? totalAmount : null,
-            PriorHadBalance: changed && priorBalance > 0m);
+            PriorHadBalance: changed && priorBalance > 0m)
+        {
+            // Ortak bakiye §6.1-d: yerel planın sorusu hiçbir sunucu çağrısından önce kurulur; kip bilinmez, nötr not.
+            // Önceki akışların scope yanıtı bellekte tutulmaz: enable/disable oturum ortasında kipi değiştirebilir.
+            PersonPool = null,
+        };
     }
 
     /// <summary>Kişi × kapsamın işini (<paramref name="job"/>) kesinleştirir. Sunucuya giden BÜTÜN
@@ -1685,14 +1704,18 @@ public sealed class PaymentRequestService
         {
             var token = "uzak:" + string.Join(";", traces
                 .Select(t => t.Scope.TransactionId.ToString("N")).OrderBy(x => x, StringComparer.Ordinal));
-            // İzler tanım gereği farklı üyelerde: iade edilen düşüm kendi satırına döner. Sunucu teslim
-            // bilgisini bilmez — izler "gitmiş istek" diye değil, bulunan bakiye düşümleri diye anlatılır
-            // (biri gönderilememiş de olabilir; eski sürüm bilgisayarın LaunchFailed/SendPending'i).
+            // İzler tanım gereği farklı üyelerde. İade edilen düşüm satır kipinde kendi satırına, havuz kipinde
+            // kişinin bakiyesine döner; notu bu akışın scope yanıtlarındaki kip seçer (PersonPoolOf; ortak bakiye
+            // §6.1-d). Sunucu teslim bilgisini bilmez: izler "gitmiş istek" diye değil, bulunan bakiye düşümleri diye
+            // anlatılır (biri gönderilememiş de olabilir; eski sürüm bilgisayarın LaunchFailed/SendPending'i).
             if (confirmedTokens?.Contains(token) != true)
                 return new(job, new PaymentPrompt(PersonScopePromptKind.Merge, job.ScopeKey,
                     Array.Empty<PriorPaymentRequest>(), token, RefundsToOtherRow: true,
                     RemoteDeductions: traces.OrderBy(t => t.Scope.CreatedAt)
-                        .Select(t => t.Scope.AppliedAmount).ToList()));
+                        .Select(t => t.Scope.AppliedAmount).ToList())
+                {
+                    PersonPool = PersonPoolOf(traces),
+                });
 
             // Onaylandı: en eski düşüm kalır (sunucu teslim bilgisini bilmez); fazlası iade edilir.
             var keep = traces.OrderBy(t => t.Scope.CreatedAt).ThenBy(t => candidates.IndexOf(t.MemberId)).First();
@@ -1742,6 +1765,13 @@ public sealed class PaymentRequestService
         _jobs.AdoptRemoteResult(job.Id, scope.TransactionId, scope.AppliedAmount, scope.ProductTotal);
         return new(_jobs.Get(job.Id)!);
     }
+
+    /// <summary>Sunucu izlerinin sorusunun kipi (ortak bakiye spec 2026-10-11 §6.1-d). İzlerin hepsi aynı
+    /// <c>personPool</c>'u taşıyorsa o değer, değilse <c>null</c> (iki kipte de doğru nötr not). İzler aynı lisansın aynı
+    /// akışta alınmış scope yanıtlarıdır; değerler yalnız akış ortasındaki <c>enable</c>/<c>disable</c> yarışında
+    /// karışır. Alanı göndermeyen eski sunucunun izi <c>false</c> taşır (DTO varsayılanı) ve bugünkü notu verir.</summary>
+    private static bool? PersonPoolOf(IReadOnlyList<(string MemberId, CustomerBalanceScope Scope)> traces)
+        => traces.Select(t => t.Scope.PersonPool).Distinct().Count() == 1 ? traces[0].Scope.PersonPool : null;
 
     /// <summary>R6-02: tekrar paylaşımdan önce "kayıtlı düşüm sunucuda hâlâ
     /// geçerli mi?" Cevaba göre üç yol:

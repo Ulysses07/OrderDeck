@@ -59,12 +59,21 @@ public partial class PaymentRequestServiceTests
 
     private static Guid G(Customer c) => Guid.ParseExact(c.Id, "N");
 
-    private static string ScopeJsonAt(Guid tx, decimal applied, decimal total, DateTimeOffset at) => $$"""
-        {"transactionId":"{{tx}}",
-         "appliedAmount":{{applied.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
-         "productTotal":{{total.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
-         "createdAt":"{{at:O}}"}
-        """;
+    /// <summary>Kapsam ucunun gövdesi. <paramref name="personPool"/> null → alan yok: S1 öncesi ya da eski sunucu biçimi,
+    /// bugünkü gövdenin baytı baytına aynısı. Dolu → <c>"personPool":true|false</c>: S1'den beri satır kipinde false,
+    /// havuz kipinde true (spec 2026-10-11 §4.3, §6.1-d).</summary>
+    private static string ScopeJsonAt(
+        Guid tx, decimal applied, decimal total, DateTimeOffset at, bool? personPool = null)
+    {
+        var body = $$"""
+            {"transactionId":"{{tx}}",
+             "appliedAmount":{{applied.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+             "productTotal":{{total.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+             "createdAt":"{{at:O}}"
+            """;
+        var pool = personPool is { } p ? ",\"personPool\":" + (p ? "true" : "false") : "";
+        return body + pool + "}";
+    }
 
     [Fact] // Repro A: birincil satır kayınca ikinci tıklama aynı işin tekrar paylaşımıdır
     public async Task Birincil_kayinca_ikinci_tiklama_ayni_isi_bulur_ikinci_dusum_yok()
@@ -202,7 +211,9 @@ public partial class PaymentRequestServiceTests
                 .MatchRegex(@"bu yayın için 2 istek gitmiş \((50,00 TL, 150,00 TL|150,00 TL, 50,00 TL)\)",
                     "istenen netler: 100 − 50, 200 − 50")
                 .And.Contain("Önceki düşümler iade edilir")
-                .And.Contain("iade o hesaba döner, bu istekte kullanılmaz", "düşümler farklı satırlarda")
+                .And.EndWith(" Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner.",
+                    "düşümler farklı satırlarda; yerel planın sorusu kipi bilmez — nötr not (spec 2026-10-11 §6.1-d)")
+                .And.NotContain("bu istekte kullanılmaz", "havuz kipinde yanlış olurdu; yerel plan kipi bilmez")
                 .And.NotContain("Fazladan", "ayrı ürünler için yapılmış düşüm fazla değildir");
             Isler(db, "session:s1").Should().HaveCount(2);
             handler.ReverseCalls.Should().BeEmpty();

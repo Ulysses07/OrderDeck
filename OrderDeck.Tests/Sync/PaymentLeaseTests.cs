@@ -862,6 +862,25 @@ public sealed class PaymentLeaseTests : IDisposable
         FinishOutcomes().Should().Equal(new[] { "delivered" }, "409 kira yazmaz: kapatılacak kira yok");
     }
 
+    [Fact] // Ortak bakiye §6.1-d (plan fark 10): uzak soruya katılan yerel planın notu kipi bilmez — PersonPool null
+    public async Task Uzak_soruya_katilan_yerel_planin_notu_kipten_bagimsiz_null()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, $"alici-{Guid.NewGuid():N}", 500m);
+        var own = await DeliveredLocallyAsync(pc, buyer.Customer, "cumulative");
+        EnqueueAlreadyRequested(Prior(own, "PC-A", 550m, 550m, TenOClock));
+        var dialogs = new FakeDialogService();
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        outcome.Prompt!.AlsoConfirms.Should().ContainSingle("yerel planın belirteci aynı soruya katıldı (WithLocalPlan)");
+        outcome.Prompt.PersonPool.Should().BeNull("kira bakiyeden önce istenir; scope yanıtı yok, kip bilinmiyor");
+        dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
+            .NotContain("Not:", "tekrar gönderme sorusu, iade yok (RefundsToOtherRow false)");
+    }
+
     [Fact]
     public async Task Soru_ile_onay_arasinda_yerel_durum_degisirse_kira_abandoned_kapanir_yerel_soru_Hayir_mesaj_yok()
     {
