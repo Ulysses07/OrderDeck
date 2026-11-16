@@ -228,7 +228,13 @@ public partial class PaymentRequestServiceTests : IDisposable
             if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
             {
                 var previewed = WpfCustomerIdOf(request);
-                lock (_sync) PreviewCustomerIds.Add(previewed);
+                // W-havuz: tekrarlı parametre GetValues ile okunur — indeksleyici (["memberIds"]) değerleri virgülle birleştirir.
+                var memberIds = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query).GetValues("memberIds");
+                lock (_sync)
+                {
+                    PreviewCustomerIds.Add(previewed);
+                    PreviewMemberIds.Add(memberIds?.Select(v => Guid.Parse(v)).ToList() ?? new List<Guid>());
+                }
                 if (OnPreviewAsync is not null) await OnPreviewAsync();
                 decimal balance;
                 lock (_sync)
@@ -361,10 +367,19 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// <summary>Önizleme ucuna sorulan WpfCustomerId'ler (sahip anahtarı testleri).</summary>
         public List<Guid> PreviewCustomerIds { get; } = new();
 
+        /// <summary>W-havuz: her önizlemenin tekrarlı memberIds değerleri, geliş sırasıyla (parametre yoksa boş liste).</summary>
+        public List<IReadOnlyList<Guid>> PreviewMemberIds { get; } = new();
+
         /// <summary>Apply gövdelerinin WpfCustomerId'leri, gönderim sırasıyla.</summary>
         public IReadOnlyList<Guid> AppliedCustomerIds
         {
             get { lock (_sync) return AppliedBalanceBodies.Select(WpfCustomerIdOf).ToList(); }
+        }
+
+        /// <summary>W-havuz: apply gövdelerinin memberIds alanı, gönderim sırasıyla (alan yok ya da null → null).</summary>
+        public IReadOnlyList<IReadOnlyList<Guid>?> AppliedMemberIds
+        {
+            get { lock (_sync) return AppliedBalanceBodies.Select(MemberIdsOfBody).ToList(); }
         }
 
         private static Guid WpfCustomerIdOf(HttpRequestMessage request)
@@ -374,6 +389,17 @@ public partial class PaymentRequestServiceTests : IDisposable
         {
             using var doc = System.Text.Json.JsonDocument.Parse(applyBody);
             return doc.RootElement.GetProperty("wpfCustomerId").GetGuid();
+        }
+
+        /// <summary>W-havuz: apply gövdesinin <c>memberIds</c> alanı — ham JSON adı, sunucunun bağladığı ad
+        /// (<c>LicensesCustomerBalanceApplyController.ApplyRequest.MemberIds</c>). Alan yoksa ya da null ise null.</summary>
+        public static IReadOnlyList<Guid>? MemberIdsOfBody(string applyBody)
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(applyBody);
+            return doc.RootElement.TryGetProperty("memberIds", out var el)
+                   && el.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? el.EnumerateArray().Select(e => e.GetGuid()).ToList()
+                : null;
         }
 
         private static decimal AppliedAmountRequested(string body)

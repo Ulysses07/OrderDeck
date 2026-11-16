@@ -1136,7 +1136,8 @@ public sealed class PaymentRequestService
             var resolved = new List<PaymentJob>(legacies.Count);
             foreach (var l in legacies)
             {
-                var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, Guid.ParseExact(l.CustomerId, "N"), l, ct);
+                var attempt = await ReplayOnceMoreIfStaleAsync(
+                    licenseId.Value, person, Guid.ParseExact(l.CustomerId, "N"), l, ct);
                 if (attempt.LegacyScopeDeduction is { } deduction)
                 {
                     // §6.6 (W3-11): miras iş kapsamdaki düşümü BENİMSEMEZ — düşüm büyük olasılıkla başka bir yerel
@@ -1225,7 +1226,7 @@ public sealed class PaymentRequestService
         //    güncel cevaptır (yüklem geri alınmışları dışlar), 6. adım yeniden sormaz; tutar farkını 5. adım revize eder.
         if (job.State == PaymentJobState.ApplyUncertain)
         {
-            var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, wpfCustomerId, job, ct);
+            var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, person, wpfCustomerId, job, ct);
             job = attempt.Job;
             if (attempt.Adopted)
                 remoteConfirmed = true;
@@ -1273,9 +1274,11 @@ public sealed class PaymentRequestService
         //    anahtarla taze uygulanır. Cevap kilit altındaki güncel gerçektir (yüklem geri alınmışları dışlar): 6. adım
         //    yeniden doğrulamaz. Aynı tıklamada ikinci benimseme (araya yine başka düşüm girdi) dönmez: DefiniteForCall
         //    toplam tutarsa mesaja çıkar, tutmazsa durur — sıradaki tıklama revize eder (ping-pong yok).
-        var settled = await ReviseAndSettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, remoteConfirmed, ct);
+        var settled = await ReviseAndSettleAsync(
+            licenseId.Value, person, wpfCustomerId, job, totalAmount, remoteConfirmed, ct);
         if (!settled.ScopeDeductionAdopted) return settled;
-        settled = await ReviseAndSettleAsync(licenseId.Value, wpfCustomerId, settled.Job!, totalAmount, remoteConfirmed: true, ct);
+        settled = await ReviseAndSettleAsync(
+            licenseId.Value, person, wpfCustomerId, settled.Job!, totalAmount, remoteConfirmed: true, ct);
         return settled.ScopeDeductionAdopted ? DefiniteForCall(settled.Job!, totalAmount) : settled;
     }
 
@@ -1285,7 +1288,7 @@ public sealed class PaymentRequestService
     /// <param name="remoteConfirmed">R6-02: işin sonucu bu tıklamada sunucudan güncel bir cevapla öğrenildi (kapsam
     /// benimsemesi) — 6. adım yeniden sormaz.</param>
     private async Task<BalanceOutcome> ReviseAndSettleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal totalAmount, bool remoteConfirmed,
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, decimal totalAmount, bool remoteConfirmed,
         CancellationToken ct)
     {
         // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
@@ -1317,7 +1320,7 @@ public sealed class PaymentRequestService
             {
                 _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
                 job = _jobs.Get(job.Id)!;
-                return await SettleAsync(licenseId, wpfCustomerId, job, totalAmount, ct);
+                return await SettleAsync(licenseId, person, wpfCustomerId, job, totalAmount, ct);
             }
         }
 
@@ -1395,10 +1398,13 @@ public sealed class PaymentRequestService
 
         // 8) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
         //    anahtar diske → apply.
+        //    W-havuz (spec 2026-10-11 §6.1-a): önizleme akışın kişisinin GUID'li üyelerini memberIds ile taşır (MemberIdsOf;
+        //    depo okunmaz — tıklamanın girişindeki anlık görüntü, apply'la ve oynatmayla aynı liste).
         decimal previewBalance;
         try
         {
-            var preview = await _api.GetBalancePreviewAsync(licenseId, wpfCustomerId, ct);
+            var preview = await _api.GetBalancePreviewAsync(
+                licenseId, wpfCustomerId, MemberIdsOf(wpfCustomerId, person), ct);
             previewBalance = preview.Balance;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1429,7 +1435,7 @@ public sealed class PaymentRequestService
                 return DefiniteForCall(job, totalAmount);
         }
         job = _jobs.Get(job.Id)!;
-        return await SettleAsync(licenseId, wpfCustomerId, job, totalAmount, ct);
+        return await SettleAsync(licenseId, person, wpfCustomerId, job, totalAmount, ct);
     }
 
     /// <summary>Kişi düzeyindeki kapsam uzlaştırmasının sonucu: <see cref="Job"/> null = sorgu ya da
@@ -1615,7 +1621,7 @@ public sealed class PaymentRequestService
     /// oynatır), mesaj gitmez. Apply 409 <c>scope-has-deduction</c> aldıysa düşüm işe benimsenmiştir: sonuç
     /// <see cref="BalanceOutcome.ScopeDeductionAdopted"/> ile döner, çağıran revizyon adımına döner.</para></summary>
     private async Task<BalanceOutcome> SettleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal requestedTotal,
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, decimal requestedTotal,
         CancellationToken ct)
     {
         // R6-03: girişteki deneme kimliği. Cevap, gönderildiği denemeye aittir;
@@ -1624,10 +1630,10 @@ public sealed class PaymentRequestService
         var entryKey = job.ApplyKey;
         var entryRevision = job.Revision;
 
-        var attempt = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        var attempt = await ReplayAsync(licenseId, person, wpfCustomerId, job, ct);
         if (!attempt.Adopted && attempt.Job.State == PaymentJobState.ApplyUncertain)
         {
-            attempt = await ReplayAsync(licenseId, wpfCustomerId, attempt.Job, ct);
+            attempt = await ReplayAsync(licenseId, person, wpfCustomerId, attempt.Job, ct);
             if (attempt.Stale) LogStalePersists(attempt.Job);
         }
         if (attempt.Adopted)
@@ -1639,11 +1645,11 @@ public sealed class PaymentRequestService
     /// yazılmadı) hemen bir kez daha — spec 2026-10-13 §6.6, en çok iki apply. Belirsiz işin (3. adım) ve miras işlerin
     /// (1. adım) tek replay'i için: ağ hatası bugünkü gibi yeniden denenmez, akış durur.</summary>
     private async Task<ApplyAttempt> ReplayOnceMoreIfStaleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
-        var attempt = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        var attempt = await ReplayAsync(licenseId, person, wpfCustomerId, job, ct);
         if (!attempt.Stale || attempt.Job.State != PaymentJobState.ApplyUncertain) return attempt;
-        attempt = await ReplayAsync(licenseId, wpfCustomerId, attempt.Job, ct);
+        attempt = await ReplayAsync(licenseId, person, wpfCustomerId, attempt.Job, ct);
         if (attempt.Stale) LogStalePersists(attempt.Job);
         return attempt;
     }
@@ -1754,7 +1760,8 @@ public sealed class PaymentRequestService
 
     /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe
     /// yazar. Amount=ProductTotal gönderilir — sunucu bakiyeye/toplama kırpar;
-    /// replay'de birebir aynı gövde gittiği için A11 içerik kontrolünden geçer.
+    /// replay'de A11'in karşılaştırdığı alanlar (müşteri, ProductTotal, Amount) aynı gittiği için içerik kontrolünden geçer
+    /// (kapsam ve memberIds karşılaştırmanın dışında).
     ///
     /// R4-03: gövdeye işin <c>ScopeKey</c>'i de eklenir — satışın kalıcı
     /// kimliği. Sunucu bunu A11 karşılaştırmasının DIŞINDA tutar, yoksa bu
@@ -1768,6 +1775,12 @@ public sealed class PaymentRequestService
     /// tutmuyorsa cevap sessizce DEĞİL, günlüğe yazılarak atılır — dönüşte
     /// satır yeniden okunduğu için çağıran zaten kazananın sonucunu görür.
     ///
+    /// <para>W-havuz (spec 2026-10-11 §6.1-a, §8.4-1): gövde akışın kişisinin GUID'li üyelerini <c>memberIds</c> ile taşır
+    /// (<see cref="MemberIdsOf"/>; <paramref name="person"/> tıklamanın girişindeki anlık görüntü, depo okunmaz) — taze apply,
+    /// belirsiz işin ve miras işlerin oynatması hepsi buradan geçer. Havuz kipinde kayıtlı anahtarın oynatması üye denetiminden
+    /// önce döner, ama sunucuya hiç ulaşmamış anahtarın oynatması yeni yazımdır ve <c>memberIds</c> ister. Liste A11 içerik
+    /// karşılaştırmasının dışında: tıklamalar arasında değişse de oynatma çakışmaz.</para>
+    ///
     /// <para>Spec 2026-10-13 §6.6 (W3-11; sunucu bunları yalnız mod On'da üretir, kod moddan bağımsız):
     /// <list type="bullet">
     /// <item>409 <c>stale</c> (kapsam kilidi 5 sn'de alınamadı): hiçbir şey yazılmadı, iş anahtarıyla belirsiz kalır;
@@ -1779,7 +1792,7 @@ public sealed class PaymentRequestService
     ///   aynı düşümü sahiplenirdi — hiçbir şey yazılmaz, <see cref="ApplyAttempt.LegacyScopeDeduction"/> ile döner.</item>
     /// </list></para></summary>
     private async Task<ApplyAttempt> ReplayAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
         if (job.ApplyKey is null)
             throw new InvalidOperationException($"Replay anahtarsız işte çağrıldı (job={job.Id})");
@@ -1799,7 +1812,8 @@ public sealed class PaymentRequestService
             var apply = await _api.ApplyBalanceAsync(
                 licenseId,
                 new CustomerBalanceApplyRequest(
-                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, SaleScopeOf(job)),
+                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, SaleScopeOf(job),
+                    MemberIds: MemberIdsOf(wpfCustomerId, person)),
                 ct);
             if (!_jobs.MarkApplied(job.Id, key, revision, apply.AppliedAmount))
                 LogBayat("uygulandı");
@@ -1861,6 +1875,30 @@ public sealed class PaymentRequestService
     /// eskisi gibi kendi adıyla gider. Tanım <see cref="PaymentJob.SaleScopeKey"/>'de: kirasız ödeme kaydı
     /// (W3-06) aynı eşlemeyle gider.</summary>
     private static string SaleScopeOf(PaymentJob job) => job.SaleScopeKey;
+
+    /// <summary>W-havuz (spec 2026-10-11 §6.1-a): sunucuya giden kişi üyeleri — akışın kişisinin
+    /// (<paramref name="person"/>: tıklamanın girişinde okunan, kilitleri ve kiraları tutulan anlık görüntü,
+    /// <see cref="PersonHold"/>) GUID'li bütün üyeleri (silinmişler ve sahip dahil; <see cref="PaymentOwnerRule.IsOwnerCapable"/>
+    /// süzgeci, kapsam uzlaştırmasının yerel adaylarıyla aynı). Depo OKUNMAZ: çekme turu kira altındaki satırın GroupId'sini
+    /// de yazar (<c>CustomerSyncRepository.ApplyServerCustomer</c>, var olan satırda kira denetimi yok); akış ortasında
+    /// okunan kişi çapayı başka bir kişiyle gösterebilir, sunucu o listeyi kendi S(a)'sıyla tutarlı bulur ve işin
+    /// toplamını, telefonunu, onayını taşıyan kişinin dışındaki bir satırdan düşerdi. Anlık görüntü para taşıyan bir
+    /// ayrışma içeriyorsa (W'nin S dışındaki canlı üyesi ya da S'nin W dışındaki, bakiyesi &gt; 0 canlı üyesi) sunucu
+    /// <c>customer-not-synced</c> döner; öbür bayat görüntülerde çekim <c>W ∩ S</c>'nin canlıları ∪ S'nin silinmişleriyle
+    /// sınırlıdır (kişide olmayan canlı satırdan para çekilmez). Sonraki tıklama kişiyi girişte yeniden okur (iş açıldıktan sonra
+    /// birleşen üye o tıklamada gider). Mod On'da liste kiranın <c>begin</c>'ine giden üye kümesiyle aynı kaynaktan
+    /// (spec §15-5). Çapa (<paramref name="anchor"/>) her zaman listede: sunucu <c>W ∪ {a}</c> kurar; depo yoksa (testler)
+    /// kişi tek satırlıktır (<see cref="ReadPerson"/>), liste yalnız çapa. Sıra <c>"N"</c> biçiminin ordinal sırası: aynı
+    /// kişi her çağrıda aynı listeyi gönderir; liste A11 içerik karşılaştırmasına girmez. Kiranın sunucu üyeleri
+    /// katılmaz — liste WPF'in bildiği kişidir. Satır kipindeki sunucu alanı okumaz; eski sunucu yok sayar.</summary>
+    private static IReadOnlyList<Guid> MemberIdsOf(Guid anchor, PaymentPerson person)
+        => person.MemberIds
+            .Where(PaymentOwnerRule.IsOwnerCapable)
+            .Select(id => Guid.ParseExact(id, "N"))
+            .Append(anchor)
+            .Distinct()
+            .OrderBy(g => g.ToString("N"), StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>R4-02: diske inmiş geri alma niyetini uzlaştırır. Sunucudaki
     /// geri alma deterministik idempotenttir (tekrar = 409 already-reversed =
