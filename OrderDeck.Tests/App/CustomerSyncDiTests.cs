@@ -157,6 +157,17 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Musteri_arama_Ayir_onayi_lisans_istemcisini_DIdan_alir()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var vm = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.CustomerSearchViewModel>();
+
+        PrivateField<global::OrderDeck.Licensing.Api.LicenseApiClient>(vm, "_api").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.Licensing.Api.LicenseApiClient>(),
+            "spec §6.1-e: isteğe bağlı parametre DI'dan gelmezse Ayır onayı sessizce hiç sorulmazdı");
+    }
+
+    [Fact]
     public void Form_senkronu_durum_izleyicisini_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();

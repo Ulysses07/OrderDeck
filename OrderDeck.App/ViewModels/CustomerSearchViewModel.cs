@@ -2,13 +2,17 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using OrderDeck.App.Formatting;
 using OrderDeck.App.Services;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -20,6 +24,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
     private readonly LabelRepository _labels;
     private readonly PaymentRequestService _paymentService;
     private readonly IDialogService _dialogService;
+    private readonly LicenseApiClient? _api;
 
     [ObservableProperty] private string _query = "";
     [ObservableProperty] private string? _platformFilter;
@@ -115,13 +120,17 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
     /// Tutar ile kapsam kimliğinin farklı yayınlara ait olması böyle engellenir.</summary>
     private StreamSession? _listSession;
 
+    /// <param name="api">Ortak bakiye spec 2026-10-11 §6.1-e (K1): Ayır onayının bakiye dağılımı (panel
+    /// <c>GET …/balance</c>, <c>members[]</c>). DI verir (tekil istemci); null yalnız test/kompozisyonda — o zaman
+    /// Ayır bugünkü gibi sorusuz.</param>
     public CustomerSearchViewModel(
         CustomerRepository customers,
         CustomerService customerService,
         SessionRepository sessions,
         LabelRepository labels,
         PaymentRequestService paymentService,
-        IDialogService dialogService)
+        IDialogService dialogService,
+        LicenseApiClient? api = null)
     {
         _customers = customers;
         _customerService = customerService;
@@ -129,6 +138,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         _labels = labels;
         _paymentService = paymentService;
         _dialogService = dialogService;
+        _api = api;
 
         SelectedCards.CollectionChanged += (_, _) => MergeSelectedCommand.NotifyCanExecuteChanged();
     }
@@ -262,13 +272,83 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
 
     private bool CanMergeSelected() => SelectedCards.Count >= 2;
 
-    /// <summary>Grubu tekil satırlara ayırır (yanlış birleştirmeyi geri alır).</summary>
-    [RelayCommand]
-    private void UnmergeGroup(CustomerCard? card)
+    /// <summary>Ayır onayının başlığı (spec 2026-10-11 §6.1-e); genel uyarı da aynı başlıkla sorulur.</summary>
+    internal const string UnmergeTitle = "Grubu ayır";
+
+    /// <summary>Ayır onayının onay düğmesi (spec §6.1-e: [Ayır] [Vazgeç]).</summary>
+    internal const string UnmergeButton = "Ayır";
+
+    /// <summary>Bakiye dağılımı okunamadığında sorulan genel uyarı (spec §6.1-e).</summary>
+    internal const string UnmergeFallbackMessage =
+        "Bakiye dağılımı alınamadı. Ayırınca her hesap kendi satırındaki bakiyeyle kalır.";
+
+    /// <summary>
+    /// Ayır onayının metni (spec 2026-10-11 §6.1-e, K1). Sunucunun kişi üyeleri (<paramref name="serverMembers"/>,
+    /// panel <c>members[]</c>) kartın yerel satırlarına Id ile eşlenir; platform ve tanıtıcı yereldendir.
+    /// null → soru yok (bütün tutarlar 0). Canlı üye "Instagram @kullanici: 70,00 TL", silinmiş üye
+    /// "(silinmiş hesap): 10,00 TL — ayırınca kullanılamaz" (ek sahip kararı 12.10.2026: Ayır serbest, tutar
+    /// gösterilir); önce canlılar, sonra silinmişler, her grup sunucunun sırasıyla. Kartta olmayan canlı üyenin
+    /// bakiyesi ≠ 0 ise liste yerine <see cref="UnmergeFallbackMessage"/> (Sahip sorusu 1, öneri A); 0 ise listelenmez.
+    /// </summary>
+    internal static string? UnmergeMessage(
+        IReadOnlyList<Customer> localMembers, IReadOnlyList<CustomerBalanceMemberDto> serverMembers)
     {
-        if (card?.GroupId is not { Length: > 0 } groupId) return;
+        if (serverMembers.All(m => m.Balance == 0m)) return null;
+
+        var live = new List<string>();
+        var purged = new List<string>();
+        foreach (var m in serverMembers)
+        {
+            var amount = TrFormats.Currency(m.Balance);
+            if (m.Purged)
+            {
+                purged.Add($"(silinmiş hesap): {amount} — ayırınca kullanılamaz");
+                continue;
+            }
+            var local = localMembers.FirstOrDefault(c => Guid.TryParseExact(c.Id, "N", out var g) && g == m.WpfCustomerId);
+            if (local is null)
+            {
+                if (m.Balance != 0m) return UnmergeFallbackMessage;
+                continue;
+            }
+            var handle = CustomerIdentityText.Handle(local);
+            live.Add($"{CustomerIdentityText.PlatformLabel(local.Platform)} {(handle.StartsWith('@') ? handle : "@" + handle)}: {amount}");
+        }
+        return "Ayırınca her hesap kendi bakiyesiyle kalır: " + string.Join(" · ", live.Concat(purged))
+             + ". Başka hesaptan bu kişinin alışverişine kullanılmış tutarlar, o satış geri alınmadıkça geri dönmez.";
+    }
+
+    /// <summary>Grubu tekil satırlara ayırır (yanlış birleştirmeyi geri alır). Spec 2026-10-11 §6.1-e (K1): önce kişinin
+    /// bakiye dağılımı okunur; bir üyede bakiye ≠ 0 ise "Grubu ayır" onayı ([Ayır] [Vazgeç]). Ayırmanın kendisi değişmez;
+    /// gösterilen tutar okuma anınındır (bilgi amaçlı), kip ayrımı yok.</summary>
+    [RelayCommand]
+    private async Task UnmergeGroupAsync(CustomerCard? card)
+    {
+        if (card is null || card.GroupId is not { Length: > 0 } groupId) return;
+        var question = await UnmergeQuestionAsync(card);
+        if (question is not null && !await _dialogService.ConfirmAsync(question, UnmergeTitle, UnmergeButton)) return;
         _customers.UnmergeGroup(groupId);
         RefreshSearch();
+    }
+
+    /// <summary>Ayır'ın sorusu; null → sorusuz. İstemci yoksa ya da kişinin gönderilebilir sahibi yoksa sunucuya
+    /// gidilmez (sunucuda bakiye olamaz). Çağrı hatası (404, ağ, 5xx) ve <c>members</c>'ın yokluğu genel uyarıdır.
+    /// İstemcinin her hatası genel uyarıdır; iptal jetonu yok (kullanıcı iptali diye bir yol yok), süzgeç de yok —
+    /// kaçan bir istisna Ayır'ı sessizce yutardı. İstemci yokken senkron tamamlanır: komut bugünkü gibi senkron biter.</summary>
+    private async Task<string?> UnmergeQuestionAsync(CustomerCard card)
+    {
+        if (_api is null) return null;
+        var owner = _customers.GetPaymentPerson(card.Primary.Id).OwnerId;
+        if (owner is null || !Guid.TryParseExact(owner, "N", out var ownerId)) return null;
+        try
+        {
+            var details = await _api.GetCustomerBalanceAsync(ownerId, take: 1, CancellationToken.None);
+            return details.Members is { } members ? UnmergeMessage(card.Members, members) : UnmergeFallbackMessage;
+        }
+        catch (Exception)
+        {
+            return UnmergeFallbackMessage;
+        }
     }
 
     [RelayCommand]
