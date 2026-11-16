@@ -331,6 +331,8 @@ internal bool TryGetProjectionId(out Guid id);   // private → internal. _custo
 
 ## Sahip soruları
 
+**Karar (16.11.2026):** Burak bütün önerileri onayladı: 1, 2, 3, 5 ve 6'da (A) uygulanır; 4 açık kalır, W-havuz'a kod düşmez. Saha notu 1a'nın ölçümü yapılmadı; (A) kararları ölçümden bağımsızdır.
+
 1. **Ayır onayında kartta olmayan canlı sunucu üyesi (spec §6.1-e, yalnız "yerel satırlara eşlenir" diyor).** Sunucunun `members[]`'inde olup bu PC'nin kartında bulunmayan, silinmemiş bir üye olabilir (başka PC birleştirdi, akış henüz inmedi; ya da yerel kopya Id'si sunucuda asıl kayda çözülmüş). Platform ve kullanıcı adı yerelde yok. Seçenekler:
    - **(A) Bakiyesi ≠ 0 ise liste yerine genel uyarı** ("Bakiye dağılımı alınamadı. Ayırınca her hesap kendi satırındaki bakiyeyle kalır."), 0 ise listeden çıkar — spec'in var olan metni, yeni metin yok. **Öneri: A** (plan bunu uygular; Görev 7).
    - (B) Yeni bir satır metni (ör. "(bu bilgisayarda görünmeyen hesap): X TL") — spec'te olmayan metin.
