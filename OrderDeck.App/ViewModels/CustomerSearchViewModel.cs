@@ -288,7 +288,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
     /// null → soru yok (bütün tutarlar 0). Canlı üye "Instagram @kullanici: 70,00 TL", silinmiş üye
     /// "(silinmiş hesap): 10,00 TL — ayırınca kullanılamaz" (ek sahip kararı 12.10.2026: Ayır serbest, tutar
     /// gösterilir); önce canlılar, sonra silinmişler, her grup sunucunun sırasıyla. Kartta olmayan canlı üyenin
-    /// bakiyesi ≠ 0 ise liste yerine <see cref="UnmergeFallbackMessage"/> (Sahip sorusu 1, öneri A); 0 ise listelenmez.
+    /// bakiyesi ≠ 0 ise liste yerine <see cref="UnmergeFallbackMessage"/> (Sahip sorusu 1 = (A), 16.11.2026); 0 ise listelenmez.
     /// </summary>
     internal static string? UnmergeMessage(
         IReadOnlyList<Customer> localMembers, IReadOnlyList<CustomerBalanceMemberDto> serverMembers)
@@ -333,8 +333,12 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
 
     /// <summary>Ayır'ın sorusu; null → sorusuz. İstemci yoksa ya da kişinin gönderilebilir sahibi yoksa sunucuya
     /// gidilmez (sunucuda bakiye olamaz). Çağrı hatası (404, ağ, 5xx) ve <c>members</c>'ın yokluğu genel uyarıdır.
-    /// İstemcinin her hatası genel uyarıdır; iptal jetonu yok (kullanıcı iptali diye bir yol yok), süzgeç de yok —
-    /// kaçan bir istisna Ayır'ı sessizce yutardı. İstemci yokken senkron tamamlanır: komut bugünkü gibi senkron biter.</summary>
+    /// İstemcinin her hatası genel uyarıdır; iptal jetonu yok (kullanıcı iptali diye bir yol yok), süzgeç de yok — kaçan
+    /// istisna sessizce yutulmazdı: üretilen <c>AsyncRelayCommand</c> (<c>FlowExceptionsToTaskScheduler</c> verilmedi)
+    /// onu çağıran bağlamda, Dispatcher'da yeniden fırlatır; <c>App_DispatcherUnhandledException</c> (App.xaml.cs) günlüğe yazıp genel
+    /// "beklenmeyen hata" penceresini gösterir ve Ayır hiç sorulmadan durur. Spec §6.1-e ise soru alınamazsa genel uyarıyı
+    /// ([Ayır] [Vazgeç]) ister: operatör dağılımı görmeden de karar verebilmeli. İstemci yokken senkron tamamlanır: komut
+    /// bugünkü gibi senkron biter.</summary>
     private async Task<string?> UnmergeQuestionAsync(CustomerCard card)
     {
         if (_api is null) return null;

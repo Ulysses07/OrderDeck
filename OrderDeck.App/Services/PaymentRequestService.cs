@@ -196,7 +196,7 @@ public sealed class PaymentRequestService
 
     /// <summary>Spec §6.1-b'nin "sürerse"si: aynı kişinin art arda iki <c>customer-not-synced</c>'i arasında bundan uzun ara
     /// varsa ilk görülme yeniden başlar (ör. ayırıp yeniden birleştirme sonrası, saatler sonraki ilk 409). Spec aralığı
-    /// vermez — mühendislik varsayılanı, değer Sahip sorusu.</summary>
+    /// vermez; değer Sahip sorusu 3 = (A), 16.11.2026: 30 dk.</summary>
     internal static readonly TimeSpan NotSyncedStreakGap = TimeSpan.FromMinutes(30);
 
     /// <summary>5 dakika kuralının saati (monoton zaman damgası: <see cref="TimeProvider.GetTimestamp"/>); testler elle

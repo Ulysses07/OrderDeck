@@ -193,8 +193,8 @@ public sealed class PaymentPersonTests : IDisposable
 
     // §8.4-3: kural yalnız YENİ işin sahibini seçer. Sahibi sonradan gönderilemez olan kişinin var olan işi
     // üye taramasıyla bulunur; yeni sahip onu taşımaz, ikinci iş açılmaz. BİLEREK kilitlenen sınır: o iş
-    // gönderilemeyen satırda kalır (satır kipinde MarkNoBalance, havuz kipinde düşüm yazılamaz) — sahip
-    // sorusu Görev 1-a; Burak taşımayı seçerse bu test o görevde bilerek değişir.
+    // gönderilemeyen satırda kalır (satır kipinde MarkNoBalance, havuz kipinde düşüm yazılamaz) — Sahip
+    // sorusu 2 (Görev 1-a) = (A), 16.11.2026: iş taşınmaz.
     [Fact]
     public void Var_olan_isin_sahibi_kural_degisse_de_degismez()
     {

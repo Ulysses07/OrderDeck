@@ -135,7 +135,7 @@ public partial class PaymentRequestServiceTests
     // Ortak bakiye §6.1-a (W-havuz planı fark 27): GUID'li ama sunucunun reddedeceği tek satırlı kişi artık sahip
     // adayı değil (OwnerId null) → SendCoreAsync'in iş dalı atlanır. O satırda önceden açılmış, teslim edilmiş iş
     // OKUNMAZ: "tekrar gönderilsin mi?" sorusu yok, teslim kaydı yazılmaz, ikinci mesaj sorusuz gider — GUID'siz kişinin
-    // yolu. BİLEREK kilitlenen satır kipi farkı; korumayı sürdürme kararı alınırsa bu test o görevde bilerek değişir.
+    // yolu. BİLEREK kilitlenen satır kipi farkı; Sahip sorusu 6 (Görev 1-b) = (A), 16.11.2026: koruma bu kişide sürmez.
     [Fact]
     public async Task Gonderilemeyen_tek_uyeli_kiside_eski_teslim_okunmaz_ikinci_tiklama_sorusuz_gider()
     {

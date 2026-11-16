@@ -297,7 +297,7 @@ public sealed class CustomerSearchUnmergeTests : IDisposable
         Ayrildi(ig).Should().BeTrue();
     }
 
-    [Fact] // Sahip sorusu 1, öneri (A): kartta olmayan canlı sunucu üyesinde bakiye ≠ 0 → liste yerine genel uyarı
+    [Fact] // Sahip sorusu 1 = (A), 16.11.2026: kartta olmayan canlı sunucu üyesinde bakiye ≠ 0 → liste yerine genel uyarı
     public async Task Kartta_olmayan_canli_uyede_bakiye_varsa_genel_uyari()
     {
         var ig = Satir("instagram");
@@ -312,7 +312,7 @@ public sealed class CustomerSearchUnmergeTests : IDisposable
         _dialogs.Confirmations.Should().ContainSingle().Which.Should().Be((Baslik, GenelUyari));
     }
 
-    [Fact] // Sahip sorusu 1, öneri (A): kartta olmayan canlı üyenin 0 bakiyesi listelenmez; sunucunun görmediği yerel satır da
+    [Fact] // Sahip sorusu 1 = (A), 16.11.2026: kartta olmayan canlı üyenin 0 bakiyesi listelenmez; sunucunun görmediği yerel satır da
     public async Task Kartta_olmayan_canli_uyenin_sifir_bakiyesi_listelenmez()
     {
         var ig = Satir("instagram");

@@ -125,7 +125,11 @@ public static class PaymentOwnerRule
     public static bool IsOwnerCapable(string id) => Guid.TryParseExact(id, "N", out _);
 
     /// <summary>Üye yeni işin sahibi olabilir mi: Id GUID ("N") VE satır sunucuya gönderilebilir
-    /// (<see cref="ServerCustomerRule.IsServerAcceptable"/>, ortak bakiye §6.1-a, M14).</summary>
+    /// (<see cref="ServerCustomerRule.IsServerAcceptable"/>, ortak bakiye §6.1-a, M14). Sınır: "gönderilebilir"
+    /// silinmişliğe bakmaz, oysa müşteri senkronu <c>PurgedAt</c>'li satırı göndermez
+    /// (<c>WpfCustomerProjectionSyncService</c>) — hiç gönderilmeden yerelde silinmiş GUID'li satır sunucuya hiç
+    /// ulaşmaz; böyle bir sahip ancak kişinin canlı adayı yoksa seçilir (<see cref="Order"/>: silinmişler canlılardan
+    /// sonra).</summary>
     public static bool IsOwnerCandidate(PaymentPersonMember member)
         => IsOwnerCapable(member.Id) && ServerCustomerRule.IsServerAcceptable(member.Platform, member.Username);
 
