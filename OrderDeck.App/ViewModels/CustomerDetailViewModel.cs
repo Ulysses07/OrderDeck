@@ -204,7 +204,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
             ? _customers.GetGroupMembers(c.GroupId!)
             : new[] { c };
         foreach (var m in members)
-            Identities.Add($"{PlatformLabel(m.Platform)}: {IdentityHandle(m)}");
+            Identities.Add($"{CustomerIdentityText.PlatformLabel(m.Platform)}: {CustomerIdentityText.Handle(m)}");
 
         ReloadLabels();
 
@@ -426,28 +426,6 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
     private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled) && CancelBlockedReason is null;
     private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled) && UncancelBlockedReason is null;
-
-    /// <summary>
-    /// Kimlik rozetinde gösterilecek kullanıcı adı. Kayıt formundan gelen
-    /// müşterilerde <c>DisplayName</c>'e Ad Soyad yazılıyor (arama listesinde
-    /// isim görünsün diye), o yüzden rozette <c>Display</c> kullanılamaz —
-    /// "Instagram: Ayşe Önal" gibi, handle'ı hiç göstermeyen bir satır çıkar.
-    /// YouTube istisna: orada <c>Username</c> = channelId, okunabilir @handle
-    /// <c>DisplayName</c>'de durur.
-    /// </summary>
-    private static string IdentityHandle(Customer c) =>
-        c.Platform?.ToLowerInvariant() == "youtube" ? c.Display : c.Username;
-
-    /// <summary>Platform kodunu okunabilir etikete çevirir (instagram → Instagram).</summary>
-    private static string PlatformLabel(string platform) => platform?.ToLowerInvariant() switch
-    {
-        "instagram" => "Instagram",
-        "youtube" => "YouTube",
-        "facebook" => "Facebook",
-        "tiktok" => "TikTok",
-        "twitch" => "Twitch",
-        _ => string.IsNullOrWhiteSpace(platform) ? "—" : platform,
-    };
 }
 
 /// <summary>UI row tipi — server BalanceTransactionDto'sundan map'lenir.</summary>

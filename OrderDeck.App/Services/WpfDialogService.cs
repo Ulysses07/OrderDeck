@@ -45,8 +45,8 @@ public sealed class WpfDialogService : IDialogService
             _                    => null,   // İptal / pencere kapatıldı → vazgeç
         };
 
-    public Task<bool> ConfirmAsync(string message, string title)
-        => _drawers.ShowAsync(title, d => MessageDrawer.ForConfirm(d, message));
+    public Task<bool> ConfirmAsync(string message, string title, string confirmText = "Evet")
+        => _drawers.ShowAsync(title, d => MessageDrawer.ForConfirm(d, message, confirmText));
 
     public Task ShowAsync(string message, string title, DialogSeverity severity = DialogSeverity.Info)
         => _drawers.ShowAsync(title, d => MessageDrawer.ForNotice(d, message, severity));

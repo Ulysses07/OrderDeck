@@ -300,6 +300,19 @@ public sealed class PaymentResultPresenterTests
         calls[1].Should().BeEquivalentTo(["uzak-belirtec", "yerel-belirtec"]);
     }
 
+    [Fact] // Onay düğmesinin yazısı parametre oldu (spec 2026-10-11 §6.1-e, Ayır); ödeme soruları "Evet" kalır
+    public async Task Odeme_sorusunun_onay_dugmesi_Evet_kalir()
+    {
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService { ConfirmResult = _ => false };
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "cumulative",
+            new[] { new PriorPaymentRequest(550m, Onda, Machine: "PC-A") }, "t");
+
+        await PaymentResultPresenter.RequestConfirmedAsync(dialogs,
+            _ => Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.AlreadyRequested, prompt)));
+
+        dialogs.ConfirmTexts.Should().Equal(new[] { "Evet" }, "var olan çağıran düğme yazısı vermez");
+    }
+
     [Fact] // Birleştirmede de sonucu yazılamamış istek "gitmiş" diye kesin sayılmaz
     public void Birlestirme_sonucu_yazilamamis_istegi_gitmis_olabilir_diye_isaretler()
     {
