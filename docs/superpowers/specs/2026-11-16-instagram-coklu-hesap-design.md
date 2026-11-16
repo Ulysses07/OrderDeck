@@ -1,6 +1,6 @@
 # Instagram çoklu hesap sohbeti — Tasarım
 
-**Tarih:** 16.11.2026 · **Durum:** TASLAK, sahip onayı bekliyor (öneriler §3.2'de, açık sorular §11.1'de) · **İlgili:** `2026-08-04-instagram-live-graph-api-design.md` (tek hesaplı resmi API yolu; bu belge onun üzerine çoklu hesabı ekler)
+**Tarih:** 16.11.2026 · **Durum:** TASLAK, sahip onayı bekliyor (öneriler §3.2'de, açık sorular §11.1'de); bağımsız doğrulamanın olgu düzeltmeleri işlendi (§13 sonu) · **İlgili:** `2026-08-04-instagram-live-graph-api-design.md` (tek hesaplı resmi API yolu; bu belge onun üzerine çoklu hesabı ekler)
 
 Kaynaklar: LiveDeck `origin/master` 7960eba3 (dal `feat/instagram-coklu-hesap`). Satır numaraları bu kesite göredir. Sahada v0.9.12. Dört kollu keşif (WPF, sohbet tüketicileri, sunucu, Meta belgeleri) yapıldı; üç aday tasarım iki hakemle karşılaştırıldı. İki hakem de "en küçük güvenli değişiklik" tasarımını seçti. Bu belge onu temel alır, diğer iki tasarımdan hakemlerin istediği parçaları aşılar ve hakemlerin işaretlediği hataları koda bakarak düzeltir (eşleme §13).
 
@@ -18,7 +18,7 @@ Bu belge yalnız bu ihtiyacı karşılar. Burak'ın söylemediği hiçbir ihtiya
 
 - Aynı anda iki farklı Instagram hesabından canlı yayın açıp iki hesabın da sohbetini OrderDeck'e çekmek istiyor. Acil.
 - "!kayıt → DM" özelliğini kullanmıyor (hesabı sıkıntıya sokabiliyor). Sonuç: sunucu (`OrderDeck.LicenseServer`) kapsam dışı, dokunulmaz.
-- İki Instagram hesabı da aynı işletme portföyünde. Biri bir Facebook Sayfasına bağlı; diğeri henüz hiçbir Sayfaya bağlı değil. Görev tanımına göre Burak ikinci hesap için ayrı bir Sayfa açıp bağlayacak ve iki Sayfayı aynı Facebook kullanıcısı yönetecek (tek Facebook girişi). Tasarım buna dayanıyor; teyidi §11.1 soru 1.
+- İki Instagram hesabı da aynı işletme portföyünde. Biri bir Facebook Sayfasına bağlı; diğeri hiçbir Facebook Sayfasına bağlı değil. Burak yalnız bu bugünkü durumu söyledi; ikinci hesabı bir Sayfaya bağlayacağını ya da iki Sayfayı kimin yöneteceğini söylemedi (bkz. Ö6).
 
 ### 3.2 Tasarımcının önerileri (ÖNERİ — Burak henüz açıkça onaylamadı)
 
@@ -27,6 +27,7 @@ Bu belge yalnız bu ihtiyacı karşılar. Burak'ın söylemediği hiçbir ihtiya
 - **Ö3.** Hesaplardan biri koparsa (kalıcı hata, hız sınırı, uzun süre başarısız yoklama) operatör bunu ana ekranda görür. Bugün Instagram API yolunda hiç sağlık göstergesi yok.
 - **Ö4.** Ayarlar'da tek Facebook girişiyle birden çok Sayfa seçilir; bağlı Instagram hesapları liste olarak görünür; hesap başına kaldırma vardır.
 - **Ö5.** Tasarım N hesaba geneldir; doğrulama ve pilot 2 hesapla yapılır.
+- **Ö6 (varsayım; tasarımın temeli).** Burak ikinci hesap için ayrı bir Facebook Sayfası açıp Instagram hesabını o Sayfaya bağlar ve iki Sayfayı aynı Facebook kullanıcısı yönetir (tek Facebook girişi). Burak bunu söylemedi; §5, §7.1 ve §8'in tamamı buna dayanır. "İki hesap = iki Sayfa" Meta'nın genel kuralı değil, OrderDeck'in kullandığı giriş türünün (Facebook Login) sonucudur (§5 madde 1–2). Burak ikinci hesabı Sayfasız tutmak isterse bu tasarım o hesabı okuyamaz: Sayfasız yolda canlı yorum okuma belgeli değildir, ayrı araştırma ve büyük olasılıkla ayrı App Review gerekir (§7.1 D). Teyidi ve alternatifi §11.1 soru 1.
 
 Bu önerilerin dışında tasarımcının sahibe sormadan verdiği kararlar metinde **(TK1)**, **(TK2)** … biçiminde işaretlidir; listesi §11.2'de.
 
@@ -42,8 +43,8 @@ Bu önerilerin dışında tasarımcının sahibe sormadan verdiği kararlar meti
 **Kapsam dışı**
 - Facebook canlısını iki Sayfadan açmak. Facebook yorumları ve moderasyon bugünkü gibi tek "birincil" Sayfayla çalışır.
 - Raporda, etikette (basılı) ya da siparişte hesap kırılımı. Yerel SQLite göçü ve sunucu şeması değişmez; kaynak hesap yalnız bellekteki sohbet mesajında durur.
-- İkinci bir Facebook kullanıcısıyla giriş.
-- Sayfasız yol (Instagram Login / Unified Login).
+- İkinci bir Facebook kullanıcısıyla giriş (Ö6 varsayımına bağlı).
+- Sayfasız yol (Instagram Login / Unified Login). Ö6 varsayımına bağlıdır: Burak ikinci hesabı Sayfasız tutmak isterse bu madde yeniden açılır (§11.1 soru 1).
 - Webhook.
 - "!kayıt → DM".
 - Instagram izleyici sayısı.
@@ -52,12 +53,12 @@ Bu önerilerin dışında tasarımcının sahibe sormadan verdiği kararlar meti
 - **AH1.** Güncellemede mevcut kurulumların Facebook/Instagram bağlantısı düşmez. Token deposu geriye uyumludur; eski sürüme dönüşte ne olacağı belgelidir (§8.1, §10).
 - **AH2.** Bir hesabın hatası öbürünün sohbetini kesmez.
 - **AH3.** Bir hesabın sessizce susması operatörden gizli kalmaz.
-- **AH4.** Tek hesaplı kullanıcıların bugünkü davranışı değişmez: aynı gecikme, aynı yük.
+- **AH4.** Tek hesaplı kullanıcıların bugünkü davranışı değişmez: aynı gecikme, aynı yük. **Bu belgenin okuması (TK19; sahip onayı bekliyor, §11.1 soru 9):** yoklama yolu, sohbet akışı, gecikme ve Graph yükü tek hesapta bugünküyle aynıdır (§8.3.2 "Tek hesapta korunanlar"). Buna karşın tek hesaplı kurulumda da görünen yedi davranış bilerek değişir; hepsi §8.3.2 "Bilerek değişen davranışlar"da sayılıdır. Burak dar okumayı onaylamazsa reddettiği maddeler 2 ve üzeri Sayfa koşuluna bağlanır (Ayarlar'daki iki yeni düğme hariç; ikinci hesap onlarla eklenir).
 - **AH5.** Facebook canlı yorum ve moderasyon yolu bozulmaz.
 
 ## 5. Ön koşullar (Meta tarafı — Burak yapar)
 
-Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır.
+Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır. Madde 2 ve 3, Ö6 varsayımının gereğidir; Burak bunları yapacağını söylemedi (§11.1 soru 1).
 
 1. **İkinci Instagram hesabı profesyonel olmalı** (işletme ya da içerik üretici). Facebook Login yolunda hesabın bir Facebook Sayfasına bağlı olması şart. Kaynak: <https://developers.facebook.com/documentation/instagram-platform/overview.md>.
 2. **İkinci hesap için ayrı bir Facebook Sayfası açılır ve Instagram hesabı o Sayfaya bağlanır.** API'de bir Sayfa tek Instagram hesabı döndürür (`instagram_business_account` tekil nesne). Kaynak: <https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/page.md>. Açık bir "1 Sayfa = 1 Instagram hesabı" cümlesi resmi kaynakta **doğrulanamadı** (yardım sayfalarının gövdesi okunamadı); dayanak API şemasıdır.
@@ -68,7 +69,7 @@ Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır.
 7. **Pilot öncesi teyit:** sunucudaki "!kayıt" bot bayrağı (`InstagramDmBotEnabled`) Burak'ın müşteri kaydında kapalı olmalı. Tarayıcılı her onay sunucudaki code takasını çağırır ve takas sırasında bot bağlama denemesi koşar (`OrderDeck.LicenseServer/Controllers/Facebook/FacebookOAuthController.cs:100-103`); bayrak kapalıyken hiçbir şey saklanmaz (`OrderDeck.LicenseServer/Services/Instagram/InstagramAccountService.cs:58-60`), açıkken Instagram'lı ilk Sayfa bota bağlanır (`:89-97`). Bu bugünkü "Facebook'a Bağlan" akışında da böyledir; yeni bir yol açılmıyor. Prod'daki değer doğrulanmadı (§11.1 soru 8).
 
 **Bilinen belge/kod farkları (değiştirilmez)**
-- Kota: 24 saatte 4800 × gösterim, uygulama + uygulama kullanıcısı çiftine özel. Kaynak: <https://developers.facebook.com/docs/graph-api/overview/rate-limiting/>. İki hesabın aynı sayacı paylaşıp paylaşmadığı belgeden kesinleşmiyor; pilotta `X-Business-Use-Case-Usage` başlığıyla ölçülür (§9.5). Formül gösterime bağlı olduğundan yeni ya da az gösterimli ikinci hesapta sınır düşük olabilir.
+- Kota: 24 saatte 4800 × gösterim, uygulama + uygulama kullanıcısı çiftine özel. Kaynak: <https://developers.facebook.com/docs/graph-api/overview/rate-limiting/>. İki hesabın aynı sayacı paylaşıp paylaşmadığı belgeden kesinleşmiyor; pilotta `X-Business-Use-Case-Usage` başlığıyla ölçülür (§9.5). Formül gösterime bağlı olduğundan yeni ya da az gösterimli ikinci hesapta sınır düşük olabilir. **Birim uyarısı:** aynı sayfaya göre başlıktaki `call_count` çağrı sayısı değildir; izin verilen çağrıların **yüzdesidir** ve **kayan 1 saatlik** pencereyi anlatır. `total_cputime` ve `total_time` da yüzdedir ve onlar da kısıtlamaya yol açabilir (formülleri yayımlanmamış); `estimated_time_to_regain_access` dakikadır. Yani başlıktaki rakam 24 saatlik "4800 × gösterim" formülüyle doğrudan karşılaştırılamaz (16.11.2026'da sayfadan yeniden okundu).
 - `live_media` belgesi "User" token diyor; kod Sayfa token'ı kullanıyor (`OrderDeck.Chat/Ingestors/Instagram/InstagramLiveCommentsPoller.cs:59`, `:140`). Çalışıyor; ikinci hesapta da aynı belgesiz davranışa yaslanılır. Kaynak: <https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user/live_media.md>.
 - Graph API sürümü v22.0 (`OrderDeck.Chat/Facebook/FacebookOAuthDefaults.cs:22`), 20.05.2027'ye kadar geçerli. Kaynak: <https://developers.facebook.com/docs/graph-api/changelog/versions>.
 
@@ -124,9 +125,9 @@ Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır.
 | **A. Tek giriş + birincil Sayfa + ek Sayfa listesi** | Demete bir isteğe bağlı liste; OAuth servisine eklemeler; Facebook yolu ve depo biçiminin eski kısmı aynen | **SEÇİLDİ** |
 | B. İkinci bağımsız bağlantı yuvası (ikinci blob, ikinci giriş) | İkinci OAuth turu, iki depo; N'e genellenmez. Aynı Facebook kullanıcısının ikinci onayının ilk Sayfanın erişimini düşürebilmesi riski keşifte "doğrulanmadı" olarak işaretli | Elendi |
 | C. Giriş başına gruplu genel model (giriş listesi, her girişte kullanıcı token'ı + Sayfalar) | Birincil alanların yeri değişir: sürüm alanı + göç + eski sürüme dönüşte "bağlı ama kimlik null" tuzağı (`FacebookOAuthService.cs:94-96`, `:118`); Facebook canlı ve moderasyon tüketicileri de değişir. İkinci Facebook kullanıcısı zaten kapsam dışı | Elendi; gerekirse ileride A'nın üstüne eklenir |
-| D. Sayfasız yol (Instagram Login / Unified Login) | `live_media` yalnız `graph.facebook.com` için belgeli; Sayfasız yolda canlı yorum okuma belgelenmemiş, yalnız webhook var. Webhook sunucu → masaüstü kanalı ve ayrı App Review ister | Elendi (kapsam dışı) |
+| D. Sayfasız yol (Instagram Login / Unified Login) | `live_media` yalnız `graph.facebook.com` için belgeli; Sayfasız yolda canlı yorum okuma belgelenmemiş, yalnız webhook var. Webhook sunucu → masaüstü kanalı ve ayrı App Review ister | Elendi (kapsam dışı); Ö6 varsayımı düşerse yeniden ele alınır |
 
-**Neden A:** AH1 ve AH5'i yapısal olarak korur. Birincil Sayfa bugünkü alanlarında kaldığı için eski sürüm aynı dosyayı okur, Facebook canlı yorum ve moderasyon kodu ile okudukları yöntem hiç değişmez. Burak'ın durumu (aynı Facebook kullanıcısı, iki Sayfa) tam bu modeldir.
+**Neden A:** AH1 ve AH5'i yapısal olarak korur. Birincil Sayfa bugünkü alanlarında kaldığı için eski sürüm aynı dosyayı okur, Facebook canlı yorum ve moderasyon kodu ile okudukları yöntem hiç değişmez. **Varsayım (Ö6; Burak onaylamadı, §11.1 soru 1):** ikinci hesap ayrı bir Sayfaya bağlanır ve iki Sayfayı aynı Facebook kullanıcısı yönetirse Burak'ın durumu tam bu modeldir. Varsayım tutmazsa (ikinci hesap Sayfasız kalır ya da ikinci Sayfayı başka bir Facebook kullanıcısı yönetir) A ikinci hesabı okuyamaz.
 
 ### 7.2 Instagram toplama
 
@@ -192,7 +193,7 @@ public sealed record FacebookTokenBundle(
 
 ### 8.2 OAuth servisi ve Sayfa seçimi (b)
 
-**Değişmeyen üyeler** (imza ve davranış aynı; hepsi birincil Sayfayı döner): `IsConnectedAsync` (`FacebookOAuthService.cs:92`), `GetConnectedPageNameAsync` (`:102`), `GetPageCredentialsAsync` (`:114`), `GetUserAccessTokenAsync` (`:128`), `ConnectAsync` (`:140`), `DisconnectAsync` (`:239`). Mevcut private `ListPagesAsync` (`:339-357`) aynen kalır: ilk bağlantının isteği değişmez.
+**Değişmeyen üyeler** (imza ve davranış aynı; hepsi birincil Sayfayı döner): `IsConnectedAsync` (`FacebookOAuthService.cs:92`), `GetConnectedPageNameAsync` (`:102`), `GetPageCredentialsAsync` (`:114`), `GetUserAccessTokenAsync` (`:128`), `ConnectAsync` (`:140`), `DisconnectAsync` (`:239`). Tek istisna: `ConnectAsync`'in tarayıcı beklemesi artık süresiz değildir (aşağıda "Tarayıcı beklemesi", TK17). Mevcut private `ListPagesAsync` (`:339-357`) aynen kalır: ilk bağlantının isteği değişmez.
 
 **Birincil Sayfa kuralı (TK3).** Birincil Sayfa ilk "Facebook'a Bağlan"da seçilen Sayfadır. Facebook canlı yorum (`FacebookChatHostedService.cs:200`) ve moderasyon (`FacebookModerationService.cs:118`) hep onu okur. Birincil Sayfa tek başına kaldırılamaz ve yerinde değiştirilemez; değiştirmenin yolu bugünkü gibi "Bağlantıyı Kaldır" + "Facebook'a Bağlan"dır. Gerekçe: moderasyon kimliği her çağrıda yeniden okur, canlı akış ise bağlandığı Sayfada sürer; yayın ortasında birincil değişirse sil/banla yanlış Sayfanın token'ıyla giderdi. `AppSettings.FacebookPageId` (yalnız yazılıyor: `FacebookOAuthService.cs:230`, `:243`) birincili yansıtmaya devam eder.
 
@@ -233,14 +234,21 @@ public Task<FacebookReauthorizeResult> ReauthorizeAsync(
 **Tarayıcısız ekleme.** `AddExtraPageAsync` mevcut private `GetPageAccessTokenAsync`'i (`:359-371`) çağırır. Sunucunun takas ucu bu yolda hiç çağrılmaz **(TK5)**.
 
 **Yeniden onay (TK4).** `ReauthorizeAsync` sırasıyla:
-1. Kullanıcı token'ını alır. `ConnectAsync`'in 0–5. adımları (`:144-193`: yapılandırma, URL, dinleyici, tarayıcı, state denetimi, code takası) private bir `AcquireUserTokenAsync` yardımcısına çıkarılır; `ConnectAsync` ve `ReauthorizeAsync` onu paylaşır. `ConnectAsync`'in imzası ve dış davranışı aynı kalır.
+1. Kullanıcı token'ını alır. `ConnectAsync`'in 0–5. adımları (`:144-193`: yapılandırma, URL, dinleyici, tarayıcı, state denetimi, code takası) private bir `AcquireUserTokenAsync` yardımcısına çıkarılır; `ConnectAsync` ve `ReauthorizeAsync` onu paylaşır. `ConnectAsync`'in imzası aynı kalır; dış davranışındaki tek fark aşağıdaki "Tarayıcı beklemesi" kurallarıdır.
 2. Yeni token'la `/me/accounts` listesini okur.
 3. Bağlı Sayfalardan (birincil + ekler) yeni listede olmayanları bulur. Varsa `confirmMissing` çağrılır; `false` dönerse **diske hiçbir şey yazılmaz** ve `OperationCanceledException` fırlatılır.
 4. Yeni listede görünen her bağlı Sayfanın token'ını yeniden türetir. Türetilemeyen Sayfanın eski token'ı kalır.
-5. Yeni kullanıcı token'ı, yeni `ExpiresAt` ve yenilenen Sayfa token'larıyla tek yazım yapar. Listede görünmeyen Sayfanın girdisi **silinmez**: Meta erişimi gerçekten düşürdüyse o hesap sağlık şeridinde "bağlantı yenilenmeli" olarak görünür (AH3); sessizce kaybolmaz.
+5. Yeni kullanıcı token'ı, yeni `ExpiresAt` ve yenilenen Sayfa token'larıyla tek yazım yapar. Listede görünmeyen Sayfanın girdisi **silinmez**: Meta erişimi gerçekten düşürdüyse o hesap sağlık şeridinde görünür (AH3); sessizce kaybolmaz. Hangi metinle görüneceği hatanın yakalandığı yere bağlıdır: poller çalışırken düşerse "bağlantı yenilenmeli" (`Faulted`); hesap çözümlemesi sırasında düşerse (uygulama açıldıktan sonraki ilk çözümleme aynı Sayfa token'ıyla yapılır ve çözümleyici her başarısız yanıtı tek sonuca indirir, `InstagramAccountResolver.cs:59-65`) "hesap bilgisi okunamadı" (`ResolveFailed`). İki ve üzeri Sayfada ikisi de sarıdır (§8.5).
 6. Sayfa seçici açılmaz, otomatik birincil seçimi yapılmaz. `ConnectAsync`'teki "tek Sayfa dönerse onu seç" dalı (`:201-202`) bu yolda yoktur; birincil kayamaz.
 
 Yalnız bağlıyken çağrılır. `confirmMissing` "Vazgeç" dese bile Meta tarafındaki izin o anda değişmiş olabilir; bu doğrulanmadı ve arayüz metni bunu söyler.
+
+**Tarayıcı beklemesi (TK17).** Bugünkü bekleme yalnız geri çağrı ya da iptal belirteciyle biter; zaman aşımı yoktur (`WaitForCallbackAsync`, `:286-307`) ve Ayarlar belirteç vermez (`SettingsViewModel.cs:431-443`). Kullanıcı tarayıcı sekmesini kapatırsa uygulama bunu **algılayamaz**: komut süresiz "onay bekleniyor"da kalır ve 4849 dinleyicisi açık kalır (`:163-167`); bu sırada başlatılan ikinci bir akış "Failed to bind" ile düşer (`:169-175`). Bu bugünkü "Facebook'a Bağlan"da da böyledir (düğme meşgul kaldığı için uygulama yeniden başlatılana dek bağlanılamaz, `SettingsViewModel.cs:105`, `:422`); ama bu tasarım yeniden onayı ikinci hesabı eklemenin asıl yolu yapıyor ve akış bağlıyken, yayın öncesinde kullanılacak. Paylaşılan `AcquireUserTokenAsync` bu yüzden üç kural taşır:
+- **Zaman aşımı.** Geri çağrı 5 dakika içinde gelmezse dinleyici kapatılır ve Türkçe mesajlı bir `TimeoutException` fırlatılır. Diske hiçbir şey yazılmamıştır. Süre servis içinde tek sabittir; testte kısaltılabilir (§11.3).
+- **İptal.** Çağıranın verdiği belirteç bugünkü gibi dinleyiciyi kapatır (`:290-293`) ve `OperationCanceledException` üretir. `ReauthorizeFacebookCommand` beklerken görünen bir "İptal" düğmesiyle bu belirteci tetikler (§8.6.1). `ConnectFacebook` komutu değişmez; o yol zaman aşımıyla korunur.
+- **Aynı anda tek tarayıcı akışı.** Bekleyen bir akış varken ikinci `ConnectAsync` / `ReauthorizeAsync` çağrısı dinleyiciyi açmayı denemeden, anlaşılır bir `InvalidOperationException` ile reddedilir. Arayüzde akış beklerken "Facebook'a Bağlan", "Facebook izinlerini güncelle" ve "Instagram hesabı ekle" pasiftir.
+
+Facebook onay ekranında "İptal"e basmak bir geri çağrı üretir: `error=access_denied` gelir ve bugünkü kod bunu `InvalidOperationException` yapar (`:330-332`). Bu eşleme değiştirilmez; arayüzde "iptal" değil "başarısız" metnine düşer (§8.6.1 "Facebook izinlerini güncelle" madde 6).
 
 **İlk bağlantı ve tümünü kaldırma.** `ConnectAsync` yalnız bağlı değilken erişilebilir (`SettingsViewModel.cs:105`) ve demeti eksiz kurar (`FacebookOAuthService.cs:217-222`). "Bağlantıyı Kaldır" bugünkü gibi her şeyi siler (ekler dahil).
 
@@ -289,13 +297,13 @@ public InstagramLiveCommentsPoller(
 `InstagramChatHostedService` kurucusuna iki isteğe bağlı parametre eklenir: `InstagramHealthMonitor? health = null`, `TimeProvider? time = null` (repoda emsal: `OrderDeck.App/Services/Sync/SessionOrderSyncHostedService.cs:52-77`). Sabitler (`:27-30`) ve `ComputeBackoff` (`:205-212`) aynen kalır.
 
 **Üst döngü** (bugünkü `RunAsync`'in kapıları, tek yerde):
-1. `GetConnectedPagesAsync` boşsa: sağlık temizlenir, 60 sn beklenir (bugünkü `IdleWhenOffline`, `:112-117`).
+1. `GetConnectedPagesAsync` boşsa: sağlık temizlenir, 60 sn beklenir (bugünkü `IdleWhenOffline`, `:112-117`). Bu kapı döngünün başındadır; oturum açıkken listenin boşalması 4. adımda işlenir.
 2. Aktif oturum yoksa: 60 sn beklenir (bugünkü `:120-124`). Oturum kapısı yalnız burada durur; hesap döngüleri kapıyı ayrı ayrı beklemez. Böylece bütün hesaplar aynı anda başlar.
 3. Oturum açıksa: sağlık izleyicisi güncel Sayfa listesiyle yapılandırılır ve oturumu sıfırlanır; Sayfa sayısı 2 ve üzeriyse bir birleştirme kapısı (§8.3.5) kurulur; her Sayfa için bir hesap döngüsü görevi başlatılır.
-4. İzleme: 2 saniyede bir, bellekten `GetConnectedPagesAsync` yeniden okunur ve PageId kümesi karşılaştırılır (§8.3.3).
+4. İzleme: 2 saniyede bir, bellekten `GetConnectedPagesAsync` yeniden okunur ve PageId kümesi karşılaştırılır (§8.3.3). Oturum açıkken liste **boşalırsa** (yayın ortasında "Bağlantıyı Kaldır"): bütün hesap döngüleri durur, kapı kapanır, sağlık temizlenir; üst döngü 60 sn'lik beklemeye **düşmez**, 2 sn'lik izlemede kalır (yalnız bellek okuması, ağ yok). Liste yeniden dolunca 3. adım baştan uygulanır (Sayfa sayısına göre kapı kurulur ya da kurulmaz; filigranlar tazedir).
 5. `SessionEnded` (`:66-70`) oturum kapsamlı iptal kaynağını tetikler: bütün hesap döngüleri durur, kulvarlar kapanır (tutulan mesaj varsa basılır), sağlık "kapalı"ya döner. Ardından 30 sn (`IdleAfterPollerExit`) beklenir ve döngü başa döner. Tek `_pollerCts` (`:44`) yerine oturum kapsamlı tek kaynak + hesap başına bağlı kaynaklar vardır.
 
-**Hesap döngüsü** (bugünkü `:126-192` gövdesi, hesap başına bir kopya). Her hesabın kendi çözümleyicisi, poller'ı, filigranı, çöküş sayacı ve bekleme süresi vardır:
+**Hesap döngüsü** (bugünkü `:126-192` gövdesi, hesap başına bir kopya). Her hesabın kendi çözümleyicisi, poller'ı, filigranı, çöküş sayacı ve bekleme süresi vardır. Çözümleyiciler PageId başına servis ömrünce yaşar; başarılı çözümleme önbelleği oturumlar arasında korunur. Bugün de böyledir: çözümleyici servis başına bir kez kurulur (`:96-99`) ve önbelleği hiçbir üretim yolunda boşaltılmaz; aksi hâlde tek hesapta oturum başına bir Graph isteği eklenirdi (AH4).
 1. Kimlik: o PageId'nin güncel token'ı `GetConnectedPagesAsync`'ten okunur; Sayfa listede yoksa döngü biter.
 2. Çözümleme: `ResolveDetailedAsync` (§8.3.4). `NotLinked` ya da `Failed` ise sağlık bildirilir ve 5 dk beklenir. Süre bugünkü `IdleAfterFatal` ile aynıdır (`:128-135`) **(TK15)**.
 3. Aynı `IgUserId` başka bir hesap döngüsünde zaten okunuyorsa bu Sayfa atlanır (çift yorum olmasın): Warning düzeyinde loglanır, bu Sayfanın sağlık girdisi silinir (aynı hesap öteki Sayfa üzerinden şeritte zaten görünür) ve 5 dk sonra yeniden bakılır.
@@ -305,9 +313,14 @@ public InstagramLiveCommentsPoller(
 
 **Tek hesapta korunanlar (AH4).** Sayfa sayısı 1 iken birleştirme kapısı kurulmaz; poller'a bugünkü `_bus` örneği verilir (`:144-150` ile aynı argümanlar), `pacer` verilmez, filigran her kurulumda tazedir, `SourceAccount` null kalır. Graph çağrıları, 1 sn / 0,3 sn aralık, yayın yokken 10 sn, kota beklemesi, 5 ardışık geçici hatada çıkış + 30 sn, kalıcı hatada 5 dk, ilk çekimin yutulması, oturum başında 60 sn'ye kadar geç başlama (bugün `SessionStarted` aboneliği yok; eklenmez) birebir aynıdır. Eklenen yük: bellek içi gözlemci çağrıları, 2 saniyede bir bellekten liste karşılaştırması, dakikada bir kota log satırı.
 
-**Bilerek değişen iki davranış (tek hesapta da görünür).**
-- Yayın ortasında "Bağlantıyı Kaldır" ya da hesap kaldırma artık o hesabın yoklamasını en geç 2 saniyede durdurur. Bugün çalışan poller eski token'la oturum sonuna kadar sürüyor (`:144-161`) **(TK14)**.
-- Kalıcı hata beklemesi token yenilenince kesilir (TK16).
+**Bilerek değişen davranışlar (tek hesapta da görünür; AH4'ün dar okuması, TK19).** Yoklama yolu, gecikme ve yük aynı kalır; aşağıdaki yedi davranış tek hesaplı kurulumda da değişir. Sahibe §11.1 soru 9'da topluca sorulur.
+1. **Yayın ortasında "Bağlantıyı Kaldır" ya da hesap kaldırma, o hesabın yoklamasını en geç 2 saniyede durdurur (TK14).** Bugün çalışan poller eski token'la oturum sonuna kadar sürüyor (`:144-161`). Sonucu: yayın ortasında "Bağlantıyı Kaldır" + "Facebook'a Bağlan" yapılırsa bugün Instagram sohbeti kesilmezken, yeni tasarımda tarayıcı onayı boyunca kesilir. Yeniden bağlanınca hesap en geç 2 sn'de yeniden kurulur (üst döngü 4. adım) ama yeni poller'ın ilk çekimi yutulur; aradaki yorumlar gelmez. Bugünkü arayüz bu adımı Instagram izni için öneriyor (`SettingsPage.xaml:317`); yeni metin "Facebook izinlerini güncelle"ye yönlenir (6. madde) ve o yol bağlantıyı kaldırmaz, sağlıklı poller'ı da yeniden başlatmaz (§8.3.3). **Facebook tarafı farklı davranır:** açık canlı yorum akışı kurulurken aldığı Sayfa token'ıyla sürer (`FacebookChatHostedService.cs:257-264`); yalnız sil/banla düşer, çünkü moderasyon kimliği her çağrıda yeniden okur (`FacebookModerationService.cs:116-123`). Yani yayın ortasında bağlantı kaldırılınca Instagram yorumları 2 sn içinde kesilir, Facebook yorumları akmaya devam eder.
+2. Kalıcı hata beklemesi token yenilenince kesilir (TK16).
+3. Kenar çubuğundaki Instagram noktası yayında yanar (§8.6.4); bugün hiç yanmıyor.
+4. Hesap o oturumda canlıyken koparsa sohbet panelinde sağlık şeridi ve sarı üst nokta görünür (§8.6.3–4).
+5. Ayarlar'daki Instagram kartında iki yeni düğme görünür (§8.6.1). İkinci hesap bu düğmelerle eklendiği için 2 ve üzeri Sayfa koşuluna bağlanamaz.
+6. `InstagramNeedsReconnect` uyarı metni "Bağlantıyı Kaldır + Facebook'a Bağlan" yerine "Facebook izinlerini güncelle"ye yönlenir (§8.6.1).
+7. Tarayıcı onayı beklemesi ("Facebook'a Bağlan" dahil) 5 dakikada zaman aşımına uğrar; bugün süresizdir (§8.2, TK17).
 
 #### 8.3.3 Yayın ortasında hesap ekleme, çıkarma, token değişimi (TK14)
 
@@ -315,6 +328,7 @@ public InstagramLiveCommentsPoller(
 - **Çıkarma:** yalnız o hesabın döngüsü iptal edilir; kulvarı kapanır, sağlık girdisi silinir.
 - **Tekten çoka geçiş (1 → 2):** çalışan hesabın poller'ı bir kulvarla yeniden kurulur. Filigranı yeni poller'a devredilir; ilk çekim yutulmaz, yorum kaybı olmaz.
 - **Çoktan teke geçiş:** oturum içinde yapılmaz; kalan hesap kulvarıyla sürer (tek kulvarlı kapı gecikme eklemez, etiket basılmaya devam eder). Tek hesap kipine bir sonraki oturumda dönülür.
+- **Tümünün kalkması (N → 0, "Bağlantıyı Kaldır"):** bütün döngüler durur, kapı kapanır; üst döngü 2 sn'lik izlemede kalır ve yeniden bağlanılınca kurulum baştan yapılır (§8.3.2 üst döngü 4. adım). Bu tam bir söküm olduğu için "çoktan teke" kuralının istisnası değildir.
 - **Token değişimi (aynı PageId):** çalışan sağlıklı poller yeniden başlatılmaz; eski Sayfa token'ı geçerli olduğu sürece sürer. Yeni token bir sonraki doğal yeniden kurulumda kullanılır. Gerekçe: bozuk hesabı düzeltmek için yapılan izin güncellemesi sağlam hesabın sohbetini kesmemeli (AH2). Yeniden onaydan sonra eski Sayfa token'ının geçerli kalıp kalmadığı doğrulanmadı; kalmazsa poller kalıcı hatayla çıkar ve TK16 gereği yeni token'la hemen yeniden kurulur.
 
 #### 8.3.4 Yardımcı eklemeler
@@ -326,11 +340,17 @@ public enum InstagramResolveStatus { Found, NotLinked, Failed }
 public Task<(InstagramAccount? Account, InstagramResolveStatus Status)> ResolveDetailedAsync(
     string pageId, string pageAccessToken, CancellationToken ct);
 
-public sealed record InstagramBucUsage(string BusinessId, double CallCount, double TotalCpuTime, double TotalTime);
+// Üç oran da YÜZDEDİR (0–100+), çağrı sayısı değil; pencere kayan 1 saattir.
+public sealed record InstagramBucUsage(
+    string BusinessId,
+    double CallCountPercent, double TotalCpuTimePercent, double TotalTimePercent,
+    double? MinutesToRegainAccess);
 
 // X-Business-Use-Case-Usage başlığını ayrıştırır. Yalnız ölçüm ve log; otomatik fren yok.
 public static bool TryGetUsage(string? headerValue, out IReadOnlyList<InstagramBucUsage> usage);
 ```
+
+Birim: başlıktaki `call_count`, `total_cputime` ve `total_time` sayaç değil yüzdedir; `call_count` kayan 1 saatlik pencereyi anlatır (§5 "Bilinen belge/kod farkları"). Alan adları bu yüzden `...Percent` taşır. `BusinessId` başlığın üst düzey anahtarıdır; belge onu "çağrıyı yapan token'la ilişkili işletmenin kimliği" diye tanımlar. `MinutesToRegainAccess` başlıktaki `estimated_time_to_regain_access` alanıdır; mevcut kod başlıktan yalnız bunu okuyor (`InstagramGraphError.cs:101-107`) ve `TryGetRetryAfter` aynen kalır.
 
 Gerekçe: bugün "Sayfada Instagram hesabı yok" ile "çağrı düştü" aynı `null`'dur (`InstagramAccountResolver.cs:59-65`, `:68-76`, `:96-100`). Sağlık göstergesi yalnız Facebook kullanan kuruluma yanlış alarm vermemeli, yayın başındaki ağ kesintisine de yanlış sebep söylememelidir.
 
@@ -373,9 +393,9 @@ Hesap döngüleri bağımsız kalır; kapı yalnız iki şeyi yönetir: Ok turun
 - **K5 Emniyet.** Açık turda henüz hiçbir üye bitirmediyse, bekleyen kulvar kendi süresi dolunca tek başına serbest kalır ve açık tura üye olur. Sonuç: hiçbir kulvar başka bir kulvar yüzünden kendi aralığı + `HoldBudget`'tan uzun bekletilmez; hiçbir mesaj `HoldBudget`'tan uzun tutulmaz.
 - **K6 Yavaş kulvar.** Art arda 2 turda bariyeri kaçıran kulvar "yavaş" sayılır: turlara katılır (aynı anda sorgulanır) ama kapanış onu beklemez. Bariyer süresi içinde bitirdiği ilk turda işaret kalkar.
 - **K7 Kapanış.** `Complete()` kulvarı üyelikten düşürür ve o kulvarın tutulan mesajlarını hemen basar; `Dispose()` tutulan her şeyi basar.
-- `HoldBudget = 0` hiçbir şeyi tutmaz (PR-A davranışı). Sıralamayı kapatmanın tek sabitlik yolu budur.
+- **K8 Kapalı kip (TK18).** `HoldBudget = 0` iken kapı iki işini de bırakır: (a) hiçbir mesaj tutulmaz, her mesaj etiketlenip hemen iç bus'a basılır; (b) `WaitAsync(interval)` düz beklemeye iner (yalnız `interval` kadar bekler; ortak tık, tur ve üyelik kurulmaz), yani her hesap kendi aralığıyla yoklanır ve TK8'in yük bağı da kalkar. Yalnız (a) olsaydı tempo kancası ve K1 sürer, "PR-A davranışı" iddiası tutmazdı. Bu kipte davranış PR-A ile aynıdır; sıralamayı ve ortak tempoyu birlikte kapatmanın tek sabitlik yolu budur. Tutmayı açık bırakıp yalnız ortak tempoyu kapatmak bu sabitle yapılamaz; ayrı bir değişikliktir (§12 R3).
 
-**Ortak tık en hızlı isteyeni izler (TK8).** K1 gereği bir hesap taşıp aralığını 0,5 sn'ye indirirse (`NextInterval`, `InstagramLiveCommentsPoller.cs:123-133`) öteki hesap da o tempoyla yoklanır. Gerekçe: taşma tam da çok kişinin aynı anda kod yazdığı andır; sıra en çok o an önemlidir ve aralıklar ayrışırsa farklı saniyelerde ters sıra oluşur. Bedel: tipik bir taşma patlamasında (0,5 → 1,0 sn'ye beş turda gevşer) sakin hesap yaklaşık 1–2 fazladan istek yapar; taşma sürekli tabanda (0,3 sn) kalırsa sakin hesabın yükü yaklaşık 3 katına çıkar. Hakemlerden biri bu bağı kota belirsizken yanlış yönde buldu; itiraz kayıtlıdır (§12, R3) ve pilotta taşma anlarının kota başlığı ayrıca okunur. Her durumda hesap başına hız "aralık başına bir istek"i aşmaz; bu bugünkü tavanla aynı sınıftır.
+**Ortak tık en hızlı isteyeni izler (TK8).** K1 gereği bir hesap taşıp aralığını 0,5 sn'ye indirirse (`NextInterval`, `InstagramLiveCommentsPoller.cs:123-133`) öteki hesap da o tempoyla yoklanır. Gerekçe: taşma tam da çok kişinin aynı anda kod yazdığı andır; sıra en çok o an önemlidir ve aralıklar ayrışırsa farklı saniyelerde ters sıra oluşur. Bedel: tipik bir taşma patlamasında (0,5 → 1,0 sn'ye beş turda gevşer) sakin hesap yaklaşık 1–2 fazladan istek yapar; taşma sürekli tabanda (0,3 sn) kalırsa sakin hesabın yükü yaklaşık 3 katına çıkar. Hakemlerden biri bu bağı kota belirsizken yanlış yönde buldu; itiraz kayıtlıdır (§12, R3) ve pilotta taşma anlarının kota başlığı ayrıca okunur. Kota sorunu bu bağdan çıkarsa tek sabitlik geri dönüş K8'dir (sıralama da kapanır). Her durumda hesap başına hız "aralık başına bir istek"i aşmaz; bu bugünkü tavanla aynı sınıftır.
 
 **Birleştirici (saf).**
 
@@ -398,7 +418,7 @@ Anahtar yalnız Meta damgasıdır (`ChatMessage.ReceivedAt`; poller Meta saniyes
 
 **Gecikme bütçesi.** Yalnız bir hesap canlıysa sıfır (tek üyeli tur, bitince hemen basılır). İki hesap sağlıklıyken iki yanıt arasındaki fark kadar (tavan 400 ms; tipik değer ölçülmedi). Takılan hesap sağlam hesabı bir kez 400 ms bekletir (K3); sürekli yavaş hesap en çok iki tur bekletir (K6).
 
-**Bağlama notu.** Hakemlerden biri ortak tıkın poller'a "tek adım" dikişiyle (`RunAsync` = adım → yayımla → bekle), ayrı bir koordinatörle bağlanmasını önerdi. Bu belge aynı kuralları tempo kancasıyla kurar: poller'ın döngüsü tek kod yolu olarak kalır, hesap yaşam döngüsü iki yerde yazılmaz, mevcut dört döngü testi olduğu gibi durur. K1–K7 kuralları iki bağlamada da aynıdır; kapının iç yapısı inşaatçıdadır (§11.3).
+**Bağlama notu.** Hakemlerden biri ortak tıkın poller'a "tek adım" dikişiyle (`RunAsync` = adım → yayımla → bekle), ayrı bir koordinatörle bağlanmasını önerdi. Bu belge aynı kuralları tempo kancasıyla kurar: poller'ın döngüsü tek kod yolu olarak kalır, hesap yaşam döngüsü iki yerde yazılmaz, mevcut dört döngü testi olduğu gibi durur. K1–K8 kuralları iki bağlamada da aynıdır; kapının iç yapısı inşaatçıdadır (§11.3).
 
 #### 8.3.7 Oturum başlat / bitir
 
@@ -466,10 +486,11 @@ Yer: `OrderDeck.Chat/Ingestors/Instagram/InstagramHealthMonitor.cs` (yeni). Teki
 
 **Görünüm kuralları** (saf sunucu `InstagramHealthPresenter`, §8.6.3; her kural test edilir)
 - **Yanıtsızlık okuma anında türetilir (TK10).** `Live` iken son temas 10 sn'den, `WaitingForBroadcast` / `BroadcastEnded` / `Starting` iken 45 sn'den eskiyse hesap "yanıt yok" sayılır (temas yoksa `Since` esas alınır). Böylece takılı istek (zaman aşımı 15 sn, `InstagramLiveCommentsPoller.cs:43`) ve 5 ardışık hatadan sonraki 30 sn'lik bekleme de görünür; döngü asılı kalsa bile alarm çıkar.
-- **Uyarı kapısı (TK9).** Sorun durumları şunlardır: yanıt yok, hız sınırı, kalıcı hata, hesap bilgisi okunamadı, ek Sayfada Instagram hesabı yok. Bir sorun durumu yalnız şu koşulda sarı gösterilir: hesap bu oturumda canlıydı **veya** başka bir Instagram hesabı şu an canlı. Aksi hâlde aynı metin nötr gösterilir. Instagram'da yayın yapılmayan gecede gürültü olmaz. Aşağıdaki iki durum sorun durumu sayılmaz; kendi kurallarıyla sararır.
+- **Uyarı kapısı (TK9).** Sorun durumları şunlardır: yanıt yok, hız sınırı, kalıcı hata, hesap bilgisi okunamadı, Sayfada Instagram hesabı yok (şeride girdiği durumlarda; aşağıdaki `NotLinked` kuralı). Bir sorun durumu yalnız şu koşulda sarı gösterilir: hesap bu oturumda canlıydı **veya** başka bir Instagram hesabı şu an canlı. Aksi hâlde aynı metin nötr gösterilir. Instagram'da yayın yapılmayan gecede gürültü olmaz. Aşağıdaki iki durum sorun durumu sayılmaz; kendi kurallarıyla sararır.
+- **Çok hesapta kapı muafiyeti (TK9, AH3).** Bağlı Sayfa sayısı 2 ve üzeriyken "kalıcı hata" ve "hesap bilgisi okunamadı" uyarı kapısına bakılmadan **her zaman sarıdır**. Gerekçe: kapı tek başına bırakılırsa iki hesap da oturum başından bozukken (ortak neden: tek kullanıcı token'ından türeyen iki Sayfa token'ı birlikte geçersizleşir) hiçbir hesap canlı olmadığı için hiçbir satır ve üst nokta sararmaz, şerit yalnız nötr metin gösterirdi. "Hesap bilgisi okunamadı" da kapsamdadır, çünkü uygulama açıldıktan sonraki ilk oturumda geçersiz token poller'a varmadan çözümlemede düşer (§8.2 yeniden onay 5. adım). Bedeli: iki hesap bağlı ama o gece Instagram'da yayın yapılmıyorsa, bozuk bir hesap yine de sarı görünür. Tek Sayfalı kurulumda kapı aynen geçerlidir.
 - **"Canlı yayın bulunamadı" (TK10).** Başka bir hesap canlıyken bu hesap 90 sn'dir canlı değilse (süre, bu hesabın beklemeye başladığı an ile öteki hesabın canlı olduğu andan geç olanından ölçülür) `WaitingForBroadcast` sarı olur; aksi hâlde nötrdür ("yayın bekleniyor"). Bu, ikinci hesabın hiç akmadığı sessiz durumu yakalar.
 - **Yayın bitti.** `BroadcastEnded` yalnız başka bir hesap hâlâ canlıyken sarıdır ("yayın kesildi"); iki yayın da bittiğinde nötrdür ("yayın bitti").
-- **Birincil Sayfada `NotLinked` şeride hiç girmez.** Yalnız Facebook kullanan kurulum (Sayfasında Instagram hesabı yok) bugünkü gibi hiçbir şey görmez. Ek Sayfada `NotLinked` uyarı kapısına tabidir.
+- **`NotLinked` (Sayfada Instagram hesabı yok).** Birincil Sayfada `NotLinked` yalnız **ek Sayfa yokken** şeride girmez: yalnız Facebook kullanan tek Sayfalı kurulum (Sayfasında Instagram hesabı yok) bugünkü gibi hiçbir şey görmez. Ek Sayfa varken birincil `NotLinked` şeride girer ve ek Sayfalarla aynı uyarı kapısına tabidir ("ek Sayfa var" ve "2 ve üzeri Sayfa" bilgisi anlık görüntüden okunur: birincil olmayan en az bir girdi). Gerekçe (AH3): çözümleyici "hesap gerçekten yok" ile "alan yanıtta gelmedi"yi ayıramaz (`InstagramAccountResolver.cs:68-76`); yeniden onayda birincilin Instagram hesabının işareti kaldırılırsa ya da Sayfa–Instagram bağı koparsa birincil hesap tam bu yola düşer (Meta'nın bu durumda alanı düşürüp düşürmediği doğrulanmadı). Kural koşulsuz olsaydı iki hesaplı kurulumda birincilin Instagram'ı sessizce kaybolur, şeride giren hesap sayısı 1'e inince şerit de gizlenirdi. Ek Sayfada `NotLinked` her zaman şeride girer ve uyarı kapısına tabidir. Bu kuralın bedeli ve kalan boşluğu §12 R16'dadır.
 - Tespit gecikmesi: arayüz 5 sn'lik nabızla okur (`MainShellViewModel.cs:1253`, `:1349`); en geç yaklaşık 5 sn + ilgili eşik.
 
 **Hesap başına durumlar (özet)**
@@ -484,7 +505,7 @@ Açılır pencere yoktur; çekmece + satır içi metin kalıbı kullanılır. Ö
 
 #### 8.6.1 Ayarlar > Facebook sekmesi
 
-Facebook kartı (`SettingsPage.xaml:279-304`) ve `ConnectFacebook` / `DisconnectFacebook` komutları (`SettingsViewModel.cs:416-477`) değişmez. Tek ek: bağlan ve kaldır sonrasında `RefreshInstagramStatusAsync` de çağrılır (bugün yalnız kurucuda, `:209`).
+Facebook kartı (`SettingsPage.xaml:279-304`) ve `ConnectFacebook` / `DisconnectFacebook` komutları (`SettingsViewModel.cs:416-477`) değişmez. İki ek: bağlan ve kaldır sonrasında `RefreshInstagramStatusAsync` de çağrılır (bugün yalnız kurucuda, `:209`); "Facebook'a Bağlan" beklemesi servis tarafındaki 5 dakikalık zaman aşımına tabidir (§8.2 TK17) ve süre dolunca mevcut hata dalı (`:452-455`) `Bağlantı başarısız: Facebook onayı 5 dakika içinde tamamlanmadı. Yeniden dene.` yazar (komut kodu değişmeden).
 
 Instagram kartı (`SettingsPage.xaml:306-324`):
 
@@ -512,7 +533,7 @@ Instagram canlı yorumlar
 İki hesap bağlıyken yorumlar tek akışta birleşir; her Instagram yorumunun sağında hangi hesaptan geldiği yazar.
 ```
 
-- Satır durumu: `@ad` | `Bu Sayfaya bağlı Instagram profesyonel hesabı yok` (ek Sayfada sarı) | `Durum okunamadı`.
+- Satır durumu: `@ad` | `Bu Sayfaya bağlı Instagram profesyonel hesabı yok` (tek Sayfalı kurulumda nötr; iki ve üzeri Sayfada, birincil satır dahil, sarı) | `Durum okunamadı`.
 - Birincil satırda "Kaldır" yoktur; ipucu: `Birincil Sayfayı değiştirmek için "Bağlantıyı Kaldır" + "Facebook'a Bağlan"`.
 - Kartın mevcut ipucu metni (`:318-322`) aynen kalır.
 - İzin uyarısı (`InstagramNeedsReconnect`, `:313-317`) aynen çalışır (tek kullanıcı token'ı bütün hesapları kapsar; izin sondası bir kez). Metni yeni düğmeye bağlanır: `Instagram yorumları için Facebook izinlerini güncellemen gerekiyor: aşağıdaki "Facebook izinlerini güncelle"ye bas.`
@@ -541,13 +562,14 @@ Sayfa yine görünmüyorsa çekmeceyi kapatıp "Facebook izinlerini güncelle"ye
 **"Kaldır":** satır anında kalkar; metin: `@mezatdunyasi2 kaldırıldı.`
 
 **"Facebook izinlerini güncelle":**
-1. Durum: `Tarayıcıdan onay bekleniyor... Açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretli bırak; yalnız yenisini işaretlersen eski hesabın bağlantısı düşer.`
+1. Durum: `Tarayıcıdan onay bekleniyor... Açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretli bırak; yalnız yenisini işaretlersen eski hesabın bağlantısı düşer.` Beklerken düğmenin yanında `[İptal]` görünür; "Facebook'a Bağlan", "Facebook izinlerini güncelle" ve "Instagram hesabı ekle" pasiftir (aynı anda tek tarayıcı akışı, §8.2 TK17).
 2. Bağlı Sayfaların hepsi yeni girişte varsa: `Facebook izinleri güncellendi: 2 Sayfa yenilendi.`
 3. Eksik Sayfa varsa kaydetmeden önce onay çekmecesi (`MessageDrawer.ForConfirm`, `OrderDeck.App/Views/Drawers/MessageDrawer.xaml.cs:33`; Evet / Vazgeç): `"Mezat Dünyası" bu girişte paylaşılmadı. Kaydedersen bu Sayfanın yorumları kesilebilir (Facebook yorumları dahil). Vazgeçersen OrderDeck'te hiçbir şey değişmez; "Facebook izinlerini güncelle"ye yeniden basıp tüm Sayfalarını işaretle. Yine de kaydedilsin mi?`
-4. Vazgeçildiyse ya da tarayıcı kapandıysa: `Güncelleme iptal edildi; bağlantı değişmedi.`
-5. Hata: `Güncelleme başarısız: {kısa sebep}`
+4. İptal (`OperationCanceledException`): eksik Sayfa onayında "Vazgeç" ya da beklerken `[İptal]`: `Güncelleme iptal edildi; bağlantı değişmedi.`
+5. Zaman aşımı (`TimeoutException`): `Facebook onayı 5 dakika içinde tamamlanmadı; bağlantı değişmedi. Yeniden dene.` Tarayıcı sekmesinin kapatılması algılanamaz; o durumda kullanıcı `[İptal]`e basar ya da bu metni 5 dakika sonra görür.
+6. Diğer hatalar: `Güncelleme başarısız: {kısa sebep}. Bağlantı değişmedi.` Facebook onay ekranında "İptal"e basmak da buraya düşer (`error=access_denied`, `FacebookOAuthService.cs:330-332`); 4. maddeye değil. Kaydetme tek yazım olduğu için (§8.2 5. adım) bu üç sonuçta da diskteki bağlantı değişmemiştir.
 
-ViewModel eklemeleri: `ObservableCollection<InstagramPageRow> InstagramPages` (PageId, PageName, InstagramText, IsPrimary, CanRemove), `string? InstagramNotice`, `AddInstagramAccountCommand`, `RemoveInstagramAccountCommand`, `ReauthorizeFacebookCommand`, `DismissInstagramNoticeCommand`. `RefreshInstagramStatusAsync` (`:362-414`) tek Sayfa yerine `GetConnectedPagesAsync` üzerinde döner (Sayfa başına `ResolveDetailedAsync`; açılışta N istek, bugün 1).
+ViewModel eklemeleri: `ObservableCollection<InstagramPageRow> InstagramPages` (PageId, PageName, InstagramText, IsPrimary, CanRemove), `string? InstagramNotice`, `AddInstagramAccountCommand`, `RemoveInstagramAccountCommand`, `ReauthorizeFacebookCommand`, `CancelReauthorizeCommand` (bekleyen onayın belirtecini tetikler), `DismissInstagramNoticeCommand`. `RefreshInstagramStatusAsync` (`:362-414`) tek Sayfa yerine `GetConnectedPagesAsync` üzerinde döner (Sayfa başına `ResolveDetailedAsync`; açılışta N istek, bugün 1).
 
 #### 8.6.2 Sohbet satırı etiketi (Ö1, TK11)
 
@@ -571,7 +593,7 @@ Instagram   ● @mezatdunyasi canlı      ▲ @mezatdunyasi2 yanıt yok (18 sn)
 
 - Yer: `ChatPanel.xaml`'de başlık ile liste arasına `Auto` yükseklikli yeni satır (bugün iki satır, `:6-9`). `ItemsControl` + `WrapPanel`; şablon kenar çubuğundaki nokta + metin desenini kullanır (`ShellSidebar.xaml:192-225`).
 - Neden burada: sohbet paneli dar kipte de görünür; kenar çubuğu bölümü dar kipte gizlidir (`ShellSidebar.xaml:183-185`). `ShellBanners`'a şerit eklenmez: geçici şeritler tek hücreyi paylaşır ve üst üste binen iki yarı saydam şerit okunmaz; uzun ömürlü band bu yüzden ayrı satırdadır (`ShellBanners.xaml:4-7`, `:14-19`; `OrderDeck.Tests/App/ShellBannersLayoutTests.cs:14-20`). Sağlık durumu dakikalarca sürebilir.
-- **Görünürlük:** aktif oturum VE (şeride giren hesap sayısı 2 ve üzeri VEYA herhangi biri sarı). Tek hesap + sorun yok = panel bugünküyle aynı.
+- **Görünürlük:** aktif oturum VE (şeride giren hesap sayısı 2 ve üzeri VEYA herhangi biri sarı). Tek hesap + sorun yok = panel bugünküyle aynı. Ek Sayfa varken birincil Sayfa `NotLinked` olsa da şeride girer (§8.5); yani iki Sayfalı kurulumda birincilin Instagram'ı düşünce şerit gizlenmez.
 - Etiket: `@kullanıcıadı`; bilinmiyorsa Sayfa adı. Nokta: yeşil (canlı), soluk (nötr), sarı (uyarı).
 
 | Durum | Metin | İpucu |
@@ -584,11 +606,12 @@ Instagram   ● @mezatdunyasi canlı      ▲ @mezatdunyasi2 yanıt yok (18 sn)
 | Yanıt yok | `@hesap yanıt yok (18 sn)` | `Instagram'dan yanıt alınamıyor, yeniden deneniyor. Yorumlar gecikiyor olabilir.` |
 | Hız sınırı | `@hesap hız sınırı, 21:20'de dener` | `Instagram istek sınırına takıldı. Bu hesabın yorumları o saate kadar gelmeyecek.` |
 | Kalıcı hata | `@hesap bağlantı yenilenmeli` | Poller'ın mesajı + `Ayarlar > Facebook > "Facebook izinlerini güncelle". 21:19'da yeniden denenecek.` |
-| Hesap bilgisi okunamadı | `{Sayfa adı}: hesap bilgisi okunamadı, 21:19'da dener` | `Sayfaya bağlı Instagram hesabı okunamadı.` |
+| Hesap bilgisi okunamadı | `{Sayfa adı}: hesap bilgisi okunamadı, 21:19'da dener` | `Sayfaya bağlı Instagram hesabı okunamadı. Sürerse: Ayarlar > Facebook > "Facebook izinlerini güncelle".` |
 | Instagram hesabı yok (ek Sayfa) | `{Sayfa adı}: Instagram hesabı bağlı değil` | `Bu Sayfaya bir Instagram profesyonel hesabı bağla ya da Sayfayı Ayarlar'dan kaldır.` |
+| Instagram hesabı yok (birincil Sayfa; yalnız ek Sayfa varken şeride girer) | `{Sayfa adı}: Instagram hesabı bağlı değil` | `Birincil Sayfaya bağlı Instagram hesabı görünmüyor. Sayfa ile Instagram hesabının bağını kontrol et; bağ duruyorsa Ayarlar > Facebook > "Facebook izinlerini güncelle"ye basıp tüm hesapları işaretle.` |
 | Bağlanıyor | `@hesap bağlanıyor` | — |
 
-Tabloda "(sarı)" ya da "(nötr)" yazmayan satırların rengi §8.5'teki uyarı kapısına göre belirlenir.
+Tabloda "(sarı)" ya da "(nötr)" yazmayan satırların rengi §8.5'teki uyarı kapısına ve çok hesaptaki kapı muafiyetine göre belirlenir.
 
 - `MainShellViewModel` kurucusuna isteğe bağlı `InstagramHealthMonitor? instagramHealth = null` eklenir (`viewers` ile aynı desen, `:1118`; `AddSingleton<MainShellViewModel>()` olduğu için kendiliğinden çözülür, `AppHost.cs:341`; test koşumları etkilenmez). Yeni üyeler: `ObservableCollection<InstagramAccountStatusViewModel> InstagramAccounts` (Label, StateText, Severity, Tooltip) ve `bool ShowInstagramStatus`. Mevcut 5 sn'lik nabızdan (`UpdateChatHealth` içinde, `RefreshConnections`'ın yanında, `:1349`) tazelenir.
 - Saf sunucu: `InstagramHealthPresenter.Evaluate(snapshot, now, sessionActive)` satırları, şeridin görünürlüğünü, "en az bir hesap canlı" bilgisini ve üst nokta ipucunu döner (§8.5 kuralları burada yaşar).
@@ -621,7 +644,7 @@ BAĞLANTILAR
 
 - **Kişisel veri yok.** İzleyici kullanıcı adı ve yorum metni Information ve üstü düzeyde loglanmaz (bugünkü gibi; süzgeçten düşen yorum yalnız kimliğiyle Debug'da, `InstagramLiveCommentsPoller.cs:308`). Yeni satırlarda yalnız şunlar geçer: PageId, Instagram hesap kimliği, yayıncının kendi hesap kullanıcı adı (bugün de loglanıyor: `InstagramChatHostedService.cs:137-139`, `InstagramAccountResolver.cs:87-89`), durum adları, sayılar.
 - **Token yok.** Token taşıyan kayıtlar `ToString`'te token basmaz (§8.1). `access_token` içeren URL hiçbir log ya da istisna mesajına yazılmaz (§8.2 düzeltmesi); `paging.next` adresi de token taşır, loglanmaz.
-- **Yeni satırlar (Information):** hesap durum geçişleri (hesap, eski → yeni durum, varsa yeniden deneme saati); hesap başına dakikada en çok bir kota satırı (`TryGetUsage` çıktısı: business-id, call_count, total_cputime, total_time); çok hesapta dakikalık kapı özeti (hesap başına tur sayısı ve yanıt süresi p50/p95, ters sıra sayısı ve en büyük fark; PR-B'de ayrıca bariyer aşımı, geç kalan tur ve yavaş kulvar sayıları); hesap ekleme / kaldırma / izin güncelleme sonuçları (PageId ve Sayfa adı).
+- **Yeni satırlar (Information):** hesap durum geçişleri (hesap, eski → yeni durum, varsa yeniden deneme saati); hesap başına dakikada en çok bir kota satırı (`TryGetUsage` çıktısı: business-id, call_count, total_cputime, total_time, estimated_time_to_regain_access; ilk üçü yüzdedir ve satırda `%` ile yazılır, sonuncusu dakikadır; başlık yanıtta yoksa satır bunu söyler); çok hesapta dakikalık kapı özeti (hesap başına tur sayısı ve yanıt süresi p50/p95, ters sıra sayısı ve en büyük fark; PR-B'de ayrıca bariyer aşımı, geç kalan tur ve yavaş kulvar sayıları); hesap ekleme / kaldırma / izin güncelleme sonuçları (PageId ve Sayfa adı).
 - Filtre: `grep -iE "InstagramChatHostedService|InstagramMergeGate|InstagramHealth"`.
 
 ### 8.9 Bilerek dokunulmayanlar
@@ -652,6 +675,7 @@ Kural: testlerde token ve kimlik değeri literal yazılmaz, üretilir (`$"{önek
 - `ListAddablePagesAsync`: `paging.next` izlenir; bağlı olan işaretlenir; Instagram alanı olmayan Sayfa `IgUserId = null`; 190'da `NeedsReauthorize`.
 - `ReauthorizeAsync`: bütün bağlı Sayfaların token'ı yenilenir; birincil değişmez; yeni girişte olmayan Sayfa için `confirmMissing` çağrılır; `false`'ta diske hiçbir şey yazılmaz; `true`'da eksik Sayfanın girdisi silinmez.
 - Eşzamanlı ekle / kaldır kayıp güncelleme üretmez. `DisconnectAsync` her şeyi siler. Boş gövde hatasının mesajında token geçmez.
+- Tarayıcı beklemesi (TK17; dinleyici ve tarayıcı açma dikişiyle, §11.3): geri çağrı gelmezse süre dolunca `TimeoutException` fırlar, diske hiçbir şey yazılmaz ve dinleyici bırakılır (hemen ardından başlatılan akış bağlanabilir); belirteç iptali `OperationCanceledException` üretir ve dinleyiciyi bırakır; bekleyen akış varken ikinci `ConnectAsync` / `ReauthorizeAsync` dinleyiciye dokunmadan reddedilir; `error=access_denied` geri çağrısı `InvalidOperationException` olarak kalır.
 
 **`InstagramLiveCommentsPollerTests` (ek)**
 - Gözlemci `RoundStarting` → `RoundCompleted` sırasını alır; Ok bildirimi yayımlardan sonra gelir.
@@ -660,7 +684,7 @@ Kural: testlerde token ve kimlik değeri literal yazılmaz, üretilir (`$"{önek
 - Devredilen filigranla ilk çekim yutulmaz.
 - PR-B: tempo verilince Ok dalında `WaitAsync` çağrılır; verilmeyince davranış aynıdır.
 
-**`InstagramAccountResolverDetailedTests` (yeni):** Found / NotLinked / Failed ayrımı. **`InstagramGraphErrorTests` (ek):** `TryGetUsage` çok kovalı başlık, kesirli sayı, bozuk JSON.
+**`InstagramAccountResolverDetailedTests` (yeni):** Found / NotLinked / Failed ayrımı. **`InstagramGraphErrorTests` (ek):** `TryGetUsage` çok kovalı başlık, kesirli sayı, bozuk JSON; `estimated_time_to_regain_access` varken ve yokken `MinutesToRegainAccess`.
 
 **`InstagramHealthMonitorTests` (yeni; elle ilerletilen `TimeProvider`):** bütün geçişler; `BroadcastEnded` yalnız canlıdan sonra; `RetryAt`; `Configure` eksiği ekler, fazlayı siler, kalanın durumuna dokunmaz; `ResetSession`; `Snapshot` kopyadır; eşzamanlı yazım.
 
@@ -678,7 +702,7 @@ Zaman `TimeProvider` üzerinden yürür; testler elle ilerletilen bir `TimeProvi
 - K6: B art arda iki turda bariyeri kaçırınca A'nın mesajı artık B için bekletilmez; B bariyer süresi içinde bir tur bitirince yeniden beklenir.
 - K7: `Complete` ve `Dispose` tutulanları eksiksiz basar.
 - TK8: aralıkları farklı iki kulvarda tık kısa olanı izler.
-- `HoldBudget = 0` düz geçiştir.
+- K8: `HoldBudget = 0` iken mesaj tutulmaz **ve** `WaitAsync` düz beklemedir: aralıkları farklı iki kulvar birbirini beklemez, her biri yalnız kendi aralığı kadar bekler (ortak tık yok, TK8 bağı yok).
 
 **`InstagramCommentMergerTests` (yeni, saf):** saniyeye göre sıralı; hesap içi sıra korunur; aynı saniye dönüşümlü ve belirlenimci (aynı girdi → aynı çıktı); başlangıç kulvarı saniyeyle döner; tek girdi özdeşlik; boş partiler.
 
@@ -693,13 +717,15 @@ Zaman `TimeProvider` üzerinden yürür; testler elle ilerletilen bir `TimeProvi
 - Tekten çoka geçişte çalışan hesap yorum kaybetmez (filigran devri).
 - `SessionEnded` bütün poller'ları durdurur. Instagram hesabı olmayan Sayfa ötekini engellemez. Aynı Instagram kimliğine çözülen iki Sayfa → tek poller.
 - Kalıcı hata beklemesi token değişince kesilir.
+- Oturum açıkken liste boşalınca bütün istekler kesilir; liste yeniden dolunca hesap 60 sn beklemeden, izleme aralığı içinde yeniden başlar (üst döngü 4. adım).
+- Çözümleyici önbelleği oturumlar arasında korunur: ikinci oturumda çözümleme isteği yinelenmez (tek hesapta istek sayısı kilidi, AH4).
 
 ### 9.4 Arayüz testleri
 
-- `InstagramHealthPresenterTests` (yeni, saf): her durum için Türkçe metin; yanıtsızlık eşikleri (10 sn / 45 sn) zamana göre türetilir; uyarı kapısı (canlıydı ya da kardeş canlı); 90 sn kuralı ve ölçüm başlangıcı; `BroadcastEnded` yalnız kardeş canlıyken sarı; birincil `NotLinked` şeride girmez; tek hesap sağlıklı → şerit gizli; tek hesap sarı → görünür; iki hesap → görünür; oturum yok → gizli.
+- `InstagramHealthPresenterTests` (yeni, saf): her durum için Türkçe metin; yanıtsızlık eşikleri (10 sn / 45 sn) zamana göre türetilir; uyarı kapısı (canlıydı ya da kardeş canlı); 90 sn kuralı ve ölçüm başlangıcı; `BroadcastEnded` yalnız kardeş canlıyken sarı; tek Sayfa + birincil `NotLinked` → şeride girmez, şerit gizli; iki Sayfa + birincil `NotLinked` → satır ve şerit görünür, öteki hesap canlıyken sarı; iki Sayfa, hiçbiri canlı olmamış, ikisi de kalıcı hatada (ya da "hesap bilgisi okunamadı"da) → iki satır da sarı ve üst nokta bilgisi sarı (kapı muafiyeti); tek Sayfa + hiç canlı olmamış + kalıcı hata → nötr (kapı geçerli); tek hesap sağlıklı → şerit gizli; tek hesap sarı → görünür; iki hesap → görünür; oturum yok → gizli.
 - `MainShellInstagramHealthTests` (yeni, `MainShellTestHarness`): izleyici verilmezse şerit boş ve dört satır aynı; sarı durumda üst nokta sarı ve ipucu hesabı adıyla söyler; düzelince geri döner; Instagram satırı canlıyken yeşil ve sayısız; diğer üç satır aynı.
 - `ChatMessageViewModelTests` (yeni): `AccountTag` null / `@x`; ipucunda Meta saati.
-- `SettingsViewModelTests` (ek): tek Sayfada durum metni bugünkü; iki Sayfada iki satır, birincilde `CanRemove = false`; ekle / kaldır / izin güncelle komutları; aday yokken yönlendirme metni; eksik Sayfa onayı reddedilince hiçbir şey değişmez. `SettingsPage`'in çözülmesi mevcut `Render` yardımcısıyla sınanıyor (`SettingsViewModelTests.cs:666-670`).
+- `SettingsViewModelTests` (ek): tek Sayfada durum metni bugünkü; iki Sayfada iki satır, birincilde `CanRemove = false`; ekle / kaldır / izin güncelle komutları; aday yokken yönlendirme metni; eksik Sayfa onayı reddedilince hiçbir şey değişmez; izin güncellemede iptal, zaman aşımı ve diğer hata üç ayrı metne düşer; onay beklerken üç düğme pasif ve `[İptal]` görünür. `SettingsPage`'in çözülmesi mevcut `Render` yardımcısıyla sınanıyor (`SettingsViewModelTests.cs:666-670`).
 - `MainShellViewCompositionTests` (ek): `ChatPanel` yeni bağlamalarla yüklenir (`:51`); `InstagramAccountAddDrawer` kurulur (mevcut seçici örneği `:140-143`). `UnstyledControlGuardTests` yeni düğme ve seçim öğelerinin stilli olduğunu kendiliğinden denetler.
 
 ### 9.5 Saha / pilot kontrol listesi (otomatik değil)
@@ -707,14 +733,18 @@ Zaman `TimeProvider` üzerinden yürür; testler elle ilerletilen bir `TimeProvi
 Önce: sunucu bayrağı teyidi (§5 madde 7).
 
 1. **Tek hesap regresyon yayını** (yeni sürüm, ikinci hesap eklenmeden): sohbet bugünkü gibi akar; şerit görünmez; kenar çubuğunda Instagram noktası yanar.
-2. **Ekleme:** "Instagram hesabı ekle" listesi yeni Sayfayı gösteriyor mu; göstermiyorsa "Facebook izinlerini güncelle" sonrası gösteriyor mu; Facebook onay ekranında ne göründüğü not edilir (§5 madde 4'teki iki bilinmeyen).
+2. **Ekleme:** "Instagram hesabı ekle" listesi yeni Sayfayı gösteriyor mu; göstermiyorsa "Facebook izinlerini güncelle" sonrası gösteriyor mu; Facebook onay ekranında ne göründüğü not edilir (§5 madde 4'teki iki bilinmeyen). Bir kez de onay sekmesi kapatılır: `[İptal]` akışı bırakıyor mu, ardından yeni akış açılabiliyor mu.
 3. **İki hesapla gerçek yayın:**
    - Sıra: iki hesaba art arda ve aynı anda aynı kod yazılır; ekrandaki sıra ile gerçek sıra karşılaştırılır; loglardaki ters sıra sayısı okunur.
    - Etiket: her Instagram satırında doğru hesap; ipucunda saat.
    - Bir hesabın yayını kapatılır: şeritte "yayın kesildi", üst nokta sarı; öteki hesabın sohbeti kesintisiz.
    - Bir hesabın yayını hiç açılmaz: 90 sn sonra "canlı yayın bulunamadı".
    - Facebook canlı yorum ve sil/banla birincil Sayfada bugünkü gibi çalışır (AH5).
-4. **Kota ölçümü:** loglardaki `X-Business-Use-Case-Usage` satırlarından iki hesabın business-id ve call_count değerleri okunur: sayaç ortak mı, yeni hesabın sınırı düşük mü, başlık her yanıtta geliyor mu.
+4. **Kota ölçümü:** loglardaki `X-Business-Use-Case-Usage` satırlarından iki hesabın business-id, call_count, total_cputime, total_time ve estimated_time_to_regain_access değerleri okunur. Okuma kuralları:
+   - `call_count` çağrı sayısı **değil yüzdedir** ve kayan 1 saatlik pencereyi anlatır; 24 saatlik "4800 × gösterim" formülüyle doğrudan karşılaştırılmaz. `total_cputime` ve `total_time` da yüzdedir (sorgu işleme için ayrılan payın yüzdesi); üç değer de ayrı ayrı not edilir, çünkü kısıtlama çağrı sayısından değil bu ikisinden de gelebilir.
+   - **Sayaç ortak mı:** iki hesabın satırlarındaki business-id aynı mı; yalnız bir hesabın yükü artarken (ör. taşma) öteki hesabın yüzdesi de birlikte artıyor mu. İkisi de evetse kova büyük olasılıkla ortaktır; business-id aynı ama yüzdeler bağımsız hareket ediyorsa ortak değildir.
+   - **Yeni hesabın sınırı düşük mü:** aynı istek temposunda yeni hesabın yüzdesi eskisinden belirgin hızlı mı yükseliyor.
+   - Başlık her yanıtta geliyor mu; taşma anlarında (TK8) yüzde nasıl değişiyor.
 5. **Yanıt süresi:** hesap başına p50/p95; `HoldBudget` (400 ms) bu farkı kapsıyor mu. PR-B'nin varsayılanı bu rakamla kesinleşir.
 6. Yayın sırasında Facebook'a bağlı ve "Yayın Başlat" basılı tek bilgisayar olduğu teyit edilir (her bilgisayar ayrı yoklar; kota yükü katlanır).
 
@@ -723,13 +753,13 @@ Zaman `TimeProvider` üzerinden yürür; testler elle ilerletilen bir `TimeProvi
 - **Sürüm:** yeni bir WPF Velopack sürümü gerekir. Sunucu değişmez, deploy gerekmez. Yerel SQLite göçü yoktur. Uzantı ve overlay değişmez. Panel ve Shopper etkilenmez.
 - **Güncelleme:** göç adımı yok; token dosyası yeniden yazılmaz; mevcut bağlantılar düşmez (AH1).
 - **Eski sürüme dönüş:** token deposu davranışı §8.1'dedir. Özet: eski sürüm birincil Sayfayla bugünkü gibi çalışır; ek hesaplar o sürümde yoklanmaz ve göstergesi yoktur; eski sürümde bağlantı kaldırılmadıkça yeniden yükseltmede ek hesaplar geri gelir. Sürüm notuna yazılır.
-- **Sıralamayı kapatma:** `HoldBudget = 0` (tek sabit) PR-B'yi PR-A davranışına indirir; yeni sürüm gerektirir.
+- **Sıralamayı kapatma:** `HoldBudget = 0` (tek sabit) PR-B'yi PR-A davranışına indirir: mesaj tutma da ortak tık da kapanır (§8.3.6 K8). Yeni sürüm gerektirir. Yalnız ortak tempoyu kapatıp tutmayı açık bırakmak bu sabitle yapılamaz.
 
 **PR planı** (yığılmış değil; her biri sırayla master'a; merge ve sürüm yayın saatleri dışında):
 
 - **PR-A — iki hesabın sohbeti + etiket + sağlık** (hesaplar arası sıra: varış sırası). Acil ihtiyacı tek başına karşılar.
   1. Geriye uyum testleri + demet (`ExtraPages`, `ToString`) + atomik yazım.
-  2. OAuth servisi eklemeleri (listeleme, ekleme, kaldırma, yeniden onay, kilit, hata metni).
+  2. OAuth servisi eklemeleri (listeleme, ekleme, kaldırma, yeniden onay, kilit, hata metni; tarayıcı beklemesinde zaman aşımı, iptal ve tek akış).
   3. `ResolveDetailedAsync`, `TryGetUsage`.
   4. Poller: gözlemci, kota başlığı, filigran parametresi.
   5. `InstagramHealthMonitor`.
@@ -739,7 +769,7 @@ Zaman `TimeProvider` üzerinden yürür; testler elle ilerletilen bir `TimeProvi
   9. Ana ekran: sağlık şeridi, üst nokta, kenar çubuğu noktası; `AppHost` kayıtları.
   10. Ayarlar: liste, ekleme çekmecesi, kaldırma, izin güncelleme.
   11. Pilot (§9.5).
-- **PR-B — hesaplar arası sıra.** Poller tempo kancası, kapıda K1–K7, `InstagramCommentMerger`. `HoldBudget` varsayılanı pilot rakamına göre.
+- **PR-B — hesaplar arası sıra.** Poller tempo kancası, kapıda K1–K8, `InstagramCommentMerger`. `HoldBudget` varsayılanı pilot rakamına göre.
 
 PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak ikiye bölünebilir; motor tek başına birleşirse ikinci hesap eklenemediği için çok hesap yolu uykuda kalır.
 
@@ -747,7 +777,10 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 
 ### 11.1 Sahibe sorular (yalnız Burak cevaplayabilir)
 
-1. İkinci hesap için ayrı bir Facebook Sayfası açıp bağlaman ve iki Sayfayı aynı Facebook kullanıcısıyla yönetmen kesin mi? Tasarımın tamamı buna dayanıyor.
+1. **(Ö6; tasarımın temeli.)** Söylediğin: ikinci Instagram hesabı şu an hiçbir Facebook Sayfasına bağlı değil. Bu tasarım o hesabı ancak bir Sayfaya bağlanırsa okuyabilir. İki yoldan hangisi?
+   - **(a) Sayfa aç ve bağla:** ikinci hesap için ayrı bir Facebook Sayfası açıp Instagram hesabını ona bağlarsın ve iki Sayfayı aynı Facebook kullanıcısıyla yönetirsin (tek Facebook girişi). Bu belge bu yolu varsayar.
+   - **(b) İkinci hesap Sayfasız kalsın:** o zaman bu tasarım geçersizdir. Sayfasız yolda canlı yorum okuma Meta belgesinde yok; yalnız webhook belgeli. Ayrı bir araştırma, sunucu → masaüstü kanalı ve büyük olasılıkla ayrı App Review gerekir; bu iş kısa sürede çıkmaz.
+   - Ara durum: Sayfa açarsın ama ikinci Sayfayı **başka bir Facebook kullanıcısı** yönetir. Bu da kapsam dışıdır (ikinci Facebook girişi); söylersen tasarım ona göre genişletilir.
 2. İki hesapta **aynı mezat** mı yayınlanacak (aynı ürün, aynı kod, tek stok)? Evetse iki sohbet tek akışta birleşir ve "ilk yazan" iki hesap arasında ortaktır (Ö1). Farklı ürünlerse birleşik sıra anlamsızlaşır ve tasarım değişir.
 3. İlk sürüm sıralama olmadan (PR-A: iki hesabın yorumu geldiği sırayla) hemen çıksın mı, yoksa sıralama (PR-B) hazır olana kadar beklensin mi? Sıralama geldiğinde, doğru sıra için Instagram yorumlarının en çok 0,4 sn bekletilmesi kabul mü?
 4. Satırdaki etiket tam Instagram kullanıcı adı mı olsun (uzunsa kırpılır), yoksa senin vereceğin kısa bir ad mı (ör. "Ana", "Yedek")? Kısa ad istersen Ayarlar'a hesap başına bir ad alanı eklenir.
@@ -755,7 +788,16 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 6. Aynı saniyede iki hesaptan aynı kod gelirse gerçek sıra bilinemiyor. Dönüşümlü sıra (önerilen) mı olsun, "şu hesap her zaman önce" mi?
 7. İki yayını aynı anda mı açıyorsun, yoksa ikinciyi dakikalar sonra mı? "Canlı yayın bulunamadı" uyarısı öteki hesap canlı olduktan 90 sn sonra çıkıyor; eşik buna göre ayarlanır. Bazı geceler yalnız tek hesaptan yayın yapacak mısın?
 8. Sunucudaki "!kayıt" bot bayrağı (`InstagramDmBotEnabled`) senin kaydında kapalı mı? Sorguyu ben yazarım, sen çalıştırırsın. Açıksa "Facebook izinlerini güncelle" botu bir Instagram hesabına bağlayabilir.
-9. Instagram kopma şeridi tek hesaplı diğer yayıncılarda da çıksın mı? Önerilen: evet, ama yalnız hesap o oturumda canlıyken koparsa.
+9. **(AH4'ün okuması, TK19.)** Tek hesaplı diğer yayıncılarda sohbetin akışı, gecikmesi ve Instagram'a giden istek sayısı aynı kalıyor. Ama şu yedi şey onlarda da değişiyor (§8.3.2); hepsi kabul mü?
+   - (a) Yayın ortasında "Bağlantıyı Kaldır"a basılırsa Instagram yorumları 2 saniye içinde kesilir (bugün yayın sonuna kadar akıyor). Facebook yorumları bugünkü gibi akmaya devam eder.
+   - (b) Token/izin hatasından sonraki 5 dakikalık bekleme, izinler güncellenince hemen biter.
+   - (c) Kenar çubuğundaki Instagram noktası yayında yeşil yanar (bugün hiç yanmıyor).
+   - (d) Instagram yayını canlıyken koparsa sohbet panelinde bir uyarı şeridi çıkar ve üstteki sohbet noktası sararır.
+   - (e) Ayarlar'da iki yeni düğme görünür ("Instagram hesabı ekle", "Facebook izinlerini güncelle").
+   - (f) Instagram izin uyarısının metni "Bağlantıyı Kaldır + Facebook'a Bağlan" yerine "Facebook izinlerini güncelle"ye yönlendirir.
+   - (g) "Facebook'a Bağlan" tarayıcı onayını 5 dakika bekler, sonra vazgeçer (bugün süresiz bekliyor).
+
+   Önerilen: hepsi evet. "Hayır" dediğin madde yalnız 2 ve üzeri hesap bağlıyken etkin olacak şekilde koşula bağlanır; (e) hariç, çünkü ikinci hesap o düğmelerle ekleniyor.
 10. Yayın sırasında Facebook'a bağlı ve "Yayın Başlat" basılı birden çok bilgisayar oluyor mu? Oluyorsa her biri iki hesabı ayrı ayrı yoklar ve kota yükü katlanır.
 
 ### 11.2 Tasarımcının sahibe sormadan verdiği kararlar
@@ -765,23 +807,27 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 | TK1 | Token deposuna sürüm alanı eklenmez; biçim salt eklemelidir (`ExtraPages`), birincil Sayfa üst düzey alanlarda kalır | §8.1 |
 | TK2 | Depo yazımı atomik yapılır (depo sınıfındaki tek değişiklik); token taşıyan iki kayıtta `ToString` token basmaz | §8.1 |
 | TK3 | Birincil Sayfa yerinde değiştirilemez ve tek başına kaldırılamaz; Facebook yorum ve moderasyon hep birincilden çalışır | §8.2 |
-| TK4 | Yeniden onay ayrı bir akıştır: ekleri korur, birincili değiştirmez, eksik Sayfada kaydetmeden önce onay ister; `ConnectAsync` dışarıdan aynı kalır | §8.2 |
+| TK4 | Yeniden onay ayrı bir akıştır: ekleri korur, birincili değiştirmez, eksik Sayfada kaydetmeden önce onay ister; `ConnectAsync` dışarıdan aynı kalır (tek fark TK17'deki zaman aşımı) | §8.2 |
 | TK5 | Hesap ekleme tarayıcısızdır ve ayrı bir çekmeceyle yapılır; mevcut Sayfa seçiciye dokunulmaz | §8.2, §8.6.1 |
 | TK6 | Tek hesapta poller doğrudan ChatBus'a yazar; kapı kurulmaz, etiket basılmaz | §8.3.2 |
 | TK7 | Sıra iki PR'da gelir: önce varış sırası + ölçüm, sonra ortak tık + 400 ms bariyer; 2,5 sn'lik tutma tamponu seçilmedi | §7.3, §8.3.5–6 |
 | TK8 | Ortak tık en hızlı isteyen hesabı izler (taşmada iki hesap da sıklaşır) | §8.3.6 |
-| TK9 | Sağlık yüzeyi sohbet paneli şeridi + üst nokta + kenar çubuğu noktasıdır; `ShellBanners`'a şerit eklenmez. Uyarı yalnız hesap canlıydıysa ya da başka hesap canlıysa sarı olur | §8.5, §8.6.3–4 |
+| TK9 | Sağlık yüzeyi sohbet paneli şeridi + üst nokta + kenar çubuğu noktasıdır; `ShellBanners`'a şerit eklenmez. Uyarı yalnız hesap canlıydıysa ya da başka hesap canlıysa sarı olur. **Doğrulama düzeltmesi (AH3):** 2 ve üzeri Sayfada "kalıcı hata" ve "hesap bilgisi okunamadı" bu kapıdan muaftır (her zaman sarı); birincil `NotLinked` yalnız ek Sayfa yokken şeritten gizlenir | §8.5, §8.6.3–4 |
 | TK10 | Eşikler: yanıtsızlık 10 sn (canlıyken) / 45 sn (beklerken); "canlı yayın bulunamadı" 90 sn | §8.5 |
 | TK11 | Etiket tam Instagram kullanıcı adıdır, satırın sağına yaslıdır; ipucunda Meta saati vardır | §8.6.2 |
 | TK12 | Tekrar süzgecine dokunulmaz: aynı izleyici + aynı metin 2 sn içinde iki hesapta tek satırdır | §8.7 |
 | TK13 | En çok 4 Sayfa | §8.2 |
-| TK14 | Hesap listesi değişimi PageId farkıyla işlenir; tekten çoka geçişte filigran devredilir; hesap kaldırma yoklamayı en geç 2 sn'de durdurur | §8.3.2–3 |
+| TK14 | Hesap listesi değişimi PageId farkıyla işlenir; tekten çoka geçişte filigran devredilir; hesap kaldırma yoklamayı en geç 2 sn'de durdurur. **Doğrulama düzeltmesi:** oturum açıkken liste boşalırsa üst döngü 60 sn'ye düşmez, 2 sn'lik izlemede kalır | §8.3.2–3 |
 | TK15 | Hesap çözülemediğinde ya da yokken bekleme bugünkü 5 dk kalır | §8.3.2 |
 | TK16 | Kalıcı hata beklemesi o Sayfanın token'ı değişince kesilir | §8.3.2 |
+| TK17 | Tarayıcı onayı beklemesi 5 dakikada zaman aşımına uğrar ("Facebook'a Bağlan" dahil); izin güncellemede arayüzden iptal vardır; aynı anda tek tarayıcı akışı çalışır. `error=access_denied` eşlemesi değiştirilmez | §8.2, §8.6.1 |
+| TK18 | `HoldBudget = 0` yalnız tutmayı değil ortak tıkı da kapatır (`WaitAsync` düz bekleme); PR-B'den PR-A davranışına tek sabitle dönülür | §8.3.6 K8, §10 |
+| TK19 | AH4 "yoklama yolu, sohbet akışı, gecikme ve Graph yükü değişmez" diye okunur; tek hesapta da görünen yedi davranış değişikliği sayılıdır ve sahibe sorulur | §4, §8.3.2, §11.1 soru 9 |
 
 ### 11.3 İnşaatçıya bırakılanlar
 
-- Birleştirme kapısının iç yapısı (kilit, zamanlayıcı, veri yapıları); K1–K7 ve §9.2 testleri bağlayıcıdır.
+- Birleştirme kapısının iç yapısı (kilit, zamanlayıcı, veri yapıları); K1–K8 ve §9.2 testleri bağlayıcıdır.
+- `AcquireUserTokenAsync`'in test dikişi (dinleyici ve tarayıcı açma soyutlaması, zaman aşımı süresinin testte kısaltılması) ve "tek tarayıcı akışı" korumasının biçimi; §8.2'deki üç kural ve §9.1 testleri bağlayıcıdır.
 - Üst döngünün hesap döngülerine "liste değişti / token değişti" bilgisini nasıl ilettiği (ortak iptal kaynağı, sinyal ya da 2 sn'lik yoklama).
 - Sağlık ve kulvar gözlemcilerinin poller'a tek gözlemci olarak nasıl birleştirildiği.
 - Hosted service'in test dikişi (süreleri taşıyan iç seçenek kaydı).
@@ -793,20 +839,23 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 ## 12. Riskler ve bilerek yapılmayanlar
 
 - **R1. Meta onay kapsamı (doğrulanmadı).** Sonradan açılan Sayfa saklı girişle görünmeyebilir; o zaman tarayıcılı izin güncellemesi şarttır. O ekranda eski Sayfanın işareti kaldırılırsa erişimi düşebilir. Önlemler: uyarı metinleri, kaydetmeden önce eksik Sayfa onayı, birincilin kaymaması, eksik girdinin silinmeyip sağlıkta görünmesi. "Vazgeç" Meta'daki izni geri getirmez.
-- **R2. Kota.** Sayaç uygulama + kullanıcı çiftine özelse iki hesap aynı kovayı tüketir. Formül gösterime bağlı olduğundan yeni ikinci hesapta sınır düşük olabilir. Otomatik fren yoktur; sınıra giren hesap dakikalarca susar ve bu görünür. Başlığın her yanıtta gelip gelmediği doğrulanmadı.
-- **R3. Ortak tıkın yük bağı (TK8).** Sürekli taşmada sakin hesabın istek sayısı yaklaşık 3 katına çıkar. Hakemlerden biri buna itiraz etti. Pilotta ölçülür; sorun çıkarsa kulvarların kendi aralığıyla yoklanması ayrı bir değişiklik olur ve bedeli taşma sırasında sıra güvencesinin gevşemesidir.
+- **R2. Kota.** Sayaç uygulama + kullanıcı çiftine özelse iki hesap aynı kovayı tüketir. Formül gösterime bağlı olduğundan yeni ikinci hesapta sınır düşük olabilir. Otomatik fren yoktur; sınıra giren hesap dakikalarca susar ve bu görünür. Başlığın her yanıtta gelip gelmediği doğrulanmadı. Tek önlem pilot ölçümüdür ve ölçüm yanlış birimle okunursa sonuç da yanlış çıkar: başlıktaki `call_count` sayaç değil, kayan 1 saatlik pencerenin yüzdesidir; kısıtlama `total_cputime` / `total_time` üzerinden de gelebilir (okuma kuralları §9.5 madde 4).
+- **R3. Ortak tıkın yük bağı (TK8).** Sürekli taşmada sakin hesabın istek sayısı yaklaşık 3 katına çıkar. Hakemlerden biri buna itiraz etti. Pilotta ölçülür. Sorun çıkarsa iki yol vardır: (a) tek sabitle tam geri dönüş: `HoldBudget = 0` hem tutmayı hem ortak tıkı kapatır (§8.3.6 K8), sıralama da gider; (b) tutmayı açık bırakıp kulvarları kendi aralığıyla yoklamak: bu ayrı bir değişikliktir (tek sabitle yapılamaz) ve bedeli taşma sırasında sıra güvencesinin gevşemesidir. PR-A'da ortak tempo hiç yoktur.
 - **R4. Sıra kesinliği.** §8.3.6 G2–G3. Aynı saniyede iki hesaptan gelen aynı kodda operatör yanlış kişiye satabilir; elindeki tek bilgi ipucundaki saattir. PR-A'da hesaplar arası sıra hiç kurulmaz.
 - **R5. `HoldBudget` tahmindir.** Gerçek yanıt süreleri ölçülmedi; pilot rakamına göre ayarlanır.
 - **R6. Eski sürüme dönüş.** Ek hesaplar sessizce yoklanmaz. Serileştirici davranışı repo dışı betikle doğrulandı; CI testi yazılmadan birleştirilmez.
 - **R7. Yeniden onaydan sonra eski Sayfa token'ı (doğrulanmadı).** Geçersizleşirse sağlam hesap bir kez kalıcı hatayla çıkar ve yeni token'la hemen yeniden kurulur; yeni poller'ın ilk çekimi yutulur (birkaç saniyelik yorum kaybolabilir).
-- **R8. Çözümleme hatasında 5 dk (TK15).** Yayın başındaki tek bir ağ hatası o hesabı 5 dk bekletir. Tek hesap davranışı aynı kalsın diye değiştirilmedi; şeritte görünür.
+- **R8. Çözümleme hatasında 5 dk (TK15).** Yayın başındaki tek bir ağ hatası o hesabı 5 dk bekletir. Tek hesap davranışı aynı kalsın diye değiştirilmedi. İki ve üzeri Sayfada şeritte sarı görünür (§8.5 kapı muafiyeti); tek Sayfalı kurulumda uyarı kapısı gereği (hesap o oturumda henüz canlı olmadı) şerit çıkmaz, bugünkü gibi yalnız loglanır.
 - **R9. Oturum başında 60 sn'ye kadar geç başlama.** Mevcut davranış; iki hesap birlikte başlar ama yayının ilk dakikasındaki yorumlar kaçabilir. Bu tasarım değiştirmiyor.
 - **R10. Kullanıcı token'ı yaklaşık 60 günde ölür ve `ExpiresAt` hiçbir yerde okunmuyor.** Tarayıcısız ekleme o zaman "izinleri güncelle"ye düşer. Sayfa token'ları çalışmayı sürdürdüğü için önceden fark edilmeyebilir. Süre dolmadan uyarı bu tasarımda yok.
 - **R11. Sohbet hacmi iki katına çıkar.** Liste 500 satır (`MainShellViewModel.cs:102`), bekleyen kuyruk 1000'de en eskiyi atar (`:1240`, `:1263`). Sınırlar değişmiyor.
 - **R12. `live_media` için Sayfa token'ı belgeli değil.** İkinci Sayfada çalışmazsa o hesap "bağlantı yenilenmeli" olarak görünür; öteki etkilenmez.
-- **R13. Tek hesaplı kurulumlarda görünür değişiklikler** (yoklama temposu ve yükü aynı kalır): kenar çubuğunda Instagram noktası artık yayında yanar; Ayarlar'da iki yeni düğme çıkar; canlıyken kopan hesap için şerit ve sarı üst nokta görünür; yayın ortasında bağlantı kaldırma yoklamayı durdurur.
+- **R13. Tek hesaplı kurulumlarda görünür değişiklikler** (yoklama temposu ve yükü aynı kalır; AH4'ün dar okuması, TK19). Tam liste §8.3.2 "Bilerek değişen davranışlar"dadır, yedi madde: yayın ortasında bağlantı kaldırma yoklamayı 2 sn'de durdurur; kalıcı hata beklemesi token yenilenince kesilir; kenar çubuğunda Instagram noktası yayında yanar; canlıyken kopan hesap için şerit ve sarı üst nokta görünür; Ayarlar'da iki yeni düğme çıkar; izin uyarısının metni yeni düğmeye yönlenir; tarayıcı onayı 5 dakikada zaman aşımına uğrar. En ağır sonuç ilkindedir: yayın ortasında "Bağlantıyı Kaldır" + "Facebook'a Bağlan" yapan operatör bugün Instagram sohbetini kaybetmezken yeni sürümde tarayıcı onayı boyunca kaybeder ve yeni poller'ın ilk çekimi yutulur; Facebook yorumları ise akmaya devam eder (iki platform farklı davranır). Sahip onayı §11.1 soru 9'da.
 - **R14. N > 2 yalnız kâğıt üzerinde.** Tasarım 4 hesaba kadar geneldir ama yalnız 2 hesapla doğrulanacak.
 - **R15. OrderDeck dışı.** İkinci hesabın canlı yayın açma koşulları ve aynı içeriğin iki hesaba aynı anda verilmesi Meta tarafında doğrulanmadı.
+- **R16. Birincil `NotLinked` kuralının bedeli ve kalan boşluk.** Ek Sayfa varken birincil `NotLinked` şeride girer (§8.5, AH3). Bedeli: birincil Sayfası bilerek Instagram'sız olan ve Instagram'ı yalnız ek Sayfadan okuyan bir kurulumda bu satır, ek hesap canlıyken her yayında sarı görünür (yanlış alarm). Çözümleyici "hiç bağlı olmadı" ile "bağ düştü"yü ayıramadığı ve depo biçimi değişmediği için bu ayrım yapılamıyor. Böyle bir kurulum bugün yok (Instagram bugün yalnız birincil Sayfadan okunuyor) ve Burak'ın durumu değil; ortaya çıkarsa "bu Sayfada Instagram beklenmiyor" işareti ayrı bir iştir. Kalan boşluk: iki Sayfa da oturum başından `NotLinked` ise hiçbir hesap canlı olmadığı için satırlar sararmaz; şerit iki nötr satırla görünür.
+- **R17. Ö6 varsayımı.** Tasarımın tamamı, ikinci hesabın ayrı bir Sayfaya bağlanacağına ve iki Sayfayı aynı Facebook kullanıcısının yöneteceğine dayanır; Burak bunu söylemedi (§3.1, §11.1 soru 1). Varsayım tutmazsa bu belgenin §7.1 kararı ve ona bağlı §8 geçersizdir.
+- **R18. Tarayıcı sekmesinin kapatılması algılanamaz.** Kullanıcı Facebook onay sekmesini kapatırsa OrderDeck bunu bilemez; akış `[İptal]`e basılana ya da 5 dakikalık zaman aşımına kadar bekler ve o sürede yeni bir akış başlatılamaz (§8.2 TK17). "Facebook'a Bağlan"da arayüzden iptal yoktur; yalnız zaman aşımı vardır.
 
 ## 13. Tasarım incelemesi — hakem bulguları eşlemesi
 
@@ -816,7 +865,7 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 
 | Aşı | Kaynak | Yer |
 |---|---|---|
-| `ResolveDetailedAsync`; birincilde "hesap yok" sessiz | sıra | §8.3.4, §8.5 |
+| `ResolveDetailedAsync`; birincilde "hesap yok" sessiz (doğrulamada daraltıldı: yalnız ek Sayfa yokken) | sıra | §8.3.4, §8.5 |
 | Uyarı kapısı; 90 sn "canlı yayın bulunamadı"; `WasLiveThisSession` | operatör | §8.5 |
 | "Yayın bitti" yalnız kardeş canlıyken sarı | sıra | §8.5 |
 | Ekleri koruyan yeniden onay + eksik Sayfa onayı | sıra + operatör | §8.2 |
@@ -839,7 +888,7 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 
 | Bulgu | Sonuç |
 |---|---|
-| Kazanan: yalnız Facebook kullanan kuruluma her yayında sarı şerit | Düzeltildi: birincil `NotLinked` şeride girmez; çözümleyicinin üç durumu ayrıldı |
+| Kazanan: yalnız Facebook kullanan kuruluma her yayında sarı şerit | Düzeltildi: tek Sayfalı kurulumda birincil `NotLinked` şeride girmez (ek Sayfa varken girer, §8.5); çözümleyicinin üç durumu ayrıldı |
 | Kazanan: "hesap yok" ile "çağrı düştü" aynı metin | Düzeltildi: `ResolveFailed` ayrı durum, ayrı metin |
 | Kazanan: hiç canlı olmamış ikinci hesap nötr kalıyor | Düzeltildi: 90 sn kuralı |
 | Kazanan: yeniden bağlanma ekleri siliyor; tek Sayfa otomatik seçimi (`FacebookOAuthService.cs:201-202`) birincili kaydırabiliyor | Düzeltildi: `ReauthorizeAsync` o dalı kullanmaz; `ConnectAsync` yalnız bağlı değilken erişilir |
@@ -864,3 +913,17 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
 | Keşif: tekrar süzgeci "varsayılan kapalı" | Yanlış; varsayılan açık (`SpamFilterSettings.cs:14`, `:19`). §8.7 buna göre yazıldı |
 
 **Hakemlerin ayrıştığı ve bu belgenin karar verdiği yerler:** sıralama mekanizması (TK7), taşmada ortak tempo (TK8), kenar çubuğuna dokunup dokunmamak (§8.6.4'teki dar biçim). Ortak tıkın poller'a tempo kancasıyla bağlanması (§8.3.6 bağlama notu) hakemlerin önerdiği iki bağlamadan farklıdır ve hakem incelemesinden geçmemiştir; plan aşamasında gözden geçirilmelidir.
+
+**Doğrulama düzeltmeleri (16.11.2026).** Bağımsız bir doğrulayıcının altı bulgusu (ikincisi iki parça; aşağıda yedi satır) kodda ve Meta belgesinde yeniden bakılarak işlendi; hepsi gerçek çıktı, reddedilen yok.
+
+| Bulgu | Sonuç |
+|---|---|
+| "KESİN" başlığı altında Burak'ın söylemediği plan (ayrı Sayfa + tek Facebook kullanıcısı) | Düzeltildi: §3.1'de yalnız söylenen kaldı; plan Ö6 varsayımı olarak §3.2'ye taşındı; §4, §5, §7.1 işaretlendi; soru 1 alternatifiyle soruyor; R17 |
+| AH3: iki Sayfalı kurulumda birincil `NotLinked` şeritten gizleniyor, şerit de kapanıyor | Düzeltildi: gizleme yalnız ek Sayfa yokken (§8.5, §8.6.1, §8.6.3); test eklendi (§9.4); bedeli R16 |
+| AH3: iki hesap da oturum başından bozuksa hiçbir şey sararmıyor | Düzeltildi: 2 ve üzeri Sayfada "kalıcı hata" ve "hesap bilgisi okunamadı" kapıdan muaf (§8.5). Kodda bakınca geçersiz token'ın oturum başında poller'a değil çözümlemeye takıldığı görüldü; muafiyet bu yüzden ikisini de kapsar, §8.2 5. adımdaki metin iddiası da düzeltildi |
+| AH4: "davranış değişmez" derken tek hesapta altı davranış değişiyor; sahibe yalnız biri soruluyor | Gecikme ve yük iddiası doğru. Metin düzeltildi: AH4'ün dar okuması açıkça yazıldı (TK19), değişiklikler tek listede (§8.3.2; zaman aşımıyla yedi), soru 9 hepsini soruyor, R13 tam. Liste boşalınca üst döngünün davranışı ve Facebook–Instagram farkı yazıldı |
+| `HoldBudget = 0` "PR-A davranışı" iddiası tutmuyor (ortak tık ve TK8 bağı sürüyor) | Düzeltildi: K8 eklendi (kapalı kipte `WaitAsync` düz bekleme), §9.2 testi, §10 ve R3 buna göre (TK18) |
+| Tarayıcının kapandığı algılanamıyor; bekleme süresiz; `access_denied` "iptal"e değil "hata"ya düşüyor | Düzeltildi: zaman aşımı + arayüzden iptal + tek tarayıcı akışı (§8.2 TK17); arayüz metinleri üç ayrı sonuca ayrıldı (§8.6.1); testler (§9.1, §9.4); R18 |
+| Kota başlığındaki `call_count` sayaç değil, 1 saatlik pencerenin yüzdesi | Düzeltildi: §5, §8.3.4 (alan adları `...Percent`, `MinutesToRegainAccess`), §8.8, §9.5 madde 4, R2. Meta sayfası 16.11.2026'da yeniden okundu: üç oran da yüzde |
+
+Aynı okumada bulunan ek düzeltme: hesap çözümleyicisinin önbelleği bugün oturumlar arasında korunuyor (`InstagramChatHostedService.cs:96-99`); hesap başına çözümleyici oturum başına yeniden kurulsaydı tek hesapta oturum başına bir Graph isteği eklenirdi. §8.3.2'ye "çözümleyiciler servis ömrünce yaşar" kuralı ve §9.3'e testi eklendi.
