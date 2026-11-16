@@ -209,6 +209,8 @@ public sealed class PaymentRequestService
     /// yeniden okunan tutar, bakiyeden önce kira (<c>begin</c>; fail-closed) ve her çıkışta <c>finish</c>. Yalnız girişte ve
     /// çıkışta çağrılır, ödeme işinin durum makinesi değişmez; yerel kip Off'ta hiçbir şey yapmaz. DI verir; null yalnız
     /// testlerde (bugünkü yol).</param>
+    /// <param name="customerPull">Spec 2026-10-11 §6.1-b (K2): 409 customer-not-synced'te fire-and-forget müşteri senkron turu
+    /// (önce gönderim, sonra çekme). DI verir; null yalnız testlerde (tur yok).</param>
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
@@ -221,7 +223,8 @@ public sealed class PaymentRequestService
         CustomerRepository? customers = null,
         CustomerBusySet? busy = null,
         PaymentOffRecordWriter? offRecords = null,
-        PaymentLeaseCoordinator? lease = null)
+        PaymentLeaseCoordinator? lease = null,
+        CustomerChangesPullService? customerPull = null)
     {
         _settingsStore = settingsStore;
         _messageBuilder = messageBuilder;
@@ -235,7 +238,22 @@ public sealed class PaymentRequestService
         _busy = busy;
         _offRecords = offRecords;
         _lease = lease;
+        // Yöntem grubu: PullOnceAsync Task<CustomerPullOutcome> döner, temsilci Task bekler (dönüş türü kovaryansı).
+        // Temsilcinin Target'ı DI'ın tekil örneğidir — tek tur kilidi yalnız tek örnekte geçerli.
+        if (customerPull is not null) CustomerTour = customerPull.PullOnceAsync;
     }
+
+    /// <summary>customer-not-synced'in tetiklediği müşteri senkron turu (ctor: <see cref="CustomerChangesPullService.PullOnceAsync"/>;
+    /// spec 2026-10-11 §6.1-b). Null = tur yok. Testler kendi turunu verir.</summary>
+    internal Func<CancellationToken, Task>? CustomerTour { get; set; }
+
+    /// <summary>Son başlatılan tur (yoksa tamamlanmış görev). Akış BEKLEMEZ ve okumaz; yalnız testler bekler.</summary>
+    internal Task LastCustomerTour { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Tur sayacı (spec §6.1-b: "tur kilidi üst üste binmeyi önler; bekleyen bir tetik varken yenisi eklenmez"):
+    /// 0 = boşta, 1 = bir tur koşuyor, 2 = bir tur koşuyor ve bir tur sırada (bekleyen). Yalnız <see cref="Interlocked"/>
+    /// ile değişir. <see cref="CustomerChangesPullService.PullOnceAsync"/> tur kilidini BEKLER (düşürmez); kural buradadır.</summary>
+    private int _customerTourPending;
 
     // License key → Guid LicenseId resolution. Aynı pattern CustomerChangesPullService /
     // WpfCustomerProjectionSync'te de var. Caching: LicenseKey değişene kadar tutar.
@@ -356,6 +374,14 @@ public sealed class PaymentRequestService
     /// <see cref="PaymentPerson.RecipientPaysActive"/>) — kart ve rapor farklı satırları kiralasa da aynı
     /// toplam. KVKK silmesi boşaltılmış satırı bırakmış olabilir — silinmiş kişinin eski telefonuna
     /// mesaj gitmez.</para>
+    ///
+    /// <para>Spec 2026-10-11 §6.1-b (K2): koşu <see cref="PaymentRequestResult.BalanceNotSynced"/> dönerse (havuz kipi;
+    /// sunucu kişinin bir üyesini henüz tanımıyor) bir müşteri senkron turu (<see cref="CustomerTour"/>) arka planda
+    /// başlatılır ve BEKLENMEZ. Tetik koşu döndükten SONRADIR: kişi kilitleri ve müşteri kirası bırakılmıştır — kira
+    /// tutulurken çekilen öğe o üyeye düşseydi müşteri akışı onu meşgul sayıp turu o öğede durdururdu. Koşu başına tek
+    /// sonuç olduğundan önizlemenin ya da apply'ın (SettleAsync'in anında tekrarı dahil; spec 2026-10-13 §6.6, W3-11)
+    /// 409'u tek tetiktir. Tur koşarken gelen tetik bir tur sıraya alır; bekleyen bir tur varken yenisi eklenmez
+    /// (<see cref="TriggerCustomerTour"/>).</para>
     /// </summary>
     /// <param name="productTotalFor">Kira altında okunan GÜNCEL kişiyle çağrılır ve kişinin ürün
     /// toplamını döner (kart: üyelerin yayın/kümülatif toplamı; rapor: üyelerin yayın toplamı — ikisi
@@ -381,6 +407,8 @@ public sealed class PaymentRequestService
             var run = new LeaseRun();
             var outcome = await RequestPaymentOnceAsync(
                 customer, productTotalFor, streamDate, scopeKey, confirmedTokens, retried, modeOnTotal, run, ct);
+            // Spec §6.1-b: kişi kilitleri ve müşteri kirası burada bırakılmıştır — tur beklenmez.
+            if (outcome.Result == PaymentRequestResult.BalanceNotSynced) TriggerCustomerTour();
             var retry = run.Flow?.PendingRetry ?? PaymentLeaseRetry.None;
             if (retry == PaymentLeaseRetry.None) return outcome;
 
@@ -388,6 +416,67 @@ public sealed class PaymentRequestService
             if (stop is not null) return stop with { OwnerId = outcome.OwnerId };
             if ((retry & PaymentLeaseRetry.ModeOffRound) != 0) modeOnTotal = run.Flow!.BegunProductTotal;
             retried |= retry;
+        }
+    }
+
+    /// <summary>Spec 2026-10-11 §6.1-b: customer-not-synced'in müşteri senkron turunu arka planda başlatır (fire-and-forget;
+    /// iş parçacığı havuzunda — müşteri akışı arayüz iş parçacığında koşmamalı). Tur kilidi üst üste binmeyi önler; bekleyen
+    /// bir tetik varken yenisi eklenmez (<see cref="_customerTourPending"/>): boştaysa (0→1) tur başlar; tur koşuyorsa
+    /// (1→2) bir tur sıraya alınır — koşan tur gönderim aşamasını geçmiş olabilir, bu PC'nin yeni birleştirmesini/ayırmasını
+    /// sıradaki tur gönderir; bir tur zaten sıradaysa (2) tetik düşer. Sıradaki tur aynı görevin döngüsünde, koşan bitince
+    /// koşar. Tur akışın iptalinden bağımsız yaşar (<see cref="CancellationToken.None"/>; tıklama bitince akışın belirteci
+    /// geçersiz). Turun hatası yutulur ve Warning olarak yazılır (yalnız istisna; ad, telefon yok) — akışı düşürmez,
+    /// sonraki 409 yeniden tetikler.</summary>
+    private void TriggerCustomerTour()
+    {
+        var tour = CustomerTour;
+        if (tour is null) return;
+        while (true)
+        {
+            int state = Volatile.Read(ref _customerTourPending);
+            if (state == 2)
+            {
+                _log?.LogDebug("customer-not-synced: bir müşteri senkron turu zaten sırada — yeni tetik eklenmedi");
+                return;
+            }
+            // Yarışta (başka tetik ya da biten tur sayacı değiştirdi) yeniden okunur.
+            if (Interlocked.CompareExchange(ref _customerTourPending, state + 1, state) != state) continue;
+            if (state == 1)
+            {
+                _log?.LogDebug("customer-not-synced: müşteri senkron turu koşuyor — bir tur sıraya alındı");
+                return;
+            }
+            break;   // 0 → 1: tur bu tetikle başlar
+        }
+        LastCustomerTour = Task.Run(async () =>
+        {
+            try
+            {
+                do
+                {
+                    try { await tour(CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception ex) { _log?.LogWarning(ex, "customer-not-synced'in tetiklediği müşteri senkron turu başarısız"); }
+                }
+                while (TakeQueuedCustomerTour());
+            }
+            catch
+            {
+                // Yalnız günlük yazıcısı fırlatırsa buraya düşülür: sayaç kilitli kalmasın, sonraki 409 yeniden tetiklesin.
+                Volatile.Write(ref _customerTourPending, 0);
+                throw;
+            }
+        });
+    }
+
+    /// <summary>Bir tur bitince çağrılır. true: sırada bir tur vardı (2→1), aynı görev bir tur daha koşar. false: sıra boş
+    /// (1→0), sonraki tetik yeni tur başlatır. İki karşılaştır-değiştir arasında bir tetik 1'i 2 yapabilir; döngü yeniden
+    /// dener (tur koşarken sayaç yalnız 1 ya da 2'dir, biri mutlaka tutar).</summary>
+    private bool TakeQueuedCustomerTour()
+    {
+        while (true)
+        {
+            if (Interlocked.CompareExchange(ref _customerTourPending, 1, 2) == 2) return true;
+            if (Interlocked.CompareExchange(ref _customerTourPending, 0, 1) == 1) return false;
         }
     }
 
