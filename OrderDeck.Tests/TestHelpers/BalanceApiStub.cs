@@ -48,8 +48,11 @@ public sealed class BalanceApiStub : HttpMessageHandler
     /// <c>PanelCustomerBalanceController.cs:87</c>).</summary>
     public bool PanelFails { get; set; }
 
-    /// <summary>Panel bakiye okumasında istenen Id'ler (yolun segmenti), sırayla.</summary>
-    public List<Guid> PanelBalanceRequests { get; } = new();
+    /// <summary>Panel bakiye okumasında istenen Id'ler (yolun segmenti), sırayla — kilit altında alınmış anlık
+    /// görüntü. Kartın <c>Load</c>'u kendi bakiye isteğini ateşle-unut başlatır; test okurken arka plan isteği
+    /// listeye yazıyor olabilir (kilitsiz okuma yarım eklenmiş öğeyi, <c>Guid.Empty</c>'yi görebilirdi).</summary>
+    public IReadOnlyList<Guid> PanelBalanceRequests { get { lock (_sync) return _panelBalanceRequests.ToArray(); } }
+    private readonly List<Guid> _panelBalanceRequests = new();
 
     public LicenseApiClient Client() =>
         new(new HttpClient(this) { BaseAddress = new Uri("https://stub") }, new LicenseTokenStore());
@@ -113,7 +116,7 @@ public sealed class BalanceApiStub : HttpMessageHandler
             List<(Guid WpfCustomerId, decimal Balance, bool Purged)> members;
             lock (_sync)
             {
-                PanelBalanceRequests.Add(id);
+                _panelBalanceRequests.Add(id);
                 members = new(PanelMembers);
             }
             if (PanelFails)

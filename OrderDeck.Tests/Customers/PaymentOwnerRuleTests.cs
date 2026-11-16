@@ -110,7 +110,9 @@ public sealed class PaymentOwnerRuleTests
         var ba = new PaymentPerson(b, new[] { new PaymentPersonMember(b, null, false), new PaymentPersonMember(a, null, false) });
 
         ab.MemberKey.Should().Be(ba.MemberKey);
-        ab.OwnerId.Should().Be(ba.OwnerId);
+        ab.OwnerId.Should().BeNull("üyeler Platform/Username taşımaz, gönderilebilir değil: sahip yok — sahip eşitliği "
+            + nameof(Kisi_anahtari_ve_sahip_gonderilebilir_uyelerle_sirasindan_bagimsizdir) + "'de sınanır");
+        ba.OwnerId.Should().BeNull("aynı gerekçe, ters sıra");
     }
 
     // Ortak bakiye §6.1-a: sahip, gönderilebilir (Platform/Username dolu) üyeler arasında da sıradan bağımsız.

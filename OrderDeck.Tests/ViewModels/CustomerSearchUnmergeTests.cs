@@ -351,13 +351,12 @@ public sealed class CustomerSearchUnmergeTests : IDisposable
         var ig = Satir("instagram");
         var tt = Satir("tiktok", phone: true);
         var kart = Kart(vm, ig, tt);
-        _stub.PanelMembers.Add((G(ig), 70m, false));
+        // İstemci yok: sunucuya gidilemez — sorusuz yol senkron bitişle ve sorunun yokluğuyla sınanır.
 
         vm.UnmergeGroupCommand.Execute(kart);
 
         Ayrildi(ig).Should().BeTrue("Execute döndüğünde ayrılmış: await edilecek iş yok");
         Ayrildi(tt).Should().BeTrue();
-        _stub.PanelBalanceRequests.Should().BeEmpty();
         _dialogs.Confirmations.Should().BeEmpty();
     }
 }

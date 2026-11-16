@@ -155,17 +155,31 @@ public partial class PaymentRequestServiceTests
             var (sut, handler) = KisiSut(db);
             handler.PreviewBalance = 100m;
             var yeniGrup = Guid.NewGuid().ToString("N");
+            // Olay sırası: kancanın ilk koşusu ve önizlemenin stub'a varışı aynı sayaçtan numara alır. OnPreviewAsync stub'ın
+            // önizleme memberIds'ini kaydettiği kilidin hemen ardından, aynı istekte koşar.
+            var sayac = 0;
+            int? kancaSira = null, onizlemeSira = null;
             // 4. adımın kapsam sorgusu (önizlemeden ve apply'dan önceki son ağ beklemesi) sürerken çekme turu iner: a'nın
             // yerel GroupId'si x'inkiyle aynı yeni gruba yazılır (PC-B a'yı {a, b}'den ayırıp x'le birleştirdi). Kanca
             // her kapsam sorgusunda koşar (aynı yazım, eş etkili); iz yok → 204.
             handler.ScopeResponseFor = _ =>
             {
                 GrubaAl(db, yeniGrup, a, x);
+                kancaSira ??= Interlocked.Increment(ref sayac);
                 return null;
+            };
+            handler.OnPreviewAsync = () =>
+            {
+                onizlemeSira ??= Interlocked.Increment(ref sayac);
+                return Task.CompletedTask;
             };
 
             (await sut.OpenWhatsAppAsync(b, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
 
+            kancaSira.Should().NotBeNull("kanca koştu");
+            onizlemeSira.Should().NotBeNull("önizleme gitti");
+            kancaSira.Should().BeLessThan(onizlemeSira!.Value,
+                "çapa önizleme isteği GİTMEDEN önce başka kişiye geçti — yoksa test akış ortasını sınamazdı");
             db.Customers.GetPaymentPerson(a.Id).MemberIds.Should().BeEquivalentTo(new[] { a.Id, x.Id },
                 "kanca çalıştı: depoda çapanın kişisi artık {a, x}");
             var beklenen = new[] { G(a), G(b) }.OrderBy(g => g.ToString("N"), StringComparer.Ordinal).ToList();
@@ -173,6 +187,69 @@ public partial class PaymentRequestServiceTests
                 "önizleme tıklamanın kişisini taşır; depo çağrı anında okunsaydı {a, x} giderdi, sunucu bunu S(a) ile tutarlı bulurdu");
             handler.AppliedMemberIds.Should().ContainSingle().Which.Should().Equal(beklenen,
                 "apply da aynı listeyi taşır: x'in bakiyesi b'nin mesajına harcanmaz (gerçek sunucu bu ayrışmayı 409 customer-not-synced ile kapatır)");
+            handler.AppliedCustomerIds.Should().ContainSingle().Which.Should().Be(G(a), "çapa işin sahip satırı");
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // §6.1-a, iskelet fark 4: revizyonun apply'ı (BeginRevision → SettleAsync → ReplayAsync; önizlemesiz) da akışın kişisini taşır — kapsam sorgusu sürerken çapa başka kişiye geçse de
+    public async Task Revizyonun_apply_i_akisin_kisisini_tasir_capa_akis_ortasinda_baska_kisiye_gecse_de()
+    {
+        var db = FileDb();
+        try
+        {
+            var a = Uye(db, UyeAdi());                   // telefonlu: sahip, çapa
+            var b = Uye(db, UyeAdi(), phone: false);
+            var x = Uye(db, UyeAdi(), phone: false);     // başka bir kişi
+            Kisi(db, a, b);
+            var (sut, handler) = KisiSut(db);
+            handler.PreviewBalance = 100m;
+            // İlk tıklamanın önizlemesi ağ hatasıyla düşer: iş anahtarsız 'created' kalır, toplamı 250.
+            handler.PreviewResponse = n => n == 1 ? throw new HttpRequestException("stub") : null;
+
+            (await sut.OpenWhatsAppAsync(b, 250m, T, "session:s1")).Should().NotBe(PaymentRequestResult.Opened);
+            var ilk = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            ilk.State.Should().Be(PaymentJobState.Created, "ön koşul: önizleme düştü, anahtar yazılmadı");
+            ilk.ApplyKey.Should().BeNull();
+            ilk.ProductTotal.Should().Be(250m);
+            handler.AppliedBalanceBodies.Should().BeEmpty();
+
+            // İkinci tıklamada tutar 300: anahtarsız created iş kapsam uzlaştırmasından (4. adım) geçer, sonra 5. adımın
+            // revizyonu (geri alınacak düşüm yok) BeginRevision ile yeni anahtarı yazar ve önizlemesiz apply eder. Kapsam
+            // sorgusu sürerken çekme turu iner ve a'yı x'le yeni gruba yazar — apply'dan önceki son ağ beklemesi.
+            var yeniGrup = Guid.NewGuid().ToString("N");
+            var sayac = 0;
+            int? kancaSira = null, applySira = null;
+            handler.ScopeResponseFor = _ =>
+            {
+                GrubaAl(db, yeniGrup, a, x);
+                kancaSira ??= Interlocked.Increment(ref sayac);
+                return null;
+            };
+            handler.OnApplyAsync = _ =>
+            {
+                applySira ??= Interlocked.Increment(ref sayac);
+                return Task.CompletedTask;
+            };
+
+            (await sut.OpenWhatsAppAsync(b, 300m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+
+            handler.PreviewMemberIds.Should().ContainSingle("revizyonun apply'ı önizlemesizdir; tek önizleme ilk tıklamanınki");
+            var is2 = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            is2.ProductTotal.Should().Be(300m);
+            is2.Revision.Should().BeGreaterThan(ilk.Revision, "BeginRevision revizyonu artırdı");
+            handler.AppliedBalanceBodies.Should().ContainSingle();
+            AppliedKey(handler.AppliedBalanceBodies[0]).Should().Be(is2.ApplyKey!.Value, "apply BeginRevision'ın anahtarıyla");
+            kancaSira.Should().NotBeNull("kanca koştu");
+            applySira.Should().NotBeNull("revizyonun apply'ı gitti");
+            kancaSira.Should().BeLessThan(applySira!.Value, "çapa revizyonun apply'ı GİTMEDEN önce başka kişiye geçti");
+            db.Customers.GetPaymentPerson(a.Id).MemberIds.Should().BeEquivalentTo(new[] { a.Id, x.Id },
+                "kanca çalıştı: depoda çapanın kişisi artık {a, x}");
+
+            var beklenen = new[] { G(a), G(b) }.OrderBy(g => g.ToString("N"), StringComparer.Ordinal).ToList();
+            handler.AppliedMemberIds.Should().ContainSingle().Which.Should().Equal(beklenen,
+                "revizyonun apply'ı ikinci tıklamanın girişinde okunan kişiyi taşır (GUID üyeler + çapa, tekil, ordinal "
+                + "sıralı); depo revizyon yolunda yeniden okunsaydı {a, x} giderdi");
             handler.AppliedCustomerIds.Should().ContainSingle().Which.Should().Be(G(a), "çapa işin sahip satırı");
         }
         finally { Drop(db); }

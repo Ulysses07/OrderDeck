@@ -240,7 +240,7 @@ public partial class PaymentRequestServiceTests : IDisposable
                 lock (_sync)
                 {
                     PreviewCustomerIds.Add(previewed);
-                    PreviewMemberIds.Add(memberIds?.Select(v => Guid.Parse(v)).ToList() ?? new List<Guid>());
+                    _previewMemberIds.Add(memberIds?.Select(v => Guid.Parse(v)).ToList() ?? new List<Guid>());
                 }
                 if (OnPreviewAsync is not null) await OnPreviewAsync();
                 int onizlemeSira;
@@ -378,8 +378,10 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// <summary>Önizleme ucuna sorulan WpfCustomerId'ler (sahip anahtarı testleri).</summary>
         public List<Guid> PreviewCustomerIds { get; } = new();
 
-        /// <summary>W-havuz: her önizlemenin tekrarlı memberIds değerleri, geliş sırasıyla (parametre yoksa boş liste).</summary>
-        public List<IReadOnlyList<Guid>> PreviewMemberIds { get; } = new();
+        /// <summary>W-havuz: her önizlemenin tekrarlı memberIds değerleri, geliş sırasıyla (parametre yoksa boş liste) —
+        /// kilit altında alınmış anlık görüntü (<see cref="AppliedMemberIds"/> gibi).</summary>
+        public IReadOnlyList<IReadOnlyList<Guid>> PreviewMemberIds { get { lock (_sync) return _previewMemberIds.ToList(); } }
+        private readonly List<IReadOnlyList<Guid>> _previewMemberIds = new();
 
         /// <summary>Apply gövdelerinin WpfCustomerId'leri, gönderim sırasıyla.</summary>
         public IReadOnlyList<Guid> AppliedCustomerIds
