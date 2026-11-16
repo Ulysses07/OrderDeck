@@ -785,11 +785,28 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     // ─── Customer balance (E1/E3) ────────────────────────────────────
 
     /// <summary>WPF "Ödeme iste" anlığında müşterinin bakiyesini sorgular.
-    /// Hiç bakiye yoksa 0 dönen response, hata değil.</summary>
-    public async Task<CustomerBalancePreview> GetBalancePreviewAsync(
+    /// Hiç bakiye yoksa 0 dönen response, hata değil. Üye listesi göndermez:
+    /// boş listeyle aşağıdaki aşırı yüklemeyi çağırır, sorgu bugünküyle aynı.
+    /// Havuz kipinde 400 <c>member-ids-required</c> alır; ödeme akışı
+    /// (PaymentRequestService) dört argümanlı biçimi kullanır. Yalnız satır kipi/eski çağrı biçimi
+    /// testi için korunur.</summary>
+    public Task<CustomerBalancePreview> GetBalancePreviewAsync(
         Guid licenseId, Guid wpfCustomerId, CancellationToken ct = default)
+        => GetBalancePreviewAsync(licenseId, wpfCustomerId, Array.Empty<Guid>(), ct);
+
+    /// <summary>Ortak bakiye (spec 2026-10-11 §6.1-a): önizleme, kişinin GUID'li
+    /// üyeleriyle. <paramref name="memberIds"/> tekrarlı sorgu parametresi olarak
+    /// gider (<c>&amp;memberIds={id}</c>, verilen sırayla; virgüllü liste sunucuda
+    /// bağlanmaz); boş listede parametre yazılmaz. Sunucu havuz kipinde okur
+    /// (yoksa 400 <c>member-ids-required</c>), satır kipinde yok sayar; Guid'e
+    /// bağlanamayan değer iki kipte de 400 — yalnız geçerli Guid gider (S2 fark 18f).
+    /// Havuz retleri (409 <c>customer-not-synced</c>, 409 <c>client-update-required</c>,
+    /// 400 <c>member-ids-required</c>) <see cref="ValidationException"/> olur,
+    /// <c>Code</c> = problem başlığı.</summary>
+    public async Task<CustomerBalancePreview> GetBalancePreviewAsync(
+        Guid licenseId, Guid wpfCustomerId, IReadOnlyCollection<Guid> memberIds, CancellationToken ct = default)
     {
-        var qs = $"?wpfCustomerId={wpfCustomerId:D}";
+        var qs = $"?wpfCustomerId={wpfCustomerId:D}" + string.Concat(memberIds.Select(id => $"&memberIds={id:D}"));
         return await GetExpectingJsonAsync<CustomerBalancePreview>(
             $"/api/v1/licenses/{licenseId}/customer-balance/preview{qs}", ct)
             ?? new CustomerBalancePreview(wpfCustomerId, 0m, DateTimeOffset.UtcNow);
