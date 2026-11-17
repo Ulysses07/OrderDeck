@@ -1,6 +1,6 @@
 # Instagram çoklu hesap sohbeti — Tasarım
 
-**Tarih:** 16.11.2026 · **Durum:** TASLAK, sahip onayı bekliyor (öneriler §3.2'de, açık sorular §11.1'de); bağımsız doğrulamanın olgu düzeltmeleri işlendi (§13 sonu) · **İlgili:** `2026-08-04-instagram-live-graph-api-design.md` (tek hesaplı resmi API yolu; bu belge onun üzerine çoklu hesabı ekler)
+**Tarih:** 16.11.2026 · **Durum:** Sahip üç soruyu 17.11.2026'da cevapladı (§3.1, §11.1); cevaplar belgenin varsayımlarıyla aynı, tasarım değişmedi. Tasarımcının kararlarına (§11.2) itiraz gelmedi; sahibin itiraz hakkı sürer. Sıradaki adım PR-A'nın uygulama planı. Bağımsız doğrulamanın olgu düzeltmeleri işlendi (§13 sonu) · **İlgili:** `2026-08-04-instagram-live-graph-api-design.md` (tek hesaplı resmi API yolu; bu belge onun üzerine çoklu hesabı ekler)
 
 Kaynaklar: LiveDeck `origin/master` 7960eba3 (dal `feat/instagram-coklu-hesap`). Satır numaraları bu kesite göredir. Sahada v0.9.12. Dört kollu keşif (WPF, sohbet tüketicileri, sunucu, Meta belgeleri) yapıldı; üç aday tasarım iki hakemle karşılaştırıldı. İki hakem de "en küçük güvenli değişiklik" tasarımını seçti. Bu belge onu temel alır, diğer iki tasarımdan hakemlerin istediği parçaları aşılar ve hakemlerin işaretlediği hataları koda bakarak düzeltir (eşleme §13).
 
@@ -20,16 +20,20 @@ Bu belge yalnız bu ihtiyacı karşılar. Burak'ın söylemediği hiçbir ihtiya
 
 - Aynı anda iki farklı Instagram hesabından canlı yayın açıp iki hesabın da sohbetini OrderDeck'e çekmek istiyor. Acil.
 - "!kayıt → DM" özelliğini kullanmıyor (hesabı sıkıntıya sokabiliyor). Sonuç: sunucu (`OrderDeck.LicenseServer`) kapsam dışı, dokunulmaz.
-- İki Instagram hesabı da aynı işletme portföyünde. Biri bir Facebook Sayfasına bağlı; diğeri hiçbir Facebook Sayfasına bağlı değil. Burak yalnız bu bugünkü durumu söyledi; ikinci hesabı bir Sayfaya bağlayacağını ya da iki Sayfayı kimin yöneteceğini söylemedi (bkz. Ö6).
+- İki Instagram hesabı da aynı işletme portföyünde. Biri bir Facebook Sayfasına bağlı; diğeri hiçbir Facebook Sayfasına bağlı değil (16.11.2026).
+- **17.11.2026 cevapları** (§11.1'deki üç soruya):
+  - İkinci hesabı ayrı bir Sayfaya bağlar: "ayrı bağlarım eğer gerekiyorsa". Gerekiyor (§5 madde 1–2); aynı gün kendisine söylendi. İki Sayfayı hangi Facebook kullanıcısının yöneteceğini ayrıca söylemedi; bu kısım kurulum talimatı olarak verildi (Ö6'nın ikinci yarısı).
+  - İki hesapta aynı mezat yayınlanır: "evet".
+  - Yayın için tek bilgisayar kullanıyor.
 
-### 3.2 Tasarımcının önerileri (ÖNERİ — Burak henüz açıkça onaylamadı)
+### 3.2 Tasarımcının önerileri (ÖNERİ; Burak'ın 17.11.2026 cevaplarının doğruladıkları madde içinde işaretli)
 
-- **Ö1.** İki hesapta aynı mezat yayınlanır; iki sohbet tek akışta birleşir; her Instagram yorumunda hangi hesaptan geldiğini gösteren küçük bir etiket olur.
+- **Ö1.** İki hesapta aynı mezat yayınlanır; iki sohbet tek akışta birleşir; her Instagram yorumunda hangi hesaptan geldiğini gösteren küçük bir etiket olur. (Aynı mezat: Burak 17.11.2026'da doğruladı.)
 - **Ö2.** Sıra: iki hesap aynı anda sorgulanır, yeni yorumlar Meta zaman damgasına göre sıralanıp yayımlanır. Meta damgası saniye çözünürlüklüdür: aynı saniyedeki iki yorumun hesaplar arası sırası kesin bilinemez (§8.3.6'da dürüstçe belgelendi).
 - **Ö3.** Hesaplardan biri koparsa (kalıcı hata, hız sınırı, uzun süre başarısız yoklama) operatör bunu ana ekranda görür. Bugün Instagram API yolunda hiç sağlık göstergesi yok.
 - **Ö4.** Ayarlar'da tek Facebook girişiyle birden çok Sayfa seçilir; bağlı Instagram hesapları liste olarak görünür; hesap başına kaldırma vardır.
 - **Ö5.** Tasarım N hesaba geneldir; doğrulama ve pilot 2 hesapla yapılır.
-- **Ö6 (varsayım; tasarımın temeli).** Burak ikinci hesap için ayrı bir Facebook Sayfası açıp Instagram hesabını o Sayfaya bağlar ve iki Sayfayı aynı Facebook kullanıcısı yönetir (tek Facebook girişi). Burak bunu söylemedi; §5, §7.1 ve §8'in tamamı buna dayanır. "İki hesap = iki Sayfa" Meta'nın genel kuralı değil, OrderDeck'in kullandığı giriş türünün (Facebook Login) sonucudur (§5 madde 1–2). Burak ikinci hesabı Sayfasız tutmak isterse bu tasarım o hesabı okuyamaz: Sayfasız yolda canlı yorum okuma belgeli değildir, ayrı araştırma ve büyük olasılıkla ayrı App Review gerekir (§7.1 D). Teyidi ve alternatifi §11.1 soru 1.
+- **Ö6 (tasarımın temeli).** Burak ikinci hesap için ayrı bir Facebook Sayfası açıp Instagram hesabını o Sayfaya bağlar ve iki Sayfayı aynı Facebook kullanıcısı yönetir (tek Facebook girişi). §5, §7.1 ve §8'in tamamı buna dayanır. **İlk yarı doğrulandı:** Burak 17.11.2026'da ikinci hesabı ayrı bir Sayfaya bağlayacağını söyledi (§3.1). **İkinci yarı hâlâ varsayım:** Sayfayı hangi Facebook kullanıcısının yöneteceğini söylemedi; kendisine "Sayfayı OrderDeck'te 'Facebook'a Bağlan'da kullandığın Facebook hesabıyla aç" talimatı verildi ve tutup tutmadığı pilotun ekleme adımında görülür (§9.5 madde 2: yeni Sayfa listede çıkıyor mu). "İki hesap = iki Sayfa" Meta'nın genel kuralı değil, OrderDeck'in kullandığı giriş türünün (Facebook Login) sonucudur (§5 madde 1–2). Sayfasız yol seçilmedi: o yolda canlı yorum okuma belgeli değildir, ayrı araştırma ve büyük olasılıkla ayrı App Review gerekir (§7.1 D).
 
 Bu önerilerin dışında tasarımcının sahibe sormadan verdiği kararlar metinde **(TK1)**, **(TK2)** … biçiminde işaretlidir; listesi §11.2'de.
 
@@ -47,8 +51,8 @@ Bu bölümdeki hedefler, kapsam dışı maddeler ve anti-hedefler tasarımcını
 **Kapsam dışı**
 - Facebook canlısını iki Sayfadan açmak. Facebook yorumları ve moderasyon bugünkü gibi tek "birincil" Sayfayla çalışır.
 - Raporda, etikette (basılı) ya da siparişte hesap kırılımı. Yerel SQLite göçü ve sunucu şeması değişmez; kaynak hesap yalnız bellekteki sohbet mesajında durur.
-- İkinci bir Facebook kullanıcısıyla giriş (Ö6 varsayımına bağlı).
-- Sayfasız yol (Instagram Login / Unified Login). Ö6 varsayımına bağlıdır: Burak ikinci hesabı Sayfasız tutmak isterse bu madde yeniden açılır (§11.1 soru 1).
+- İkinci bir Facebook kullanıcısıyla giriş (Ö6'nın ikinci yarısına bağlı: iki Sayfayı aynı Facebook kullanıcısı yönetir).
+- Sayfasız yol (Instagram Login / Unified Login). Burak 17.11.2026'da ikinci hesabı bir Sayfaya bağlayacağını söyledi; bu madde kapalıdır.
 - Webhook.
 - "!kayıt → DM".
 - Instagram izleyici sayısı.
@@ -62,7 +66,7 @@ Bu bölümdeki hedefler, kapsam dışı maddeler ve anti-hedefler tasarımcını
 
 ## 5. Ön koşullar (Meta tarafı — Burak yapar)
 
-Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır. Madde 2 ve 3, Ö6 varsayımının gereğidir; Burak bunları yapacağını söylemedi (§11.1 soru 1).
+Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır. Madde 2'yi Burak 17.11.2026'da üstlendi ("ayrı bağlarım"); madde 3 kendisine kurulum talimatı olarak verildi (yeni Sayfayı OrderDeck'e bağlı Facebook hesabıyla açmak), teyidi pilotun ekleme adımındadır (§9.5 madde 2). Yeni Sayfanın içerik taşıması ya da oradan yayın yapılması gerekmez; yalnız Instagram hesabının bağlı olması yeter.
 
 1. **İkinci Instagram hesabı profesyonel olmalı** (işletme ya da içerik üretici). Facebook Login yolunda hesabın bir Facebook Sayfasına bağlı olması şart. Kaynak: <https://developers.facebook.com/documentation/instagram-platform/overview.md>.
 2. **İkinci hesap için ayrı bir Facebook Sayfası açılır ve Instagram hesabı o Sayfaya bağlanır.** API'de bir Sayfa tek Instagram hesabı döndürür (`instagram_business_account` tekil nesne). Kaynak: <https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/page.md>. Açık bir "1 Sayfa = 1 Instagram hesabı" cümlesi resmi kaynakta **doğrulanamadı** (yardım sayfalarının gövdesi okunamadı); dayanak API şemasıdır.
@@ -129,9 +133,9 @@ Sıra önemlidir; 1–3 OrderDeck'e dokunmadan önce yapılır. Madde 2 ve 3, Ö
 | **A. Tek giriş + birincil Sayfa + ek Sayfa listesi** | Demete bir isteğe bağlı liste; OAuth servisine eklemeler; Facebook yolu ve depo biçiminin eski kısmı aynen | **SEÇİLDİ** |
 | B. İkinci bağımsız bağlantı yuvası (ikinci blob, ikinci giriş) | İkinci OAuth turu, iki depo; N'e genellenmez. Aynı Facebook kullanıcısının ikinci onayının ilk Sayfanın erişimini düşürebilmesi riski keşifte "doğrulanmadı" olarak işaretli | Elendi |
 | C. Giriş başına gruplu genel model (giriş listesi, her girişte kullanıcı token'ı + Sayfalar) | Birincil alanların yeri değişir: sürüm alanı + göç + eski sürüme dönüşte "bağlı ama kimlik null" tuzağı (`FacebookOAuthService.cs:94-96`, `:118`); Facebook canlı ve moderasyon tüketicileri de değişir. İkinci Facebook kullanıcısı zaten kapsam dışı | Elendi; gerekirse ileride A'nın üstüne eklenir |
-| D. Sayfasız yol (Instagram Login / Unified Login) | `live_media` yalnız `graph.facebook.com` için belgeli; Sayfasız yolda canlı yorum okuma belgelenmemiş, yalnız webhook var. Webhook sunucu → masaüstü kanalı ve ayrı App Review ister | Elendi (kapsam dışı); Ö6 varsayımı düşerse yeniden ele alınır |
+| D. Sayfasız yol (Instagram Login / Unified Login) | `live_media` yalnız `graph.facebook.com` için belgeli; Sayfasız yolda canlı yorum okuma belgelenmemiş, yalnız webhook var. Webhook sunucu → masaüstü kanalı ve ayrı App Review ister | Elendi (kapsam dışı); Burak ikinci hesabı bir Sayfaya bağlayacağını söyledi (17.11.2026) |
 
-**Neden A:** AH1 ve AH5'i yapısal olarak korur. Birincil Sayfa bugünkü alanlarında kaldığı için eski sürüm aynı dosyayı okur, Facebook canlı yorum ve moderasyon kodu ile okudukları yöntem hiç değişmez. **Varsayım (Ö6; Burak onaylamadı, §11.1 soru 1):** ikinci hesap ayrı bir Sayfaya bağlanır ve iki Sayfayı aynı Facebook kullanıcısı yönetirse Burak'ın durumu tam bu modeldir. Varsayım tutmazsa (ikinci hesap Sayfasız kalır ya da ikinci Sayfayı başka bir Facebook kullanıcısı yönetir) A ikinci hesabı okuyamaz.
+**Neden A:** AH1 ve AH5'i yapısal olarak korur. Birincil Sayfa bugünkü alanlarında kaldığı için eski sürüm aynı dosyayı okur, Facebook canlı yorum ve moderasyon kodu ile okudukları yöntem hiç değişmez. **Dayanak (Ö6):** ikinci hesap ayrı bir Sayfaya bağlanır (Burak 17.11.2026'da doğruladı) ve iki Sayfayı aynı Facebook kullanıcısı yönetirse (kurulum talimatı; pilotta görülür) Burak'ın durumu tam bu modeldir. İkinci Sayfayı başka bir Facebook kullanıcısı yönetirse A ikinci hesabı okuyamaz (R17).
 
 ### 7.2 Instagram toplama
 
@@ -791,7 +795,7 @@ Zaman `TimeProvider` üzerinden yürür; testler elle ilerletilen bir `TimeProvi
    - **Yeni hesabın sınırı düşük mü:** aynı istek temposunda yeni hesabın yüzdesi eskisinden belirgin hızlı mı yükseliyor.
    - Başlık her yanıtta geliyor mu; taşma anlarında (TK8) yüzde nasıl değişiyor.
 6. **Yanıt süresi:** hesap başına p50/p95; `HoldBudget` (400 ms) bu farkı kapsıyor mu. PR-B'nin varsayılanı bu rakamla kesinleşir.
-7. **Bilgisayar sayısı:** yayın sırasında Facebook'a bağlı ve "Yayın Başlat" basılı kaç bilgisayar olduğu not edilir (§11.1 soru 3). Her bilgisayar her hesabı ayrı yoklar; kota yükü bilgisayar sayısıyla katlanır ve ikinci hesap her bilgisayarda ayrı eklenir (§12 R19).
+7. **Bilgisayar sayısı:** Burak yayın için tek bilgisayar kullanıyor (17.11.2026, §11.1 soru 3); ikinci hesap yalnız o bilgisayarda eklenir. Yine de yayın sırasında Facebook'a bağlı ve "Yayın Başlat" basılı başka bir bilgisayar olup olmadığı not edilir: varsa o bilgisayar bugünkü gibi yalnız birincil hesabı yoklar, ikinci hesabın yükü tek bilgisayarda kalır. İkinci hesap başka bir bilgisayara da eklenirse kota yükü katlanır (§12 R19).
 
 ## 10. Sürüm, PR planı ve geri dönüş
 
@@ -826,10 +830,13 @@ PR-A inceleme için büyük gelirse "motor" (1–8) ve "arayüz" (9–10) olarak
    - **(a) Sayfa aç ve bağla:** ikinci hesap için ayrı bir Facebook Sayfası açıp Instagram hesabını ona bağlarsın ve iki Sayfayı aynı Facebook kullanıcısıyla yönetirsin (tek Facebook girişi). Bu belge bu yolu varsayar.
    - **(b) İkinci hesap Sayfasız kalsın:** o zaman bu tasarım geçersizdir. Sayfasız yolda canlı yorum okuma Meta belgesinde yok; yalnız webhook belgeli. Ayrı bir araştırma, sunucu → masaüstü kanalı ve büyük olasılıkla ayrı App Review gerekir; bu iş kısa sürede çıkmaz.
    - Ara durum: Sayfa açarsın ama ikinci Sayfayı **başka bir Facebook kullanıcısı** yönetir. Bu da kapsam dışıdır (ikinci Facebook girişi); söylersen tasarım ona göre genişletilir.
+   - **Cevap (17.11.2026):** (a). "Ayrı bağlarım eğer gerekiyorsa." Gerekiyor; kendisine söylendi. Sayfayı hangi Facebook kullanıcısının yöneteceğini ayrıca söylemedi: Sayfayı OrderDeck'e bağlı Facebook hesabıyla açması istendi (Ö6, R17).
 2. İki hesapta **aynı mezat** mı yayınlanacak (aynı ürün, aynı kod, tek stok)? Evetse iki sohbet tek akışta birleşir ve "ilk yazan" iki hesap arasında ortaktır (Ö1). Farklı ürünlerse birleşik sıra anlamsızlaşır ve tasarım değişir.
+   - **Cevap (17.11.2026):** evet.
 3. Yayın gecesinde Instagram sohbeti **kaç bilgisayarda** görünmeli; bugün Facebook'a bağlı olup "Yayın Başlat" basılan kaç bilgisayar var? Ek hesap listesi her bilgisayarın kendi şifreli dosyasında durur ve her bilgisayar her hesabı saniyede yaklaşık bir istekle ayrı yoklar; otomatik fren yoktur.
    - **Tek bilgisayar:** plan bu belgedeki gibidir.
    - **Birden çok:** ikinci hesap her bilgisayarda ayrı eklenir ve Instagram'a giden istek sayısı bilgisayar sayısıyla katlanır; az gösterimli ikinci hesap yayın ortasında hız sınırına girebilir. O zaman pilottan önce plana bir önlem görevi girer (yoklamayı tek bilgisayarla sınırlamak ya da aralığı yükseltmek) ve kurulum/pilot adımları bilgisayar başına yazılır (§12 R19).
+   - **Cevap (17.11.2026):** yayın için tek bilgisayar kullanıyor. Plan bu belgedeki gibidir; önlem görevi eklenmez.
 
 Bu üç soru dışında tasarımın ilk taslağında sahibe sorulan altı konu, sahibin cevabı yapılacak işi değiştirmediği ya da sonradan küçük bir değişiklikle çevrilebildiği için tasarımcı kararına çevrildi; §11.2'de "eski soru" notuyla işaretlidir (TK7, TK11, TK12, TK19, TK20, TK21). Yedinci konu olan sunucu bot bayrağının teyidi bir tasarım sorusu değil pilot ön koşuludur (§5 madde 7, §9.5).
 
@@ -890,9 +897,9 @@ Bu üç soru dışında tasarımın ilk taslağında sahibe sorulan altı konu, 
 - **R14. N > 2 yalnız kâğıt üzerinde.** Tasarım 4 hesaba kadar geneldir ama yalnız 2 hesapla doğrulanacak.
 - **R15. OrderDeck dışı.** İkinci hesabın canlı yayın açma koşulları ve aynı içeriğin iki hesaba aynı anda verilmesi Meta tarafında doğrulanmadı.
 - **R16. Birincil `NotLinked` kuralının bedeli.** Ek Sayfa varken birincil `NotLinked` şeride girer ve sarıdır (§8.5, AH3). Bedeli: birincil Sayfası bilerek Instagram'sız olan ve Instagram'ı yalnız ek Sayfadan okuyan bir kurulumda bu satır her oturumda sarı görünür (yanlış alarm). Çözümleyici "hiç bağlı olmadı" ile "bağ düştü"yü ayıramadığı ve depo biçimi değişmediği için bu ayrım yapılamıyor. Böyle bir kurulum bugün yok (Instagram bugün yalnız birincil Sayfadan okunuyor) ve Burak'ın durumu değil; ortaya çıkarsa "bu Sayfada Instagram beklenmiyor" işareti ayrı bir iştir. İlk taslaktaki boşluk (iki Sayfa da oturum başından `NotLinked` ise satırların nötr kalması) 2 ve üzeri Sayfada kapı kaldırıldığı için kapanmıştır: iki satır da sarıdır.
-- **R17. Ö6 varsayımı.** Tasarımın tamamı, ikinci hesabın ayrı bir Sayfaya bağlanacağına ve iki Sayfayı aynı Facebook kullanıcısının yöneteceğine dayanır; Burak bunu söylemedi (§3.1, §11.1 soru 1). Varsayım tutmazsa bu belgenin §7.1 kararı ve ona bağlı §8 geçersizdir.
+- **R17. Ö6'nın kalan yarısı.** Burak ikinci hesabı ayrı bir Sayfaya bağlayacağını söyledi (17.11.2026); iki Sayfayı aynı Facebook kullanıcısının yöneteceği ise hâlâ varsayımdır (kurulum talimatı olarak verildi, §3.1). Tutmazsa yeni Sayfa "Instagram hesabı ekle" listesinde de izin güncellemeden sonra da görünmez; bu ancak pilotun ekleme adımında, yani kod yazıldıktan sonra anlaşılır. O durumda iki yol vardır: Burak'ın OrderDeck'e bağlı Facebook hesabına o Sayfada tam yetki verilir (kod değişmez), ya da ikinci Facebook girişi tasarlanır (kapsam dışı, ayrı iş).
 - **R18. Tarayıcı sekmesinin kapatılması algılanamaz.** Kullanıcı Facebook onay sekmesini kapatırsa OrderDeck bunu bilemez; akış `[İptal]`e basılana ya da 5 dakikalık zaman aşımına kadar bekler ve o sürede yeni bir akış başlatılamaz (§8.2 TK17). "Facebook'a Bağlan"da arayüzden iptal yoktur; yalnız zaman aşımı vardır. Bekleme sırasında Ayarlar kapatılıp açılırsa `[İptal]` kaybolur (Ayarlar ViewModel'i her açılışta yeniden kurulur); yeni deneme "bekleyen onay var" mesajıyla reddedilir ve akış zaman aşımına kadar sürer. Bekleyen akış o arada tarayıcıda tamamlanırsa kayıt yapılır ama açık Ayarlar sayfası bunu yansıtmaz; sayfa yeniden açılınca görünür.
-- **R19. Birden çok bilgisayar (§11.1 soru 3).** Sohbet bilgisayarlar arasında eşitlenmez; her bilgisayar kendi Facebook bağlantısıyla her hesabı ayrı yoklar. Token dosyası bilgisayara (Windows kullanıcısına) özeldir, yani ek hesap her bilgisayarda ayrı eklenir. Hesap başına Instagram'a giden istek sayısı "bilgisayar sayısı × saniyede yaklaşık bir" olur; bu bugün birinci hesap için de böyledir, yeni olan aynı yükün az gösterimli ikinci hesaba da binmesidir. Bu belgede önlem yoktur; Burak birden çok bilgisayar derse plan aşamasında bir önlem görevi eklenir.
+- **R19. Birden çok bilgisayar (§11.1 soru 3).** Sohbet bilgisayarlar arasında eşitlenmez; her bilgisayar kendi Facebook bağlantısıyla her hesabı ayrı yoklar. Token dosyası bilgisayara (Windows kullanıcısına) özeldir, yani ek hesap her bilgisayarda ayrı eklenir. Hesap başına Instagram'a giden istek sayısı "bilgisayar sayısı × saniyede yaklaşık bir" olur; bu bugün birinci hesap için de böyledir, yeni olan aynı yükün az gösterimli ikinci hesaba da binmesidir. Bu belgede önlem yoktur. Burak 17.11.2026'da yayın için tek bilgisayar kullandığını söyledi; plana önlem görevi eklenmedi. İkinci hesap ileride başka bir bilgisayara da eklenirse bu risk yeniden açılır.
 
 ## 13. Tasarım incelemesi — hakem bulguları eşlemesi
 
@@ -1012,3 +1019,5 @@ Aynı okumada bulunan ek düzeltme: hesap çözümleyicisinin önbelleği bugün
 Bu turda reddedilen bulgu yok. İki bulgu önerilenden farklı çözüldü: kapı muafiyetini genişletmek yerine 2 ve üzeri Sayfada kapı tümüyle kaldırıldı; çözümleyici önbelleği kalıcı hatada değil yalnız token değişiminde boşaltılıyor (kalıcı hatada da boşaltılsaydı süresi dolmuş token'da satır 5 dakika sonra "bağlantı yenilenmeli"den "hesap bilgisi okunamadı"ya dönerdi).
 
 **Kapanış kontrolü (16.11.2026).** Yukarıdaki düzeltme turu ayrıca denetlendi (kod atıfları ve 30 senaryo yeniden). Önceki turun boşluklarının kapandığı doğrulandı; kod atıflarında hata yok. Düzeltmelerin kendisinin açtığı üç pürüz ve birkaç küçük kalıntı işlendi: TK16'nın karşılaştırma tabanı (o turda kullanılan token; bekleme başlarken zaten farklıysa atlanır), tek Sayfada canlı olmuş hesabın `NotLinked`'a düşünce gizlenmemesi, liste oturum içinde yeniden dolunca `Starting` geçişi ve yanıtsızlık süresinin son temas ile `Since`'ten geç olanından ölçülmesi, "yanıt yok"un taban satırdan önce gelmesi, bağımlı satırların yanıp sönmesinin bilinen sonuç olarak yazılması, üst nokta ipucundan "Diğer kaynaklar akıyor" cümlesinin çıkarılması, §8.2'deki çekmece cümlesi ve yukarıdaki tablodaki "girdi silmez" ifadesi. Bundan sonraki ayrıntı düzeltmeleri uygulama planı yazılırken yapılır.
+
+**Sahibin cevapları (17.11.2026).** Burak §11.1'deki üç soruyu cevapladı: ikinci hesabı ayrı bir Sayfaya bağlar ("ayrı bağlarım eğer gerekiyorsa"; gerektiği kendisine söylendi), iki hesapta aynı mezat yayınlanır, yayın için tek bilgisayar kullanır. Üç cevap da belgenin varsayımlarıyla aynıdır; tasarımda değişen bir şey yoktur. İşlenen yerler: durum satırı, §3.1, §3.2 (Ö1, Ö6), §4, §5, §7.1, §9.5 madde 7, §11.1, R17, R19. Kalan tek varsayım Ö6'nın ikinci yarısıdır (iki Sayfayı aynı Facebook kullanıcısı yönetir); kurulum talimatı olarak verildi, pilotun ekleme adımında görülür (R17). Burak tasarımcının kararlarına (§11.2) itiraz etmedi; açık bir onay cümlesi de kurmadı. Uygulama planı (yalnız PR-A) bu cevaplar üzerine yazılır; itirazı gelirse ilgili karar çevrilir.
