@@ -616,10 +616,10 @@ private async Task CompleteAsync(Task flow);      // _kit.Browser.WaitUntilOpene
 [Fact] public async Task Geri_cagri_gelmezse_sure_dolunca_TimeoutException_firlar_diske_yazilmaz_dinleyici_birakilir()
     FacebookOAuthService.CallbackTimeout.Should().Be(TimeSpan.FromMinutes(5));          // spec'in süresi (TK17); akışın kendisi kısaltılmış süreyle koşar
     var service = _kit.CreateService(callbackTimeout: TimeSpan.FromMilliseconds(200));
-    var connect = FluentActions.Awaiting(() => service.ConnectAsync(NoPicker));
+    var connect = FluentActions.Awaiting(() => service.ConnectAsync(NoPicker).WaitAsync(TestPatience.Upper));   // servis zaman aşımı hiç çalışmazsa test asılmaz: üst sınırın kendi TimeoutException'ı aşağıdaki mesajı taşımaz, doğrulama düşer
     (await connect.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Be("Facebook onayı 5 dakika içinde tamamlanmadı. Yeniden dene.");
     (File.Exists(_kit.TokenFilePath), _kit.Browser.PendingWaits).Should().Be((false, 0));
-    await connect.Should().ThrowAsync<TimeoutException>();          // hemen ardından başlatılan akış reddedilmez, yeniden bağlanır
+    (await connect.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().StartWith("Facebook onayı");   // hemen ardından başlatılan akış reddedilmez, yeniden bağlanır
     _kit.Browser.OpenedUrls.Should().HaveCount(2);
 [Fact] public async Task Belirtec_iptali_OperationCanceledException_uretir_ve_dinleyiciyi_birakir()
     using var cts = new CancellationTokenSource();
@@ -830,7 +830,8 @@ public async Task Tokeni_turetilemeyen_sayfanin_eski_tokeni_kalir(bool timedOut)
 [Fact] public async Task Zaman_asiminda_TimeoutException_cikar_diske_yazilmaz()
     await _kit.SeedAsync();
     var (service, before) = (_kit.CreateService(callbackTimeout: TimeSpan.FromMilliseconds(200)), Blob());
-    await FluentActions.Awaiting(() => service.ReauthorizeAsync(Answer(true))).Should().ThrowAsync<TimeoutException>();
+    (await FluentActions.Awaiting(() => service.ReauthorizeAsync(Answer(true)).WaitAsync(TestPatience.Upper)).Should().ThrowAsync<TimeoutException>())
+        .Which.Message.Should().StartWith("Facebook onayı");                                    // servisin zaman aşımı (G03); üst sınırın kendi TimeoutException'ı bu mesajı taşımaz: test asılmaz, düşer
     Blob().Should().Equal(before);
 [Fact] public async Task Onay_beklenirken_baglanti_kaldirilirsa_geri_cagri_gelince_baglanti_dirilmez()   // Review Focus 1: hata 3. adımda çıkar (bağlı Sayfa kalmadı)
     var (service, _) = await ConnectedAsync(1);
