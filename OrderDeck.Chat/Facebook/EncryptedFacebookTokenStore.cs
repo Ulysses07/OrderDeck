@@ -39,7 +39,25 @@ public sealed class EncryptedFacebookTokenStore
         var plaintext = Encoding.UTF8.GetBytes(json);
         var cipher = ProtectedData.Protect(plaintext, optionalEntropy: null,
             DataProtectionScope.CurrentUser);
-        File.WriteAllBytes(_path, cipher);
+
+        // Atomik yazım. NEDEN: hedefe doğrudan yazarken yazma yarıda kesilirse
+        // geriye yarım blob kalır; LoadAsync onu çözemez, dosyayı siler ve
+        // bütün Sayfaların bağlantısı kopar. Geçiciye yazıp yerine taşıyınca
+        // hedef ya tamamen eski ya tamamen yenidir. Geçici dosya AYNI klasörde:
+        // bölümler arası taşıma atomik değildir. Adı sabit: yarım kalan deneme
+        // birikmez, sonraki yazım üstüne yazar.
+        var temp = _path + ".tmp";
+        try
+        {
+            File.WriteAllBytes(temp, cipher);
+            File.Move(temp, _path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(temp); }
+            catch { /* best effort */ }
+            throw;
+        }
         return Task.CompletedTask;
     }
 
