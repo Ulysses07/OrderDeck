@@ -348,6 +348,37 @@ public sealed class InstagramMergeGateTests
     }
 
     [Fact]
+    public void Ic_bus_firlatinca_kilit_birakilir_baska_is_parcacigi_yayimlayabilir()
+    {
+        var inner = new FlakyBus { Broken = true };
+        using var gate = NewGate(inner);
+        var lane = gate.AddLane(New("p"), New("@u"));
+
+        FluentActions.Invoking(() => lane.Publish(Msg(100))).Should().Throw<InvalidOperationException>();
+        inner.Broken = false;
+
+        // Kilit yeniden girişlidir: fırlatan iş parçacığı sızan kilidi fark etmez; ayrı iş parçacığı yazar.
+        Exception? failure = null;
+        var other = new Thread(() =>
+        {
+            try
+            {
+                lane.Publish(Msg(101));
+            }
+            catch (Exception ex)
+            {
+                failure = ex; // ele alınmayan istisna test sürecini düşürürdü
+            }
+        });
+        other.IsBackground = true; // kilit sızdıysa sonsuza dek bekler: süreci açık tutmasın
+        other.Start();
+
+        other.Join(TestPatience.Upper).Should().BeTrue();
+        failure.Should().BeNull();
+        inner.Published.Select(m => m.ReceivedAt).Should().Equal(101);
+    }
+
+    [Fact]
     public void Ozet_kulvarlari_AddLane_sirasiyla_ve_noktali_virgulle_yazar()
     {
         var gate = NewGate();
@@ -384,6 +415,23 @@ public sealed class InstagramMergeGateTests
     }
 
     [Fact]
+    public void Ozeti_tetikleyen_yayimin_ters_sirasi_o_ozete_girer()
+    {
+        var gate = NewGate();
+        var (a, b) = (gate.AddLane(New("p"), New("@u")), gate.AddLane(New("p"), New("@u")));
+        a.Publish(Msg(105));
+
+        _time.Advance(InstagramMergeGate.SummaryInterval);
+        b.Publish(Msg(101)); // özeti tetikleyen yayım: 4 sn geri
+
+        Summaries().Should().ContainSingle().Which.Should().Contain("inversions=1 maxGapSeconds=4 ");
+
+        gate.Dispose();
+
+        Summaries()[1].Should().Contain("inversions=0 maxGapSeconds=0 ");
+    }
+
+    [Fact]
     public void Pencere_tam_bir_dakikada_dolar_sayaclar_sifirlanir_en_buyuk_damga_kalir()
     {
         InstagramMergeGate.SummaryInterval.Should().Be(TimeSpan.FromMinutes(1));
@@ -406,6 +454,28 @@ public sealed class InstagramMergeGateTests
         gate.Dispose();
 
         Summaries()[1].Should().Contain("inversions=1 maxGapSeconds=2 ");
+    }
+
+    [Fact]
+    public void Ozetten_sonra_pencere_yeniden_baslar_ayni_dakikadaki_olaylar_satir_yazmaz()
+    {
+        using var gate = NewGate();
+        var lane = gate.AddLane(New("p"), New("@u"));
+
+        _time.Advance(InstagramMergeGate.SummaryInterval);
+        lane.Publish(Msg(100)); // 1. özet; pencere bu andan yeniden başlar
+
+        _time.Advance(InstagramMergeGate.SummaryInterval - TimeSpan.FromTicks(1));
+        lane.Publish(Msg(101));
+        lane.RoundStarting();
+        lane.RoundCompleted(InstagramPollKind.Ok, null, TimeSpan.Zero, null);
+
+        Summaries().Should().ContainSingle(); // yeni pencere dolmadı: olay başına satır yok
+
+        _time.Advance(TimeSpan.FromTicks(1));
+        lane.RoundStarting();
+
+        Summaries().Should().HaveCount(2); // tam bir dakika sonra ikinci satır
     }
 
     [Fact]
@@ -493,16 +563,21 @@ public sealed class InstagramMergeGateTests
         var lanes = Enumerable.Range(0, 4).Select(_ => gate.AddLane(New("p"), New("@u"))).ToArray();
 
         // Damga yayımdan hemen önce ortak sayaçtan alınır: hesap içinde hep ileri gider, hesaplar arasında
-        // da neredeyse hep. Ölçülen sıra basılan sıradan bir kez bile saparsa sayılar tutmaz.
+        // da neredeyse hep. Ölçülen sıra basılan sıradan saparsa sayılar büyük olasılıkla tutmaz.
         long clock = 0;
+        using var ready = new CountdownEvent(lanes.Length);
         using var start = new ManualResetEventSlim();
         var writers = lanes.Select(lane => Task.Run(() =>
         {
+            ready.Signal();
             start.Wait();
             for (var i = 0; i < perLane; i++)
                 lane.Publish(Msg(Interlocked.Increment(ref clock)));
         })).ToArray();
 
+        // Yazarlar ancak hepsi hazırken birlikte bırakılır: havuz doluyken art arda koşsalardı damgalar hep
+        // ileri gider, test çekişme olmadan geçerdi.
+        ready.Wait(TestPatience.Upper).Should().BeTrue();
         start.Set();
         await Task.WhenAll(writers).WaitAsync(TestPatience.Upper);
         gate.Dispose();
