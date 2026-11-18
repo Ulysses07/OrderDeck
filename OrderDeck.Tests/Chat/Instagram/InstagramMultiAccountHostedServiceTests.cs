@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
@@ -152,16 +153,22 @@ internal sealed class InstagramLiveFeed
     {
         var token = TokenIn(request);
         string body;
+        string? usageHeader;
+        Func<string, HttpResponseMessage?>? intercept;
         lock (_gate)
         {
-            // Sayaç ile yanıtın yorum listesi AYNI kilit altında: sayaç arttıktan sonra eklenen yorum bu yanıta
-            // girmez (NextAsync'in sözü).
+            // Sayaç ile yanıtın içeriği (yorum listesi, başlık, hangi betiğin uygulanacağı) AYNI kilit altında
+            // belirlenir: sayaç arttıktan sonra eklenen yorum ya da değiştirilen betik bu yanıta girmez
+            // (NextAsync'in sözü).
             _served.Add(token);
             body = Body();
+            usageHeader = _usageHeader;
+            intercept = _intercept;
         }
 
-        // Kilit DIŞINDA: bekleten ya da fırlatan bir betik öteki istekleri ve sayaç okumalarını tutmasın.
-        return _intercept?.Invoke(token) ?? FakeGraph.Json(body, usageHeader: _usageHeader);
+        // Betik kilit DIŞINDA çağrılır: bekleten ya da fırlatan bir betik öteki istekleri ve sayaç okumalarını
+        // tutmasın.
+        return intercept?.Invoke(token) ?? FakeGraph.Json(body, usageHeader: usageHeader);
     }
 
     /// <summary>Olağan yanıt gövdesi; Graph gibi en yeni yorum önce. Kilit altında çağrılır.</summary>
@@ -552,5 +559,245 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
             e.Level == LogLevel.Error
             && e.Message.StartsWith("[InstagramChatHostedService]")
             && e.Message.Contains(page.Page.PageId));
+    }
+
+    // ── Üst döngü ve oturum sonu ─────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Yalnız kurduğu zamanlayıcıları sayar (sistem saati): servisin kaç kez beklemeye girdiğini gösterir.</summary>
+    private sealed class CountingTime : TimeProvider
+    {
+        private int _timers;
+
+        public int Timers => Volatile.Read(ref _timers);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Interlocked.Increment(ref _timers);
+            return base.CreateTimer(callback, state, dueTime, period);
+        }
+    }
+
+    /// <summary>Saat İLK okunduğunda verilen işi bir kez koşturur (sistem saati).</summary>
+    private sealed class HookedClock(Action onFirstRead) : TimeProvider
+    {
+        private Action? _onFirstRead = onFirstRead;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            Interlocked.Exchange(ref _onFirstRead, null)?.Invoke();
+            return base.GetUtcNow();
+        }
+    }
+
+    /// <summary>Sabit an (2026-03-01 20:00:00 UTC) ve sabit yerel ofset (+05:30); zamanlayıcılar gerçek süre bekler.</summary>
+    private sealed class FixedZoneTime : TimeProvider
+    {
+        public override TimeZoneInfo LocalTimeZone { get; } =
+            TimeZoneInfo.CreateCustomTimeZone("test", new TimeSpan(5, 30, 0), "test", "test");
+
+        public override DateTimeOffset GetUtcNow() => new(2026, 3, 1, 20, 0, 0, TimeSpan.Zero);
+    }
+
+    /// <summary>Oturum açmadan, verilen izleyici ve saatle servisi kurup başlatır.</summary>
+    private Task StartServiceAsync(InstagramHealthMonitor health, TimeProvider time, InstagramChatTimings? timings = null)
+    {
+        _service = new InstagramChatHostedService(
+            _oauth, _bus, _logs, spamFilter: null, _sessions, _kit.HttpFactory, health, time, timings ?? Fast);
+        return _service.StartAsync(CancellationToken.None);
+    }
+
+    /// <summary>Kapının (tek) özet satırındaki kulvar parçaları: <c>… lanes: {etiket} rounds=…; {etiket} rounds=…</c>.</summary>
+    private string[] SummaryLanes()
+    {
+        const string marker = "lanes: ";
+        var summary = Lines("[InstagramMergeGate]").Single();
+        return summary[(summary.IndexOf(marker, StringComparison.Ordinal) + marker.Length)..].Split("; ");
+    }
+
+    [Fact] // AH4: operatör "Yayın Başlat"a basmadıysa Graph'a dokunulmaz
+    public async Task Oturum_yokken_Graph_a_dokunulmaz_oturum_acilinca_yoklama_baslar()
+    {
+        var (page, feed) = await OneAsync();
+        var time = new CountingTime();
+
+        await StartServiceAsync(_health, time);
+
+        // Üst döngü oturum kapısından iki kez dönene dek (kapı çalışmıyorsa ilk isteğe dek) beklenir.
+        await Until(() => time.Timers >= 2 || _kit.Graph.Requests.Count > 0);
+        _kit.Graph.Requests.Should().BeEmpty();
+        _health.Snapshot().Should().BeEmpty(); // girdiler oturum açılınca kurulur
+        StartSession();
+        await feed.PrimedAsync();
+        await Until(() => State(page) == Live);
+    }
+
+    [Fact]
+    public async Task Hesap_donguleri_baslamadan_biten_oturum_kacmaz_Graph_a_dokunulmaz()
+    {
+        await TwoAsync();
+        StartSession();
+        // Kanca: izleyici Configure'da saati okur. O an oturum kapısı "oturum açık" dedikten SONRA, hesap
+        // döngüleri başlamadan ÖNCEdir; oturum tam orada biter.
+        var health = new InstagramHealthMonitor(new HookedClock(() => EndSession(_sessions.GetActive()!.Id)));
+
+        await StartServiceAsync(health, _time);
+
+        // Oturum toplanana (kapı kapanana) dek beklenir; olay kaçtıysa hesap döngüleri çalışır ve ilk istek gelir.
+        await Until(() => Lines("[InstagramMergeGate]").Count == 1 || _kit.Graph.Requests.Count > 0);
+        _kit.Graph.Requests.Should().BeEmpty(); // biten oturum için tek istek atılmadı
+        health.Snapshot().Should().HaveCount(2).And.OnlyContain(h => h.State == Stopped);
+    }
+
+    [Fact]
+    public async Task Servis_durdurulunca_ayni_toplama_kosar_StopAsync_donmeden_kapi_ozeti_yazilir()
+    {
+        var (_, _, feedA, feedB) = await TwoAsync();
+        await RunAsync();
+        await Task.WhenAll(feedA.PrimedAsync(), feedB.PrimedAsync());
+
+        await _service!.StopAsync(CancellationToken.None);
+
+        // Yoklanmadan, hemen bakılır: toplama StopAsync dönmeden bitmiş olmalı.
+        Lines("[InstagramMergeGate]").Should().ContainSingle();
+        _health.Snapshot().Should().HaveCount(2).And.OnlyContain(h => h.State == Stopped);
+    }
+
+    // ── Hesap döngüsü ────────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact] // TK15 + §8.8: saat UTC'den çevrilmezse günlükteki saat Türkiye'de 3 saat kayar
+    public async Task Cozumlemesi_dusen_hesap_ResolveFailed_olur_gecis_satiri_yeniden_deneme_saatini_yerel_saatle_yazar()
+    {
+        var (page, _) = await OneAsync();
+        _kit.Graph.Map(u => IsResolve(u, page), _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError));
+        var time = new FixedZoneTime();
+        var health = new InstagramHealthMonitor(time);
+        StartSession();
+
+        await StartServiceAsync(health, time, Fast with { IdleAfterFatal = TimeSpan.FromMinutes(2) });
+
+        await Until(() => health.Snapshot().SingleOrDefault()?.State == ResolveFailed);
+        health.Snapshot().Single().RetryAt.Should().Be(time.GetUtcNow() + TimeSpan.FromMinutes(2));
+        await Until(() => Lines(AccountPrefix).Any(l => l.Contains("Starting -> ResolveFailed, retry at ")));
+        // 20:02:00 UTC, +05:30'da ertesi günün 01:32:00'sidir: ne UTC (CI) ne +03:00 (geliştirme makinesi).
+        Lines(AccountPrefix).Should().ContainSingle(l => l.Contains("-> ResolveFailed"))
+            .Which.Should().EndWith("Starting -> ResolveFailed, retry at 01:32:00");
+    }
+
+    [Fact]
+    public async Task Atlanan_sayfa_yeniden_bakista_Starting_e_donup_yanip_sonmez()
+    {
+        var (a, b, _, _) = await TwoAsync();
+        _kit.Graph.AddPage(b.Page.PageId, b.Page.PageName, a.IgUserId, a.IgUsername);
+
+        await RunAsync(); // 5 dakikalık bekleme 200 ms: atlanan Sayfa 200 ms'de bir yeniden bakar
+
+        string? skipped = null;
+        await Until(() => (skipped = _health.Snapshot().FirstOrDefault(h => h.State == Skipped)?.PageId) is not null);
+        await Until(() => _logs.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains(skipped!)) >= 3); // iki kez yeniden bakıldı
+        Lines(AccountPrefix).Where(l => l.Contains($"(page {skipped}): ")).Should().SatisfyRespectively(
+            first => first.Should().EndWith("Stopped -> Starting"),
+            second => second.Should().MatchRegex(@"Starting -> Skipped, retry at \d\d:\d\d:\d\d$"));
+    }
+
+    [Fact]
+    public async Task Poller_yeniden_kurulunca_ayni_kulvar_kullanilir_ve_ilk_cekim_yine_yutulur()
+    {
+        var (a, b, _, feedB) = await TwoAsync();
+        var session = await RunAsync(); // 5 dakikalık bekleme 200 ms
+        await Until(() => State(a) == Live && State(b) == Live); // B'nin ilk poller'ı ilk çekimini yuttu
+        feedB.Intercept = _ => FakeGraph.Error(190); // B kalıcı hatayla çıkar, 200 ms'de bir yeniden kurulur
+        await Until(() => PollerStarts(b) >= 2); // ilk poller bitti
+        var gap = feedB.Add(); // B'nin çalışan poller'ı yokken yazıldı
+
+        feedB.Intercept = null;
+
+        Message(await FlowAsync(feedB)).SourceAccount.Should().Be("@" + b.IgUsername);
+        Got(gap).Should().BeFalse(); // filigran taze: yeni poller'ın ilk çekimi yutuldu
+        EndSession(session);
+        await Until(() => Lines("[InstagramMergeGate]").Count == 1);
+        SummaryLanes().Should().HaveCount(2) // hesap başına TEK kulvar: yeniden kurulan poller yenisini açmadı
+            .And.ContainSingle(l => l.StartsWith($"@{a.IgUsername} rounds="))
+            .And.ContainSingle(l => l.StartsWith($"@{b.IgUsername} rounds="));
+    }
+
+    [Fact]
+    public async Task Bes_gecici_hatadan_sonra_poller_kisa_beklemeyle_yeniden_kurulur_ve_kota_satiri_yazilmaz()
+    {
+        var (page, feed) = await OneAsync();
+        feed.Intercept = _ => throw new HttpRequestException();
+
+        await RunAsync(Fast with { IdleAfterFatal = Long }); // yeniden kurulum uzun beklemeye düşseydi test düşerdi
+
+        await Until(() => PollerStarts(page) >= 2); // 5 ardışık geçici hata: poller çıktı, kısa beklemeden sonra yenisi kuruldu
+        feed.Served.Should().BeGreaterThanOrEqualTo(5);
+        Lines(UsagePrefix).Should().BeEmpty(); // geçici hatalı turda kota satırı yok
+        State(page).Should().Be(Starting);
+    }
+
+    // ── Günlük ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Gecis_satirinda_hesap_adi_kullanici_adi_bilinmiyorsa_sayfa_adidir()
+    {
+        var (a, b, _, _) = await TwoAsync();
+        _kit.Graph.AddPage(b.Page.PageId, b.Page.PageName, b.IgUserId); // B'nin kullanıcı adı yanıtta yok
+
+        await RunAsync();
+
+        await Until(() => Lines(AccountPrefix).Count(l => l.EndsWith("Starting -> Live")) == 2);
+        Lines(AccountPrefix).Should().Contain(new[]
+        {
+            AccountPrefix + $"{a.Page.PageName} (page {a.Page.PageId}): Stopped -> Starting", // henüz çözülmedi: Sayfa adı
+            AccountPrefix + $"@{a.IgUsername} (page {a.Page.PageId}): Starting -> Live",
+            AccountPrefix + $"{b.Page.PageName} (page {b.Page.PageId}): Stopped -> Starting",
+            AccountPrefix + $"{b.Page.PageName} (page {b.Page.PageId}): Starting -> Live", // "@"sız
+        });
+    }
+
+    [Fact]
+    public async Task Kalici_hata_yinelenince_gecis_satiri_yinelenmez_ve_tur_olayi_saatsiz_satir_yazmaz()
+    {
+        var (page, feed) = await OneAsync();
+        feed.Intercept = _ => FakeGraph.Error(190);
+
+        await RunAsync(); // 5 dakikalık bekleme 200 ms: poller kurulur, kalıcı hatayla çıkar, yeniden kurulur
+
+        await Until(() => PollerStarts(page) >= 3); // iki tam kalıcı hata turu geçti
+        Lines(AccountPrefix).Should().ContainSingle(l => l.Contains("-> Faulted"))
+            .Which.Should().MatchRegex(@": Starting -> Faulted, retry at \d\d:\d\d:\d\d$");
+    }
+
+    [Fact]
+    public async Task Kota_satiri_okunamayan_basligi_soyler_kovalari_noktali_virgulle_ayirir_sayilari_kulturden_bagimsiz_yazar()
+    {
+        var (page, feed) = await OneAsync();
+        var who = $"@{page.IgUsername} (page {page.Page.PageId}): ";
+        feed.UsageHeader = "okunamaz";
+
+        await RunAsync();
+
+        await Until(() => Lines(UsagePrefix).Count == 1);
+        Lines(UsagePrefix)[0].Should().Be(UsagePrefix + who + "X-Business-Use-Case-Usage header unreadable");
+
+        var (first, second) = (FacebookOAuthTestKit.NewId(), FacebookOAuthTestKit.NewId());
+        var buckets = new JsonObject();
+        foreach (var usage in new[]
+                 {
+                     InstagramLiveFeed.Usage(first, callCount: 100.456, cpuTime: 0, totalTime: 7, regainMinutes: 12.5),
+                     InstagramLiveFeed.Usage(second, callCount: 1, cpuTime: 2, totalTime: 3),
+                 })
+        {
+            foreach (var (business, bucket) in JsonNode.Parse(usage)!.AsObject())
+                buckets[business] = bucket!.DeepClone();
+        }
+
+        feed.UsageHeader = buckets.ToJsonString();
+        await feed.NextAsync(); // eski başlıklı son tur bitti: bundan sonraki her yanıt yeni başlığı taşır
+        _time.Advance(TimeSpan.FromMinutes(1));
+        await Until(() => Lines(UsagePrefix).Count == 2);
+        Lines(UsagePrefix)[1].Should().Be(
+            UsagePrefix + who
+            + $"business {first} call_count 100.46% total_cputime 0% total_time 7% regain 12.5 min; "
+            + $"business {second} call_count 1% total_cputime 2% total_time 3% regain 0 min");
     }
 }
