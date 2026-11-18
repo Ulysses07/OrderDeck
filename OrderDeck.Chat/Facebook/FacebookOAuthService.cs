@@ -91,6 +91,9 @@ public sealed class FacebookOAuthService
         "Bekleyen bir Facebook onayı var. Tarayıcıdaki onayı tamamla ya da " +
         "birkaç dakika sonra yeniden dene.";
 
+    private const string DisconnectedWhileWaitingMessage =
+        "Onay beklenirken Facebook bağlantısı kaldırıldı.";
+
     private static readonly string GraphBase =
         $"https://graph.facebook.com/{FacebookOAuthDefaults.GraphApiVersion}";
     private static readonly string DialogBase =
@@ -112,11 +115,12 @@ public sealed class FacebookOAuthService
     private int _browserFlowPending;
 
     // Demeti oku-değiştir-yaz yapan bölümler (ek Sayfa ekle / kaldır, ConnectAsync'in
-    // kaydetme adımı, DisconnectAsync) bu kilit altında çalışır. NEDEN: iki değişiklik
-    // aynı eski demetten yola çıkarsa sonuncusu ötekinin yazdığını ezer (kayıp
-    // güncelleme). Kilit altında önce diske yazılır, sonra _bundle TEK atamayla
-    // değişir: yazım düşerse bellek eski hâlinde kalır. Kilit tarayıcı beklemesini
-    // KAPSAMAZ. Okuyan üyeler kilit almaz: demet değişmez bir kayıttır.
+    // ve ReauthorizeAsync'in kaydetme adımı, DisconnectAsync) bu kilit altında
+    // çalışır. NEDEN: iki değişiklik aynı eski demetten yola çıkarsa sonuncusu
+    // ötekinin yazdığını ezer (kayıp güncelleme). Kilit altında önce diske yazılır,
+    // sonra _bundle TEK atamayla değişir: yazım düşerse bellek eski hâlinde kalır.
+    // Kilit tarayıcı beklemesini KAPSAMAZ. Okuyan üyeler kilit almaz: demet değişmez
+    // bir kayıttır.
     //
     // Tembel yükleme (IsConnectedAsync) de kilitsizdir, ama alanı yalnız BOŞKEN
     // yayımlar: kilit altında yayımlanmış demeti ezemez. Bilinen ve kabul edilen
@@ -435,6 +439,169 @@ public sealed class FacebookOAuthService
             _log.LogInformation("Facebook OAuth extra Page removed: {PageId} ({PageName})",
                 removed.PageId, removed.PageName);
             return true;
+        }
+        finally
+        {
+            _mutate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Tarayıcı onayını yeniden çalıştırır ("Facebook izinlerini güncelle"): kullanıcı
+    /// token'ı ve yeni girişte görünen bağlı Sayfaların token'ları yenilenir. Sayfa
+    /// eklenmez, çıkarılmaz ve birincil Sayfa değişmez: Sayfa seçici açılmaz,
+    /// <see cref="ConnectAsync"/>'in "tek Sayfa dönerse onu seç" dalı bu yolda yoktur.
+    /// NEDEN ayrı yol: bağlantıyı kaldırıp yeniden bağlanmak ek Sayfaları silerdi ve
+    /// yeni girişte tek Sayfa dönerse birincil ona kayardı; Facebook yorumları ve
+    /// moderasyon birincil Sayfadan çalışır.
+    ///
+    /// <para>Sıra: (1) tarayıcı onayıyla yeni kullanıcı token'ı (zaman aşımı, iptal ve
+    /// tek akış kuralları: <see cref="AcquireUserTokenAsync"/>); (2) yeni token'la
+    /// Sayfalar sayfalamalı listelenir; (3) bağlı olup listede görünmeyen Sayfa varsa
+    /// <paramref name="confirmMissing"/> sorulur; (4) listede görünen her bağlı
+    /// Sayfanın token'ı yeniden türetilir, türetilemeyenin eski token'ı kalır;
+    /// (5) tek yazım.</para>
+    ///
+    /// <para>Kilit yalnız yazımı kapsar: tarayıcı beklemesi, soru ve türetme sürerken
+    /// bağlantı kaldırılabilir, ek Sayfa eklenip kaldırılabilir. Yazım bu yüzden
+    /// GÜNCEL demetin üstüne yapılır: o arada kaldırılan bağlantı dirilmez, kaldırılan
+    /// ek Sayfa geri gelmez, eklenen korunur. Listede görünmeyen Sayfanın girdisi
+    /// SİLİNMEZ, eski token'ıyla kalır: erişimi gerçekten düştüyse sessizce kaybolmak
+    /// yerine sağlık göstergesinde görünür.</para>
+    ///
+    /// <para>İstisnayla biten her yolda diskteki demet değişmemiştir.</para>
+    /// </summary>
+    /// <param name="confirmMissing">Yalnız bağlı olup yeni girişte görünmeyen Sayfa
+    /// varsa, o Sayfalarla (bağlı sırasıyla, birincil dahil) çağrılır. False dönerse
+    /// hiçbir şey yazılmaz. <see cref="ConnectAsync"/>'in Sayfa seçicisi gibi çağıranın
+    /// iş parçacığında çağrılmayabilir.</param>
+    /// <param name="ct">Akışın tamamını iptal eder.</param>
+    /// <exception cref="InvalidOperationException">Facebook bağlı değil (tarayıcı
+    /// açılmaz); bekleyen bir onay var; akış hatayla bitti (Facebook ekranındaki
+    /// "İptal" dahil); ya da onay beklenirken bağlantı kaldırıldı.</exception>
+    /// <exception cref="TimeoutException">Onay süresinde tamamlanmadı.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="confirmMissing"/>
+    /// false döndü ya da <paramref name="ct"/> iptal edildi. Listeleme ağ zaman
+    /// aşımına uğrarsa da bu tipin alt tipi (<see cref="TaskCanceledException"/>)
+    /// çıkar; o durumda <paramref name="ct"/> iptal edilmemiştir.</exception>
+    /// <exception cref="HttpRequestException">Sayfalar listelenemedi: ağ hatası ya da
+    /// Graph hatası (<see cref="FacebookGraphException"/>). Token ve izin kodları da
+    /// eşlenmeden çıkar: hata boş liste sayılmaz.</exception>
+    public async Task<FacebookReauthorizeResult> ReauthorizeAsync(
+        Func<IReadOnlyList<FacebookLinkedPage>, CancellationToken, Task<bool>> confirmMissing,
+        CancellationToken ct = default)
+    {
+        // 1. Yalnız bağlıyken: bağlı değilse tarayıcı hiç açılmaz.
+        if (await ReadBundleAsync(ct).ConfigureAwait(false) is null)
+            throw new InvalidOperationException(NotConnectedMessage);
+
+        var longLived = await AcquireUserTokenAsync(ct).ConfigureAwait(false);
+
+        // ConnectAsync'teki hesap. Token alınır alınmaz yapılır: ömür o andan sayılır,
+        // aşağıdaki soru ise dakikalarca yanıt bekleyebilir.
+        var expires = longLived.ExpiresInSeconds > 0
+            ? DateTimeOffset.UtcNow.AddSeconds(longLived.ExpiresInSeconds)
+            : (DateTimeOffset?)null;
+
+        // 2. Yeni girişin gördüğü Sayfalar, SAYFALAMALI. NEDEN ListPagesAsync değil: ilk
+        //    yanıt sayfasına sığmayan bağlı Sayfa "eksik" sayılır, boşuna onay sorulurdu.
+        //    Hata burada eşlenmez, olduğu gibi yükselir: boş liste sayılsaydı bağlı bütün
+        //    Sayfalar eksik görünürdü.
+        var listed = await ListAccountsPagedAsync(longLived.AccessToken, ct).ConfigureAwait(false);
+        var listedIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in listed) listedIds.Add(row.PageId);
+
+        // 3. Bağlı Sayfalar ŞİMDİ okunur: tarayıcı beklemesi kilit dışındaydı, o arada
+        //    bağlantı kaldırılmış ya da ek Sayfalar değişmiş olabilir.
+        var connected = await GetConnectedPagesAsync(ct).ConfigureAwait(false);
+        if (connected.Count == 0)
+            throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
+
+        var missing = new List<FacebookLinkedPage>();
+        foreach (var page in connected)
+        {
+            if (!listedIds.Contains(page.PageId)) missing.Add(page);
+        }
+
+        // Soru kilit DIŞINDA sorulur: yanıt beklenirken bağlantıyı kaldırmak mümkün kalır.
+        if (missing.Count > 0 && !await confirmMissing(missing, ct).ConfigureAwait(false))
+            throw new OperationCanceledException(
+                "Yeni girişte görünmeyen Sayfalar onaylanmadı; izin güncellemesi kaydedilmedi.");
+
+        // 4. Listede görünen her bağlı Sayfanın token'ı yeni kullanıcı token'ıyla, bağlı
+        //    sırasıyla ve kilit DIŞINDA yeniden türetilir. Türetilemeyen Sayfa atlanır:
+        //    eski token'ı kalır, öteki Sayfalar yenilenir. İptal, çağıranın belirtecinin
+        //    iptal edilmiş olmasıdır; belirteç iptal edilmemişken gelen
+        //    TaskCanceledException (HttpClient zaman aşımı) o Sayfanın hatasıdır.
+        var derived = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var page in connected)
+        {
+            if (!listedIds.Contains(page.PageId)) continue;
+            try
+            {
+                derived[page.PageId] = await GetPageAccessTokenAsync(
+                    page.PageId, longLived.AccessToken, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Satır yalnız hata tipini ve Graph kodunu taşır: istisna iletisi (Graph
+                // gövdesi) yazılmaz.
+                var graph = ex as FacebookGraphException;
+                _log.LogWarning(
+                    "Facebook OAuth reauthorize kept the stored token for Page {PageId}: " +
+                    "a new one could not be derived ({Error}, Graph code {Code}, subcode {Subcode})",
+                    page.PageId, ex.GetType().Name, graph?.Code, graph?.Subcode);
+            }
+        }
+
+        // 5. Tek yazım, kilit altında (gerekçe: _mutate) ve GÜNCEL demetin üstüne: kilit
+        //    yukarıdaki adımları kapsamadı. Bağlantı o arada kaldırıldıysa hiçbir şey
+        //    yazılmaz (bağlantı dirilmez). Sayfa eklenmez, çıkarılmaz: türetilen
+        //    token'lar yalnız hâlâ bağlı Sayfalara, PageId eşleşmesiyle yazılır.
+        await _mutate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var current = await ReadBundleAsync(ct).ConfigureAwait(false)
+                ?? throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
+
+            var refreshed = 0;
+            var primaryToken = current.PageAccessToken;
+            if (derived.TryGetValue(current.PageId, out var derivedPrimary))
+            {
+                primaryToken = derivedPrimary;
+                refreshed++;
+            }
+
+            // Yazılan ek liste geçerli eklerden kurulur (AddExtraPageAsync'teki gibi).
+            var extras = ExtraPagesOf(current);
+            for (var i = 0; i < extras.Count; i++)
+            {
+                if (!derived.TryGetValue(extras[i].PageId, out var derivedExtra)) continue;
+                extras[i] = extras[i] with { PageAccessToken = derivedExtra };
+                refreshed++;
+            }
+
+            var updated = current with
+            {
+                UserAccessToken = longLived.AccessToken,
+                PageAccessToken = primaryToken,
+                ExpiresAt = expires,
+                ExtraPages = extras.Count == 0 ? null : extras,
+            };
+
+            await _tokenStore.SaveAsync(updated, ct).ConfigureAwait(false);
+            _bundle = updated;
+
+            _log.LogInformation(
+                "Facebook OAuth reauthorized for Page {PageId} ({PageName}): " +
+                "{Refreshed} refreshed, {Missing} missing [{MissingPageIds}]",
+                updated.PageId, updated.PageName, refreshed, missing.Count,
+                string.Join(",", missing.ConvertAll(page => page.PageId)));
+            return new FacebookReauthorizeResult(refreshed, missing);
         }
         finally
         {
@@ -856,3 +1023,15 @@ public sealed record FacebookAddablePage(
 /// reddedilen alan): tarayıcılı izin güncellemesi gerekir. True iken
 /// <paramref name="Pages"/> boştur.</param>
 public sealed record FacebookPageListing(IReadOnlyList<FacebookAddablePage> Pages, bool NeedsReauthorize);
+
+/// <summary>
+/// <see cref="FacebookOAuthService.ReauthorizeAsync"/> sonucu.
+/// </summary>
+/// <param name="RefreshedPages">Kaydedilen demete yeni türetilmiş token'ı yazılan Sayfa
+/// sayısı (birincil dahil). Token'ı türetilemeyen, yeni girişte görünmeyen ve akış
+/// sürerken kaldırılan Sayfa sayılmaz.</param>
+/// <param name="MissingPages">Bağlı olup yeni girişte görünmeyen Sayfalar (bağlı
+/// sırasıyla, birincil dahil). Girdileri silinmedi, eski token'larıyla duruyor;
+/// erişimleri düşmüş olabilir.</param>
+public sealed record FacebookReauthorizeResult(
+    int RefreshedPages, IReadOnlyList<FacebookLinkedPage> MissingPages);

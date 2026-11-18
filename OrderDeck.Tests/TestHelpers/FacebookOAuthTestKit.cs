@@ -86,6 +86,22 @@ internal sealed class FacebookOAuthTestKit : IDisposable
         return pages;
     }
 
+    /// <summary>
+    /// "Facebook izinlerini güncelle"yi baştan sona koşar: yeniden onayı başlatır (eksik Sayfa
+    /// sorusuna "evet" der), servis tarayıcıyı açınca onayı verir ve sonucu
+    /// <see cref="TestPatience.Upper"/> içinde bekler. Ön koşul: bağlı Sayfalar <see cref="Graph"/>'ta
+    /// tanıtılmıştır (<see cref="SeedAsync"/> / <see cref="FakeGraph.AddPage"/>); o zaman hepsi yeni
+    /// girişte listelenir, kullanıcı token'ı ve her Sayfanın token'ı değişir. "Token değişti"
+    /// kurguları bununla üretilir.
+    /// </summary>
+    public async Task<FacebookReauthorizeResult> ReauthorizeAllAsync(FacebookOAuthService service)
+    {
+        var flow = service.ReauthorizeAsync((_, _) => Task.FromResult(true));
+        await Browser.WaitUntilOpenedAsync();
+        Browser.Complete();
+        return await flow.WaitAsync(TestPatience.Upper);
+    }
+
     public static string NewId() => $"id-{Guid.NewGuid():N}";
 
     public static string NewToken() => $"t-{Guid.NewGuid():N}";
