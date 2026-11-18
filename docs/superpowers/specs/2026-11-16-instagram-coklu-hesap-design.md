@@ -195,7 +195,7 @@ public sealed record FacebookTokenBundle(
 **Doğrulama durumu.** Şu davranışlar .NET 10.0.400 üzerinde, aynı serileştirici seçenekleriyle, repo dışı bir betikle çalıştırılarak doğrulandı: eski beş alanlı JSON yeni kayda okunuyor (`ExtraPages` null); yeni JSON eski beş alanlı kayda okunuyor, birincil alanlar tam; `IReadOnlyList<kayıt>` `List` olarak geliyor; eksik alan istisna atmıyor, null geliyor. Aynı denemede tek Sayfalı demet de `"ExtraPages":null` anahtarıyla yazıldı; eski sürüm bu anahtarı da atladığı için zararsızdır, yani "tek hesapta dosya bugünküyle aynı şekil" iddiası kurulmaz, kurulan iddia "eski sürüm okur"dur. Bu deneme gerçek depo sınıfı ve DPAPI ile yapılmadı; ilk görev bu davranışları CI testiyle kilitlemektir (§9.1).
 
 **Sağlamlık.**
-- **Atomik yazım (TK2).** `SaveAsync` şifreli baytları aynı klasörde geçici bir dosyaya yazar, sonra `File.Move(geçici, hedef, overwrite: true)` ile yerine koyar. Bugün `File.WriteAllBytes` (`:42`); yarım yazım bir sonraki açılışta `CryptographicException` dalına düşer, dosya silinir (`:60-65`) ve bütün hesaplar kopar. Ekle/kaldır ile yazım sıklaşacağı için bu risk büyüyor. Depo sınıfındaki tek değişiklik budur; `LoadAsync` aynen kalır.
+- **Atomik yazım (TK2).** `SaveAsync` şifreli baytları aynı klasörde geçici bir dosyaya yazar, sonra `File.Move(geçici, hedef, overwrite: true)` ile yerine koyar. Bugün `File.WriteAllBytes` (`:42`); yarım yazım bir sonraki açılışta `CryptographicException` dalına düşer, dosya silinir (`:60-65`) ve bütün hesaplar kopar. Ekle/kaldır ile yazım sıklaşacağı için bu risk büyüyor. Geçici dosya taşınmadan önce diske indirilir (güç kesintisinde hedef ad boş bir dosyayı göstermesin; emsal `SettingsStore.WriteThrough`) ve `ClearAsync` geçici dosyanın artığını da siler ("Bağlantıyı Kaldır"dan sonra diskte token kalmasın). Depo sınıfındaki değişiklik bundan ibarettir; `LoadAsync` aynen kalır.
 - Çözülemeyen şifre ya da bozuk JSON'da bugünkü davranış (dosya silinir, "bağlı değil") değişmez.
 - Ek girdilerden biri eksik alanlıysa `GetConnectedPagesAsync` yalnız onu atlar (§8.2); birincil düşmez.
 
@@ -845,7 +845,7 @@ Bu üç soru dışında tasarımın ilk taslağında sahibe sorulan altı konu, 
 | No | Karar | Yer |
 |---|---|---|
 | TK1 | Token deposuna sürüm alanı eklenmez; biçim salt eklemelidir (`ExtraPages`), birincil Sayfa üst düzey alanlarda kalır | §8.1 |
-| TK2 | Depo yazımı atomik yapılır (depo sınıfındaki tek değişiklik); token taşıyan iki kayıtta `ToString` token basmaz | §8.1 |
+| TK2 | Depo yazımı atomik yapılır (geçici dosya diske indirilerek; `ClearAsync` artığını da siler; depo sınıfında başka değişiklik yok); token taşıyan iki kayıtta `ToString` token basmaz | §8.1 |
 | TK3 | Birincil Sayfa yerinde değiştirilemez ve tek başına kaldırılamaz; Facebook yorum ve moderasyon hep birincilden çalışır | §8.2 |
 | TK4 | Yeniden onay ayrı bir akıştır: ekleri korur, birincili değiştirmez, eksik Sayfada kaydetmeden önce onay ister; `ConnectAsync` dışarıdan aynı kalır (farklar TK17'de: zaman aşımı ve tek tarayıcı akışı) | §8.2 |
 | TK5 | Hesap ekleme tarayıcısızdır ve ayrı bir çekmeceyle yapılır; mevcut Sayfa seçiciye dokunulmaz | §8.2, §8.6.1 |
