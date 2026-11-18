@@ -1,5 +1,6 @@
 using System.Net;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using OrderDeck.Tests.TestHelpers;
 using static OrderDeck.Chat.Ingestors.Instagram.InstagramAccountState;
 
@@ -15,8 +16,8 @@ namespace OrderDeck.Tests.Chat.Instagram;
 /// yeniden çözülür (çözümleyici önbelleği boşaltılır): izin güncellemede Instagram hesabının işareti kalktıysa
 /// bu, eski önbellekle kurulan poller'ın hatasında değil çözümlemede görünür.
 ///
-/// "Token değişti" kurgusu gerçek izin güncelleme akışıyla üretilir (<see cref="FacebookOAuthTestKit.ReauthorizeAllAsync"/>):
-/// bağlı her Sayfaya yeni token yazılır.
+/// "Token değişti" kurgusu gerçek izin güncelleme akışıyla üretilir
+/// (<see cref="FacebookOAuthTestKit.ReauthorizeAllAsync"/>): bağlı her Sayfaya yeni token yazılır.
 /// </summary>
 public sealed partial class InstagramMultiAccountHostedServiceTests
 {
@@ -105,5 +106,71 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         _kit.Graph.AddPage(page.Page.PageId, page.Page.PageName, page.IgUserId, page.IgUsername);
 
         await Until(() => State(page) == Live); // bekleme adım toplamıyla bitti
+    }
+
+    /// <summary>
+    /// Canlı olmuş bir hesap izin güncellemeden sonra "hesap yok"a düşebilir (§8.5): yeni onayda Instagram hesabının
+    /// işareti kaldırılmıştır. Önbellek boşaltılmasaydı poller önbellekteki hesapla yeniden kurulur; kopan bağ
+    /// çözümlemede değil, Meta'nın o an döndüğü hataya bağlı olarak poller'da görünürdü.
+    /// </summary>
+    [Fact]
+    public async Task Izin_guncellemede_Instagram_isareti_kalkan_hesap_poller_hatasiyla_degil_NotLinked_ile_gorunur()
+    {
+        var (page, feed) = await OneAsync();
+        var old = page.Page.PageAccessToken;
+        await RunAsync(Fast with { IdleAfterFatal = Long });
+        await Until(() => State(page) == Live);
+        _kit.Graph.AddPage(page.Page.PageId, page.Page.PageName); // yeni onayda Instagram hesabının işareti kaldırıldı
+        await _kit.ReauthorizeAllAsync(_oauth);
+
+        feed.Intercept = token => token == old ? FakeGraph.Error(190) : null; // eski token düştü
+
+        await Until(() => State(page) == NotLinked); // yeni token'la ilk iş çözümleme
+        PollerStarts(page).Should().Be(1); // önbellekteki hesapla poller kurulmadı
+        Health(page)!.WasLiveThisSession.Should().BeTrue(); // tek Sayfada şerit bu bilgiyle çıkar: hesap gizlenmez
+    }
+
+    /// <summary>
+    /// Bekleme adımları yalnız saklı token'ı okur (bellek): Graph'a istek atılmaz, ağın düzelmesi beklemeyi kesmez
+    /// (R8). Adım başına bir çözümleme denemesi, bekleyen hesabın Graph yükünü katlardı. Öteki hesabın turları
+    /// "bu arada onlarca adım geçti"nin tanığıdır.
+    /// </summary>
+    [Fact]
+    public async Task Cozumleme_beklemesi_ag_duzelince_kesilmez_ve_beklerken_Graph_a_istek_atilmaz()
+    {
+        var (_, b, feedA, _) = await TwoAsync();
+        var down = 1;
+        _kit.Graph.Map(
+            u => IsResolve(u, b) && Volatile.Read(ref down) == 1,
+            _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError));
+        await RunAsync(Fast with { IdleAfterFatal = Long });
+        await Until(() => State(b) == ResolveFailed);
+
+        Volatile.Write(ref down, 0); // ağ düzeldi: çözümleme artık başarılı olurdu
+
+        await FlowAsync(feedA);
+        await FlowAsync(feedA); // öteki hesap iki tur daha attı: B bu sırada onlarca adım bekledi
+        State(b).Should().Be(ResolveFailed);
+        ResolveRequests(b).Should().Be(1);
+    }
+
+    /// <summary>
+    /// Token'a yalnız iki bekleme bakar (hesap çözülemedi, kalıcı hata). Hesabını başka bir Sayfa yokladığı için
+    /// atlanan Sayfanın beklemesi düzdür: Sayfa token yüzünden atlanmadı. Her yeniden bakış bir uyarı satırı yazar.
+    /// </summary>
+    [Fact]
+    public async Task Atlanan_sayfanin_beklemesi_token_degisince_kesilmez()
+    {
+        var (a, b, feedA, _) = await TwoAsync();
+        _kit.Graph.AddPage(b.Page.PageId, b.Page.PageName, a.IgUserId, a.IgUsername); // iki Sayfa aynı hesaba çözülür
+        await RunAsync(Fast with { IdleAfterFatal = Long });
+        string? skipped = null;
+        await Until(() => (skipped = _health.Snapshot().FirstOrDefault(h => h.State == Skipped)?.PageId) is not null);
+
+        await _kit.ReauthorizeAllAsync(_oauth); // iki Sayfanın token'ı da değişti
+
+        await FlowAsync(feedA);
+        await FlowAsync(feedA); // hesabı yoklayan Sayfa iki tur daha attı
+        _logs.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains(skipped!)).Should().Be(1);
     }
 }
