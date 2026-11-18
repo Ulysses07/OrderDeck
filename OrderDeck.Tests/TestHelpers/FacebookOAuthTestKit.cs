@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Web;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.Chat.Facebook;
@@ -12,7 +14,8 @@ namespace OrderDeck.Tests.TestHelpers;
 /// <summary>
 /// Facebook OAuth servisini ağa ve tarayıcıya çıkmadan kuran test kiti: geçici klasörde GERÇEK
 /// şifreli depo (DPAPI), Graph yerine <see cref="FakeGraph"/>, lisans sunucusu yerine
-/// <see cref="FakeFacebookOAuthBroker"/>.
+/// <see cref="FakeFacebookOAuthBroker"/>, tarayıcı ve geri çağrı dinleyicisi yerine
+/// <see cref="FakeFacebookOAuthBrowser"/>.
 ///
 /// NEDEN gerçek depo: sınanan sözleşmelerin yarısı diskle ilgili (önce diske yaz, yazım düşerse
 /// bellek değişmesin, ikinci servis örneği aynı dosyayı görsün); sahte depo bunları kanıtlamaz.
@@ -41,16 +44,23 @@ internal sealed class FacebookOAuthTestKit : IDisposable
 
     public FakeFacebookOAuthBroker Broker { get; } = new();
 
+    /// <summary>Kitin kurduğu bütün servis örneklerinin paylaştığı sahte tarayıcı.</summary>
+    public FakeFacebookOAuthBrowser Browser { get; } = new();
+
     /// <summary>Hangi ad istenirse istensin <see cref="Graph"/>'a bağlı istemci verir.</summary>
     public IHttpClientFactory HttpFactory { get; }
 
     /// <summary>
     /// AYNI depo üstünde yeni bir servis örneği. Belleği boş başlar: diskten okur; "yazılan
-    /// gerçekten diske indi mi" sorusu ikinci bir örnekle böyle sınanır.
+    /// gerçekten diske indi mi" sorusu ikinci bir örnekle böyle sınanır. Tarayıcı onayı
+    /// <see cref="Browser"/>'dan geçer; <paramref name="callbackTimeout"/> verilmezse servisin
+    /// kendi süresi (<see cref="FacebookOAuthService.CallbackTimeout"/>) geçerlidir.
     /// </summary>
-    public FacebookOAuthService CreateService(ILogger<FacebookOAuthService>? log = null) =>
+    public FacebookOAuthService CreateService(
+        ILogger<FacebookOAuthService>? log = null, TimeSpan? callbackTimeout = null) =>
         new(() => Settings, Store, Broker, new HttpClient(Graph, disposeHandler: false),
-            log ?? NullLogger<FacebookOAuthService>.Instance);
+            log ?? NullLogger<FacebookOAuthService>.Instance,
+            Browser, callbackTimeout ?? FacebookOAuthService.CallbackTimeout);
 
     /// <summary>
     /// Bağlı bir kurulum tohumlar: birincil + <paramref name="extraPages"/> ek Sayfa. Demet depoya
@@ -133,6 +143,120 @@ internal sealed class FakeFacebookOAuthBroker : IFacebookOAuthBroker
         var token = FacebookOAuthTestKit.NewToken();
         _lastIssuedToken = token;
         return Task.FromResult(new FacebookLongLivedToken(token, ExpiresInSeconds: 5_184_000));
+    }
+}
+
+/// <summary>
+/// Tarayıcının ve geri çağrı dinleyicisinin sahtesi: tarayıcı açılmaz, port dinlenmez. Servis
+/// <see cref="Open"/> ile bir bekleme alır; test onu <c>Complete*</c> ile "Facebook geri döndü"
+/// diye tamamlar ya da hiç tamamlamaz (zaman aşımı ve iptal kurguları). Eşzamanlı güvenlidir.
+/// </summary>
+internal sealed class FakeFacebookOAuthBrowser : IFacebookOAuthBrowser
+{
+    private readonly object _gate = new();
+    private readonly List<string> _openedUrls = new();
+
+    // Servisin henüz bırakmadığı (Dispose etmediği) beklemeler, açılış sırasıyla.
+    private readonly List<Wait> _held = new();
+
+    /// <summary>Açılan onay adresleri, <see cref="Open"/> sırasıyla (anlık kopya).</summary>
+    public IReadOnlyList<string> OpenedUrls
+    {
+        get { lock (_gate) return _openedUrls.ToArray(); }
+    }
+
+    /// <summary>
+    /// Servisin hâlâ tuttuğu bekleme sayısı: <see cref="Open"/> ile artar, beklemenin
+    /// <c>Dispose</c>'u ile azalır. Gerçek tarayıcıda her biri açık bir dinleyicidir: sıfıra
+    /// inmezse sonraki deneme aynı adrese bağlanamaz.
+    /// </summary>
+    public int PendingWaits
+    {
+        get { lock (_gate) return _held.Count; }
+    }
+
+    public IFacebookOAuthCallbackWait Open(string authorizeUrl)
+    {
+        var wait = new Wait(this, authorizeUrl);
+        lock (_gate)
+        {
+            _openedUrls.Add(authorizeUrl);
+            _held.Add(wait);
+        }
+        return wait;
+    }
+
+    /// <summary>
+    /// AÇIK (tamamlanmamış ve bırakılmamış) bir bekleme oluşana dek yoklar; önceki akışın bitmiş
+    /// beklemesi sayılmaz. <see cref="TestPatience.Upper"/> dolarsa <see cref="TimeoutException"/>.
+    /// </summary>
+    public async Task WaitUntilOpenedAsync()
+    {
+        var waited = Stopwatch.StartNew();
+        while (!HasOpenWait())
+        {
+            if (waited.Elapsed > TestPatience.Upper)
+                throw new TimeoutException(
+                    $"servis {TestPatience.Upper.TotalSeconds} sn'de tarayıcı onayı açmadı");
+            await Task.Delay(20);
+        }
+    }
+
+    /// <summary>Onay verildi: üretilmiş bir code ve açılan adresin <c>state</c> değeriyle geri döner.</summary>
+    public void Complete() =>
+        CompleteOpenWait(url => new FacebookOAuthCallback(NewCode(), StateOf(url), null, null));
+
+    /// <summary>Facebook hatayla geri döndü (ör. onay ekranındaki "İptal": <c>access_denied</c>).</summary>
+    public void CompleteWithError(string error, string? description = null) =>
+        CompleteOpenWait(_ => new FacebookOAuthCallback(null, null, error, description));
+
+    /// <summary>Üretilmiş bir code ama verilen <paramref name="state"/> ile geri döner (başka denemeden gelen geri çağrı).</summary>
+    public void CompleteWithState(string state) =>
+        CompleteOpenWait(_ => new FacebookOAuthCallback(NewCode(), state, null, null));
+
+    private bool HasOpenWait()
+    {
+        lock (_gate) return _held.Exists(wait => !wait.IsCompleted);
+    }
+
+    /// <summary>En son açılan açık beklemeyi tamamlar; açık bekleme yoksa <see cref="InvalidOperationException"/>.</summary>
+    private void CompleteOpenWait(Func<string, FacebookOAuthCallback> callbackFor)
+    {
+        lock (_gate)
+        {
+            var wait = _held.FindLast(candidate => !candidate.IsCompleted)
+                ?? throw new InvalidOperationException(
+                    "Açık tarayıcı beklemesi yok: önce WaitUntilOpenedAsync ile bekle.");
+            wait.Complete(callbackFor(wait.AuthorizeUrl));
+        }
+    }
+
+    private void Release(Wait wait)
+    {
+        lock (_gate) _held.Remove(wait);
+    }
+
+    private static string NewCode() => $"code-{Guid.NewGuid():N}";
+
+    private static string? StateOf(string authorizeUrl) =>
+        HttpUtility.ParseQueryString(new Uri(authorizeUrl).Query)["state"];
+
+    private sealed class Wait(FakeFacebookOAuthBrowser owner, string authorizeUrl) : IFacebookOAuthCallbackWait
+    {
+        // RunContinuationsAsynchronously: tamamlayan test, servisin devamını kendi iş parçacığında
+        // (ve sahtenin kilidi altında) koşturmasın.
+        private readonly TaskCompletionSource<FacebookOAuthCallback> _callback =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string AuthorizeUrl { get; } = authorizeUrl;
+
+        public bool IsCompleted => _callback.Task.IsCompleted;
+
+        public Task<FacebookOAuthCallback> WaitAsync(CancellationToken ct) => _callback.Task.WaitAsync(ct);
+
+        public void Complete(FacebookOAuthCallback callback) => _callback.SetResult(callback);
+
+        public void Dispose() => owner.Release(this);
     }
 }
 

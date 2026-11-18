@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -73,7 +72,24 @@ public sealed class FacebookOAuthService
     /// </summary>
     private const int MaxAccountsResponsePages = 10;
 
+    /// <summary>
+    /// Tarayıcıdaki onayın en çok bekleneceği süre. NEDEN: kullanıcı onay sekmesini
+    /// kapatırsa uygulama bunu algılayamaz; süre olmasaydı bekleme süresiz kalır,
+    /// dinleyici açık kaldığı için sonraki deneme de bağlanamazdı. Süre tek yerde,
+    /// burada durur; testler kısasını kurucudan verir.
+    /// </summary>
+    internal static readonly TimeSpan CallbackTimeout = TimeSpan.FromMinutes(5);
+
     private const string NotConnectedMessage = "Facebook bağlı değil.";
+
+    // Sabit metin: arayüz bunu olduğu gibi gösterir; testlerin kurucudan verdiği
+    // kısa süre metne yansımaz.
+    private const string CallbackTimeoutMessage =
+        "Facebook onayı 5 dakika içinde tamamlanmadı. Yeniden dene.";
+
+    private const string PendingFlowMessage =
+        "Bekleyen bir Facebook onayı var. Tarayıcıdaki onayı tamamla ya da " +
+        "birkaç dakika sonra yeniden dene.";
 
     private static readonly string GraphBase =
         $"https://graph.facebook.com/{FacebookOAuthDefaults.GraphApiVersion}";
@@ -85,6 +101,15 @@ public sealed class FacebookOAuthService
     private readonly IFacebookOAuthBroker _broker;
     private readonly HttpClient _http;
     private readonly ILogger<FacebookOAuthService> _log;
+    private readonly IFacebookOAuthBrowser _browser;
+    private readonly TimeSpan _callbackTimeout;
+
+    // Aynı anda tek tarayıcı akışı: 0 = boş, 1 = bekleyen akış var (Interlocked).
+    // NEDEN: dinleyici tek bir adrese bağlanır; ikinci akış "Failed to bind" ile
+    // düşerdi. AcquireUserTokenAsync girişte alır, her çıkış yolunda bırakır.
+    // _mutate bu iş için KULLANILMAZ: bekleme dakikalarca sürebilir ve o sırada
+    // bağlantıyı kaldırmak ya da ek Sayfa eklemek mümkün kalmalıdır.
+    private int _browserFlowPending;
 
     // Demeti oku-değiştir-yaz yapan bölümler (ek Sayfa ekle / kaldır, ConnectAsync'in
     // kaydetme adımı, DisconnectAsync) bu kilit altında çalışır. NEDEN: iki değişiklik
@@ -105,12 +130,28 @@ public sealed class FacebookOAuthService
         IFacebookOAuthBroker broker,
         HttpClient http,
         ILogger<FacebookOAuthService> log)
+        : this(settings, tokenStore, broker, http, log,
+            new LoopbackFacebookOAuthBrowser(), CallbackTimeout)
+    {
+    }
+
+    /// <summary>Test girişi: tarayıcı dikişi ve onay bekleme süresi dışarıdan verilir.</summary>
+    internal FacebookOAuthService(
+        Func<AppSettings> settings,
+        EncryptedFacebookTokenStore tokenStore,
+        IFacebookOAuthBroker broker,
+        HttpClient http,
+        ILogger<FacebookOAuthService> log,
+        IFacebookOAuthBrowser browser,
+        TimeSpan callbackTimeout)
     {
         _settings = settings;
         _tokenStore = tokenStore;
         _broker = broker;
         _http = http;
         _log = log;
+        _browser = browser;
+        _callbackTimeout = callbackTimeout;
     }
 
     /// <summary>True if a Page access token is on disk.</summary>
@@ -173,61 +214,21 @@ public sealed class FacebookOAuthService
     /// the operator has more than one Page; it gets the candidate list and
     /// should return the user's choice (or null to abort). If they have
     /// exactly one Page we auto-pick — keeps the common case one-click.
+    ///
+    /// <para>Tarayıcı onayı en çok <see cref="CallbackTimeout"/> beklenir ve aynı
+    /// anda tek akış yürür (kurallar: <see cref="AcquireUserTokenAsync"/>).</para>
     /// </summary>
+    /// <exception cref="TimeoutException">Onay süresinde tamamlanmadı; diske yazılmadı.</exception>
+    /// <exception cref="InvalidOperationException">Bekleyen bir onay var, ya da
+    /// akış hatayla bitti (Facebook ekranındaki "İptal" dahil).</exception>
     public async Task ConnectAsync(
         Func<IReadOnlyList<FacebookPageCandidate>, CancellationToken, Task<FacebookPageCandidate?>> pagePicker,
         CancellationToken ct = default)
     {
         var s = _settings();
 
-        // 0. Yapılandırma lisans sunucusundan gelir. Eskiden derleme
-        //    zamanı sabitiydi; yayın hattına enjeksiyon adımı hiç eklenmediği
-        //    için sahaya BOŞ gidiyor ve her kurulumda "App ID eksik" hatası
-        //    veriyordu. Artık tek kaynak sunucu.
-        var cfg = await _broker.GetFacebookOAuthConfigAsync(ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(cfg.AppId))
-            throw new InvalidOperationException(
-                "Sunucu Facebook uygulamasını bildirmedi. Lisans sunucusunda " +
-                "OrderDeck:Facebook yapılandırması eksik.");
-
-        // 1. Authorise URL — state binds the callback to this attempt so a
-        //    stale browser tab can't smuggle a code from a different session.
-        var state = GenerateState();
-        var url = BuildAuthorizeUrl(cfg.AppId, cfg.LoginConfigId, cfg.RedirectUri, state);
-
-        // 2. Spin up the loopback listener BEFORE opening the browser so we
-        //    don't lose the redirect if Facebook is uncharacteristically fast.
-        using var listener = new HttpListener();
-        listener.Prefixes.Add(LoopbackPrefix);
-        try
-        {
-            listener.Start();
-        }
-        catch (HttpListenerException ex)
-        {
-            throw new InvalidOperationException(
-                $"Failed to bind {LoopbackPrefix} — another process is using " +
-                "the port, or you need to run as administrator once to grant " +
-                "URL ACL.", ex);
-        }
-
-        OpenBrowser(url);
-
-        // 3. Block until either the user completes the flow or the cancel
-        //    token fires (e.g. operator closed the settings dialog). The
-        //    listener stops the moment we return.
-        var (code, returnedState) = await WaitForCallbackAsync(listener, ct).ConfigureAwait(false);
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(state),
-                Encoding.UTF8.GetBytes(returnedState ?? string.Empty)))
-        {
-            throw new InvalidOperationException("OAuth state mismatch — possible CSRF.");
-        }
-
-        // 4-5. Code → uzun ömürlü kullanıcı token'ı. İki adımı da sunucu
-        //      yapıyor; App Secret bu binary'de YOK. Code kısa yaşıyor,
-        //      araya bir şey sokma.
-        var longLived = await _broker.ExchangeFacebookCodeAsync(code, ct).ConfigureAwait(false);
+        // 0-5. Tarayıcı onayıyla uzun ömürlü kullanıcı token'ı.
+        var longLived = await AcquireUserTokenAsync(ct).ConfigureAwait(false);
 
         // 6. List the operator's Pages → ask the picker.
         var pages = await ListPagesAsync(longLived.AccessToken, ct).ConfigureAwait(false);
@@ -430,6 +431,94 @@ public sealed class FacebookOAuthService
     // ---- helpers --------------------------------------------------------
 
     /// <summary>
+    /// Tarayıcı onayıyla uzun ömürlü KULLANICI token'ını alır: yapılandırma, onay
+    /// adresi, dinleyici + tarayıcı, geri çağrı denetimi, code takası. Diske yazmaz,
+    /// demete dokunmaz ve <see cref="_mutate"/> kilidini almaz.
+    ///
+    /// <para>Tarayıcı beklemesinin üç kuralı:</para>
+    /// <list type="bullet">
+    ///   <item><b>Zaman aşımı.</b> Geri çağrı kurucudan verilen sürede (üretimde
+    ///     <see cref="CallbackTimeout"/>) gelmezse dinleyici bırakılır ve
+    ///     <see cref="TimeoutException"/> fırlatılır.</item>
+    ///   <item><b>İptal.</b> <paramref name="ct"/> beklemeyi keser, dinleyici
+    ///     bırakılır, <see cref="OperationCanceledException"/> yükselir.</item>
+    ///   <item><b>Tek akış.</b> Bekleyen bir akış varken ikinci çağrı sunucuya
+    ///     gitmeden ve dinleyiciye dokunmadan
+    ///     <see cref="InvalidOperationException"/> ile reddedilir.</item>
+    /// </list>
+    ///
+    /// <para>Facebook ekranındaki "İptal" bir geri çağrıdır
+    /// (<c>error=access_denied</c>): iptal değil, <see cref="InvalidOperationException"/>.</para>
+    /// </summary>
+    private async Task<FacebookLongLivedToken> AcquireUserTokenAsync(CancellationToken ct)
+    {
+        // Koruma İLK iştir (yapılandırma isteğinden de önce): reddedilen çağrı
+        // bekleyen akışın dinleyicisine dokunmaz.
+        if (Interlocked.CompareExchange(ref _browserFlowPending, 1, 0) != 0)
+            throw new InvalidOperationException(PendingFlowMessage);
+
+        try
+        {
+            // 0. Yapılandırma lisans sunucusundan gelir. Eskiden derleme
+            //    zamanı sabitiydi; yayın hattına enjeksiyon adımı hiç eklenmediği
+            //    için sahaya BOŞ gidiyor ve her kurulumda "App ID eksik" hatası
+            //    veriyordu. Artık tek kaynak sunucu.
+            var cfg = await _broker.GetFacebookOAuthConfigAsync(ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(cfg.AppId))
+                throw new InvalidOperationException(
+                    "Sunucu Facebook uygulamasını bildirmedi. Lisans sunucusunda " +
+                    "OrderDeck:Facebook yapılandırması eksik.");
+
+            // 1. Authorise URL — state binds the callback to this attempt so a
+            //    stale browser tab can't smuggle a code from a different session.
+            var state = GenerateState();
+            var url = BuildAuthorizeUrl(cfg.AppId, cfg.LoginConfigId, cfg.RedirectUri, state);
+
+            // 2-3. Dinleyici + tarayıcı, sonra geri çağrı beklenir. Bekleme
+            //      çağıranın belirtecine bağlıdır ve süre dolunca kendiliğinden
+            //      iptal olur. Bekleme nesnesi geri çağrı alınır alınmaz (takastan
+            //      önce) ve her hata yolunda bırakılır: dinleyici açık kalmaz.
+            FacebookOAuthCallback callback;
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            using (var wait = _browser.Open(url))
+            {
+                timeout.CancelAfter(_callbackTimeout);
+                try
+                {
+                    callback = await wait.WaitAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    // İptalin kaynağı çağıran değil, süre: iptal değil zaman aşımıdır.
+                    throw new TimeoutException(CallbackTimeoutMessage);
+                }
+            }
+
+            if (callback.Error is not null)
+                throw new InvalidOperationException(
+                    $"Facebook OAuth error: {callback.Error} — {callback.ErrorDescription ?? "(no description)"}");
+            if (string.IsNullOrEmpty(callback.Code))
+                throw new InvalidOperationException("Facebook OAuth callback missing ?code");
+            if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(state),
+                    Encoding.UTF8.GetBytes(callback.State ?? string.Empty)))
+            {
+                throw new InvalidOperationException("OAuth state mismatch — possible CSRF.");
+            }
+
+            // 4-5. Code → uzun ömürlü kullanıcı token'ı. İki adımı da sunucu
+            //      yapıyor; App Secret bu binary'de YOK. Code kısa yaşıyor,
+            //      araya bir şey sokma.
+            return await _broker.ExchangeFacebookCodeAsync(callback.Code, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _browserFlowPending, 0);
+        }
+    }
+
+    /// <summary>
     /// Güncel demet; bağlı değilse null. Bellekte demet yoksa önce token dosyasından
     /// yüklenir (ağ yok), sonra alan BİR KEZ okunur. NEDEN tek okuma: okuyan üyeler
     /// kilitsizdir; yüklemeyle okuma arasına <see cref="DisconnectAsync"/> girerse alan
@@ -501,70 +590,6 @@ public sealed class FacebookOAuthService
         if (!string.IsNullOrWhiteSpace(configId))
             sb.Append("&config_id=").Append(Uri.EscapeDataString(configId));
         return sb.ToString();
-    }
-
-    private static void OpenBrowser(string url)
-    {
-        // Process.Start with UseShellExecute=true lets Windows resolve the
-        // operator's default browser — same trick as the YouTube broker.
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = url,
-            UseShellExecute = true,
-        });
-    }
-
-    private static async Task<(string Code, string? State)> WaitForCallbackAsync(
-        HttpListener listener, CancellationToken ct)
-    {
-        // Hook ct so closing the settings dialog actually aborts the listener.
-        using var reg = ct.Register(() =>
-        {
-            try { listener.Stop(); } catch { /* already disposed */ }
-        });
-
-        HttpListenerContext ctx;
-        try
-        {
-            ctx = await listener.GetContextAsync().ConfigureAwait(false);
-        }
-        catch (HttpListenerException) when (ct.IsCancellationRequested)
-        {
-            throw new OperationCanceledException(ct);
-        }
-        catch (ObjectDisposedException) when (ct.IsCancellationRequested)
-        {
-            throw new OperationCanceledException(ct);
-        }
-
-        var query = ctx.Request.QueryString;
-        var code = query["code"];
-        var state = query["state"];
-        var error = query["error"];
-        var errorDesc = query["error_description"];
-
-        // Always send a friendly HTML response so the user knows they can
-        // close the tab — otherwise they're staring at a blank page.
-        string html = error is null
-            ? "<html><body style='font-family:sans-serif;text-align:center;padding-top:80px'>" +
-              "<h2>Facebook bağlantısı tamamlandı.</h2>" +
-              "<p>Bu sekmeyi kapatabilirsiniz.</p></body></html>"
-            : $"<html><body style='font-family:sans-serif;text-align:center;padding-top:80px'>" +
-              $"<h2>Bağlantı iptal edildi.</h2>" +
-              $"<p>{WebUtility.HtmlEncode(errorDesc ?? error)}</p></body></html>";
-        var bytes = Encoding.UTF8.GetBytes(html);
-        ctx.Response.ContentType = "text/html; charset=utf-8";
-        ctx.Response.ContentLength64 = bytes.Length;
-        await ctx.Response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
-        ctx.Response.OutputStream.Close();
-
-        if (error is not null)
-            throw new InvalidOperationException(
-                $"Facebook OAuth error: {error} — {errorDesc ?? "(no description)"}");
-        if (string.IsNullOrEmpty(code))
-            throw new InvalidOperationException("Facebook OAuth callback missing ?code");
-
-        return (code!, state);
     }
 
     private async Task<IReadOnlyList<FacebookPageCandidate>> ListPagesAsync(
