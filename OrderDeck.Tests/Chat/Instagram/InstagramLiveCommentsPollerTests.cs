@@ -225,6 +225,23 @@ public class InstagramLiveCommentsPollerTests
         }
     }
 
+    /// <summary>UsageHandler'ın çok değerli eşi: her isteğe aynı yanıtı döner; usages'ın her
+    /// öğesi X-Business-Use-Case-Usage başlığının AYRI bir değeri olarak eklenir.</summary>
+    private sealed class MultiValueUsageHandler(HttpStatusCode status, string body, params string[] usages)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body),
+            };
+            response.Headers.TryAddWithoutValidation("X-Business-Use-Case-Usage", usages);
+            return Task.FromResult(response);
+        }
+    }
+
     private static string New(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
     /// <summary>Tek kovalı kota başlığı; işletme kimliği üretilir, <paramref name="minutes"/>
@@ -325,6 +342,43 @@ public class InstagramLiveCommentsPollerTests
         observer.Completed.Take(2).Should().Equal(
             new Round(InstagramPollKind.Ok, null, TimeSpan.Zero, header),
             new Round(InstagramPollKind.Ok, null, TimeSpan.Zero, null)); // başlık yoksa null
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK, "{\"data\":[]}", InstagramPollKind.NoBroadcast)]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error\":{\"message\":\"x\",\"code\":190}}",
+        InstagramPollKind.Fatal)]
+    [InlineData(HttpStatusCode.InternalServerError, "{\"error\":{\"message\":\"x\",\"code\":2}}",
+        InstagramPollKind.Transient)]
+    public async Task Usage_header_is_carried_on_non_ok_outcomes(
+        HttpStatusCode status, string body, InstagramPollKind kind)
+    {
+        var observer = new RecordingObserver();
+        var header = UsageHeader(minutes: 0);
+
+        using var poller = MakeObserved(new UsageHandler((status, body, header)), new ChatBus(), observer);
+        await RunUntil(poller, () => !observer.Completed.IsEmpty);
+
+        var first = observer.Completed.First();
+        first.Kind.Should().Be(kind);
+        first.UsageHeader.Should().Be(header);
+    }
+
+    [Fact]
+    public async Task Multi_valued_usage_header_is_joined_and_retry_after_is_read_per_value()
+    {
+        var observer = new RecordingObserver();
+        // İlk değerde bekleme yok (0), ikincide 7 dk: süre ancak değerler tek tek okunursa bulunur.
+        var (first, second) = (UsageHeader(minutes: 0), UsageHeader(minutes: 7));
+        var handler = new MultiValueUsageHandler(
+            HttpStatusCode.BadRequest, "{\"error\":{\"message\":\"x\",\"code\":4}}", first, second);
+
+        using var poller = MakeObserved(handler, new ChatBus(), observer);
+        await RunUntil(poller, () => !observer.Completed.IsEmpty);
+
+        // Birleşik metin geçerli JSON değildir; bekleme ondan okunsaydı 1 dakikaya düşerdi.
+        observer.Completed.First().Should().Be(
+            new Round(InstagramPollKind.RateLimited, null, TimeSpan.FromMinutes(7), first + "," + second));
     }
 
     [Fact]
