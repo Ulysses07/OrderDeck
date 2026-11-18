@@ -193,4 +193,37 @@ public sealed class InstagramHealthPresenterTests
         noSession.Rows.Should().HaveCount(2);                                                             // oturum yalnız şeridi kapılar
         noSession.Should().BeEquivalentTo(new { ShowStrip = false, AnyAccountLive = true });
     }
+    [Fact] public void Oturum_yokken_sari_satir_seridi_acmaz_ust_nokta_ipucu_yine_hesaplanir()
+    {
+        var silent = H(State.Live, sinceAgo: 300, contactAgo: 11, wasLive: true);
+        InstagramHealthPresenter.Evaluate(new[] { silent }, Now, sessionActive: false)
+            .Should().BeEquivalentTo(new { ShowStrip = false, TopDotTooltip = $"Instagram @{silent.Username}: yanıt yok (11 sn)." });
+    }
+    [Theory, InlineData(State.Starting, 46.0, "yanıt yok (46 sn)"), InlineData(State.RateLimited, 30.0, "hız sınırı, 21:18'de dener"),
+        InlineData(State.ResolveFailed, 30.0, "hesap bilgisi okunamadı, 21:18'de dener")]
+    public void Tek_Sayfada_hic_canli_olmamis_hesabin_sorun_satiri_ayni_metinle_notrdur_serit_ve_ust_nokta_sararmaz(State state, double sinceAgo, string text)
+    {
+        var view = Eval(H(state, sinceAgo, retryIn: 270));                                                // 21:18:37; Starting 46 sn temassız → "yanıt yok"
+        view.Rows.Single().Should().BeEquivalentTo(new { StateText = text, Severity = Severity.Neutral });
+        view.Should().BeEquivalentTo(new { ShowStrip = false, TopDotTooltip = (string?)null });
+    }
+    [Fact] public void Doksan_saniye_ve_iki_dakika_esiginin_kendisi_asim_degildir()
+    {
+        Eval(Healthy(), H(State.WaitingForBroadcast, sinceAgo: 90, contactAgo: 5, primary: false)).Rows[1].StateText.Should().Be("yayın bekleniyor");
+        var ended = H(State.BroadcastEnded, sinceAgo: 120, contactAgo: 5, wasLive: true, primary: false);
+        Eval(Healthy(), ended).TopDotTooltip.Should().Be($"Instagram @{ended.Username}: yayın kesildi (21:12).");   // tam 2 dakika: üst nokta hâlâ sarı
+    }
+    [Fact] public void Saniyeler_tam_saniyedir_kesir_atilir()
+    {
+        Row(H(State.Live, sinceAgo: 300, contactAgo: 1.9, wasLive: true)).Tooltip.Should().Be("Son yanıt 1 sn önce");
+        Row(H(State.Live, sinceAgo: 300, contactAgo: 18.9, wasLive: true)).StateText.Should().Be("yanıt yok (18 sn)");
+        Row(H(State.RateLimited, sinceAgo: 400, retryIn: -46.9, wasLive: true)).StateText.Should().Be("yanıt yok (46 sn)");
+    }
+    [Fact] public void Aciklama_ya_da_kullanici_adi_bos_metinse_yok_sayilir()
+    {
+        Row(H(State.Faulted, retryIn: 293, wasLive: true)).Tooltip.Should().Be($"{Reauth} 21:19'da yeniden denenecek.");   // açıklama yok: sabit cümleyle başlar
+        Row(H(State.Faulted, wasLive: true, detail: "")).Tooltip.Should().Be(Reauth);
+        var blank = H(State.Starting, sinceAgo: 5) with { Username = "" };
+        Row(blank).Should().Be(new InstagramAccountStatusViewModel(blank.PageId, blank.PageName, "bağlanıyor", $"{blank.PageName} bağlanıyor", Severity.Neutral, null));
+    }
 }
