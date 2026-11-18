@@ -75,18 +75,21 @@ public sealed class InstagramHealthMonitorTests
     }
 
     [Fact]
-    public void Configure_kalan_girdinin_Sayfa_adini_listeden_yeniden_yazar()
+    public void Configure_kalan_girdilerin_sirasini_birincil_isaretini_ve_Sayfa_adini_listeden_yeniden_yazar()
     {
-        var page = Configure(1)[0];
-        _monitor.Report(page.PageId, State.Starting);
-        Round(page.PageId, Kind.Ok);
-        var before = Entry(page.PageId);
+        var pages = Configure(2);
+        var second = Entry(pages[1].PageId);
+        _monitor.Report(pages[0].PageId, State.Starting);
+        Round(pages[0].PageId, Kind.Ok);
+        var first = Entry(pages[0].PageId);
         Tick(7);
-        var renamed = page with { PageName = New("Sayfa") };
+        var renamed = pages[1] with { PageName = New("Sayfa") };
 
-        _monitor.Configure(new[] { renamed }); // aynı Sayfa, adı değişmiş
+        _monitor.Configure(new[] { renamed, pages[0] }); // ikisi de kaldı: yer değiştirdiler, birinin adı değişti
 
-        Entry(page.PageId).Should().Be(before with { PageName = renamed.PageName });
+        _monitor.Snapshot().Should().Equal(
+            second with { PageName = renamed.PageName, IsPrimary = true },
+            first with { IsPrimary = false });
     }
 
     [Fact]
@@ -104,6 +107,21 @@ public sealed class InstagramHealthMonitorTests
 
         _monitor.Report(id, State.Starting); // poller yeniden kurulurken
         Entry(id).Should().Be(live);
+    }
+
+    [Fact]
+    public void Yeni_turun_Starting_bildirimi_ve_SetAccount_bekleyen_hatanin_Detail_ve_RetryAt_ini_silmez()
+    {
+        var id = Started();
+        _monitor.Report(id, State.Faulted, "sebep", Now.AddMinutes(5));
+        var faulted = Entry(id);
+        Tick(300);
+        var username = New("u");
+
+        _monitor.Report(id, State.Starting); // bekleme bitti, hesap döngüsü yeni tura başlıyor
+        _monitor.SetAccount(id, username); // hesap yeniden çözüldü
+
+        Entry(id).Should().Be(faulted with { Username = username });
     }
 
     [Fact]
@@ -180,6 +198,21 @@ public sealed class InstagramHealthMonitorTests
         Round(id, Kind.Fatal, "sebep");
 
         Entry(id).Should().BeEquivalentTo(new { State = State.Faulted, LastContactAt = contactAt });
+    }
+
+    [Fact]
+    public void Iki_Sayfanin_gozlemcileri_ayni_anda_tutulur_her_biri_yalniz_kendi_girdisini_yazar()
+    {
+        var pages = Configure(2);
+        var first = _monitor.ObserverFor(pages[0].PageId);
+        var second = _monitor.ObserverFor(pages[1].PageId);
+        _monitor.Report(pages[0].PageId, State.Starting);
+        _monitor.Report(pages[1].PageId, State.Starting);
+
+        first.RoundCompleted(Kind.Ok, null, TimeSpan.Zero, null);
+        second.RoundCompleted(Kind.NoBroadcast, null, TimeSpan.Zero, null);
+
+        _monitor.Snapshot().Select(h => h.State).Should().Equal(State.Live, State.WaitingForBroadcast);
     }
 
     [Theory, InlineData(State.NotLinked), InlineData(State.ResolveFailed), InlineData(State.Skipped)]
@@ -308,5 +341,16 @@ public sealed class InstagramHealthMonitorTests
         });
 
         _monitor.Snapshot().Should().OnlyContain(h => h.WasLiveThisSession);
+    }
+
+    [Fact]
+    public void Saat_verilmezse_sistem_saati_okunur()
+    {
+        var monitor = new InstagramHealthMonitor();
+        var before = DateTimeOffset.UtcNow;
+
+        monitor.Configure(new[] { NewPage() });
+
+        monitor.Snapshot().Single().Since.Should().BeOnOrAfter(before).And.BeOnOrBefore(DateTimeOffset.UtcNow);
     }
 }
