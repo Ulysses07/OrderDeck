@@ -238,7 +238,7 @@ public sealed class InstagramHealthPresenterTests
     [Fact] public void Atlanan_ve_duran_girdi_eskise_de_RetryAt_tasisa_da_satir_uretmez()
     {
         Eval(Healthy(), H(State.Skipped, sinceAgo: 400, retryIn: -46, primary: false)).Rows.Should().ContainSingle();   // atlanan Sayfa RetryAt taşır: o saat 45 sn'den fazla geçilse de "yanıt yok" olmaz
-        Eval(H(State.Stopped, sinceAgo: 400, contactAgo: 300, wasLive: true), H(State.Stopped, sinceAgo: 400, primary: false)).Rows.Should().BeEmpty();   // duran girdi eskir: eski temas "yanıt yok" üretmez
+        Eval(H(State.Stopped, sinceAgo: 400, contactAgo: 300, retryIn: -46, wasLive: true), H(State.Stopped, sinceAgo: 400, primary: false)).Rows.Should().BeEmpty();   // duran girdi eskir, StopAll RetryAt'i silmez: eski temas da geçmiş RetryAt da "yanıt yok" üretmez
     }
     [Fact] public void Aciklama_ya_da_kullanici_adi_yalniz_bosluksa_yok_sayilir()
     {

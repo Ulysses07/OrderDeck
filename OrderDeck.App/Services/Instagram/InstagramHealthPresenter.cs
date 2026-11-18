@@ -269,7 +269,8 @@ public static class InstagramHealthPresenter
 
     private static DateTimeOffset Later(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
 
-    /// <summary>Sürenin tam saniyesi (kesri atılır), metne hazır.</summary>
+    /// <summary>Sürenin tam saniyesi (kesri atılır; eksi süre 0 yazılır: sistem saati geri alınırsa ipucunda eksi sayı
+    /// çıkmasın), metne hazır.</summary>
     private static string WholeSeconds(TimeSpan elapsed) =>
         Math.Max(0L, elapsed.Ticks / TimeSpan.TicksPerSecond).ToString(CultureInfo.InvariantCulture);
 

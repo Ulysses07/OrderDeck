@@ -327,7 +327,15 @@ public sealed class InstagramHealthMonitorTests
         _monitor.Report(id, State.Starting);
         _monitor.SetAccount(id, username);
         Round(id, Kind.Ok); // canlıydı, son temas ve kullanıcı adı dolu
-        var live = Entry(id);
+        var live = fresh with
+        {
+            Username = username,
+            State = State.Live,
+            Since = Now,
+            LastContactAt = Now,
+            WasLiveThisSession = true,
+        };
+        Entry(id).Should().Be(live);
         Tick(5);
 
         Round(id, Kind.Fatal, "sebep"); // yalnız durum, Since, Detail
