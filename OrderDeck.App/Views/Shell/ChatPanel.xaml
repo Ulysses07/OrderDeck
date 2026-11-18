@@ -115,9 +115,29 @@
                                        FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                        VerticalAlignment="Center"
                                        ToolTip="{Binding Username}"/>
-                            <TextBlock Grid.Column="2" Text="{Binding Text}"
-                                       TextWrapping="Wrap" VerticalAlignment="Center"
-                                       Foreground="{StaticResource OD.Brush.Text}"/>
+                            <!-- Mesaj + Instagram hesap etiketi. Etiket sağa yaslı ve mesajdan
+                                 ÖNCE yazılı: DockPanel çocuklarını sırayla yerleştirir, etiket
+                                 yerini alır, mesaj (son çocuk) kalanı doldurur. Böylece kodun
+                                 başladığı x konumu etiketli ve etiketsiz satırda aynıdır.
+                                 AccountTag yalnız iki ve üzeri Instagram hesabı bağlıyken dolu;
+                                 null iken etiket boşluğuyla birlikte yer kaplamaz, satır eskisi
+                                 gibidir. Uzun ad sondan kırpılır; tam adı ipucu verir. -->
+                            <DockPanel Grid.Column="2">
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding AccountTag}"
+                                           ToolTip="{Binding AccountTooltip}"
+                                           FontSize="{StaticResource OD.Font.F0}"
+                                           Foreground="{StaticResource OD.Brush.TextMute}"
+                                           MaxWidth="{StaticResource OD.Layout.ChatAccountTagMaxWidth}"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
+                                           Margin="{StaticResource OD.Pad.Left4}"
+                                           Visibility="{Binding AccountTag,
+                                                        Converter={StaticResource NullToCollapsedConverter}}"/>
+                                <TextBlock Text="{Binding Text}"
+                                           TextWrapping="Wrap" VerticalAlignment="Center"
+                                           Foreground="{StaticResource OD.Brush.Text}"/>
+                            </DockPanel>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>

@@ -158,6 +158,14 @@
   <sys:Double x:Key="OD.Layout.QueueMinHeight">64</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatBadgeColumn">28</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatUserMaxWidth">132</sys:Double>
+  <!-- Sohbet satırının sağındaki Instagram hesap etiketinin genişlik sınırı.
+       Ortak önekli iki hesap adı (sonu "…1" / "…2") sondan kırpılırsa aynı
+       görünür; bu yüzden "@" dahil 16 karakterlik etiket kırpılmadan sığmalı.
+       Ölçüldü (IBMPlexSans-Regular.ttf, OD.Font.F0 = 11): "@" 0,891 em,
+       rakam 0,600 em, yani "@" + 15 rakam = 108,8; kalanı ölçüm payı.
+       "m" / "w" ağırlıklı adlar 16 karakterde de kırpılabilir, daha uzun ad
+       hep kırpılır: tam adı etiketin ipucu verir. -->
+  <sys:Double x:Key="OD.Layout.ChatAccountTagMaxWidth">112</sys:Double>
   <!-- Aktif ürün kodunun yazı boyu; alçak pencerede (<850px) küçüğü.
        Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir
        kontrolün duyarlı ölçüsü, tipografi basamağı değil.
