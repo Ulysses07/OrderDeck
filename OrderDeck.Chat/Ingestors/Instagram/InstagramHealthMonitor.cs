@@ -162,9 +162,10 @@ public sealed class InstagramHealthMonitor
 
     /// <summary>
     /// Oturum bitti ya da Sayfa listesi oturum içinde boşaldı: her girdi
-    /// <see cref="InstagramAccountState.Stopped"/> olur, silinmez. Başka HİÇBİR alan değişmez:
-    /// "bu oturumda canlıydı" bilgisi korunur ki aynı Sayfa oturum içinde yeniden bağlanıp bozuk
-    /// çıkarsa uyarısı gizlenmesin.
+    /// <see cref="InstagramAccountState.Stopped"/> olur, silinmez. Durumu değişen girdide
+    /// <see cref="InstagramAccountHealth.Since"/> genel kural gereği "şimdi" olur; başka HİÇBİR
+    /// alan değişmez: "bu oturumda canlıydı" bilgisi korunur ki aynı Sayfa oturum içinde yeniden
+    /// bağlanıp bozuk çıkarsa uyarısı gizlenmesin.
     ///
     /// <para>Çağıran önce poller'ları durdurur: geç gelen tur olayı durmuş girdide de işlenir ve
     /// onu yeniden canlı gösterirdi.</para>

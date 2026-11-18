@@ -310,6 +310,106 @@ public sealed class InstagramHealthMonitorTests
     }
 
     [Fact]
+    public void Olaylar_yalniz_kendi_alanlarini_yazar_kullanici_adi_canliydi_bilgisi_ve_son_temas_korunur()
+    {
+        // Her adımda kaydın TAMAMI karşılaştırılır: bir olay saymadığı alana dokunursa ya da aynı
+        // durumu yineleyen bildirim Since'i yenilerse o adımda düşer.
+        var page = NewPage();
+        var id = page.PageId;
+        _monitor.Configure(new[] { page });
+        var fresh = Entry(id);
+        Tick(5);
+
+        _monitor.ObserverFor(id).RoundStarting(); // durmuş girdide de hiçbir alan değişmez
+        Entry(id).Should().Be(fresh);
+
+        var username = New("u");
+        _monitor.Report(id, State.Starting);
+        _monitor.SetAccount(id, username);
+        Round(id, Kind.Ok); // canlıydı, son temas ve kullanıcı adı dolu
+        var live = Entry(id);
+        Tick(5);
+
+        Round(id, Kind.Fatal, "sebep"); // yalnız durum, Since, Detail
+        var faulted = live with { State = State.Faulted, Since = Now, Detail = "sebep" };
+        Entry(id).Should().Be(faulted);
+
+        var retryAt = Now.AddMinutes(5);
+        _monitor.Report(id, State.Faulted, "sebep", retryAt); // yalnız RetryAt
+        faulted = faulted with { RetryAt = retryAt };
+        Entry(id).Should().Be(faulted);
+
+        Tick(5);
+        _monitor.ObserverFor(id).RoundStarting();
+        Round(id, Kind.Transient); // bekleyen sebep ve saat de değişmez
+        Entry(id).Should().Be(faulted);
+
+        Round(id, Kind.Fatal, "sebep"); // aynı durum: Since kalır; tur vermediği RetryAt'i temizler
+        faulted = faulted with { RetryAt = null };
+        Entry(id).Should().Be(faulted);
+
+        Tick(5);
+        Round(id, Kind.RateLimited, retryAfter: TimeSpan.FromMinutes(1));
+        var limited = faulted with
+        {
+            State = State.RateLimited,
+            Since = Now,
+            Detail = null,
+            RetryAt = Now.AddMinutes(1),
+            LastContactAt = Now,
+        };
+        Entry(id).Should().Be(limited);
+
+        Tick(5);
+        Round(id, Kind.RateLimited, retryAfter: TimeSpan.FromMinutes(1)); // aynı durum: Since kalır
+        limited = limited with { RetryAt = Now.AddMinutes(1), LastContactAt = Now };
+        Entry(id).Should().Be(limited);
+
+        Tick(5);
+        _monitor.Report(id, State.NotLinked, "sebep", Now.AddMinutes(5)); // Report: öbür alanlar aynen
+        var notLinked = limited with
+        {
+            State = State.NotLinked,
+            Since = Now,
+            Detail = "sebep",
+            RetryAt = Now.AddMinutes(5),
+        };
+        Entry(id).Should().Be(notLinked);
+
+        Tick(5);
+        var renamed = New("u");
+        _monitor.SetAccount(id, renamed); // Found: canlıydı ve son temas aynen
+        var starting = notLinked with
+        {
+            State = State.Starting,
+            Since = Now,
+            Username = renamed,
+            Detail = null,
+            RetryAt = null,
+        };
+        Entry(id).Should().Be(starting);
+
+        Tick(5);
+        Round(id, Kind.NoBroadcast);
+        var ended = starting with { State = State.BroadcastEnded, Since = Now, LastContactAt = Now };
+        Entry(id).Should().Be(ended);
+
+        Tick(5);
+        Round(id, Kind.NoBroadcast); // aynı durum: Since kalır
+        ended = ended with { LastContactAt = Now };
+        Entry(id).Should().Be(ended);
+
+        Tick(5);
+        _monitor.StopAll(); // kullanıcı adı dahil başka hiçbir alan değişmez
+        var stopped = ended with { State = State.Stopped, Since = Now };
+        Entry(id).Should().Be(stopped);
+
+        Tick(5);
+        _monitor.Configure(new[] { page }); // kalan girdi aynen
+        Entry(id).Should().Be(stopped);
+    }
+
+    [Fact]
     public void Snapshot_kopyadir_Clear_siler_bilinmeyen_Sayfa_yok_sayilir()
     {
         var id = Configure(2)[0].PageId;

@@ -271,7 +271,7 @@ public static class InstagramHealthPresenter
 
     /// <summary>Sürenin tam saniyesi (kesri atılır), metne hazır.</summary>
     private static string WholeSeconds(TimeSpan elapsed) =>
-        (elapsed.Ticks / TimeSpan.TicksPerSecond).ToString(CultureInfo.InvariantCulture);
+        Math.Max(0L, elapsed.Ticks / TimeSpan.TicksPerSecond).ToString(CultureInfo.InvariantCulture);
 
     /// <summary>Durum metninin yeniden deneme parçası: ", 21:20'de dener"; saat bilinmiyorsa boş.</summary>
     private static string RetryClause(InstagramAccountHealth entry, DateTimeOffset now) =>

@@ -364,6 +364,29 @@ public class InstagramLiveCommentsPollerTests
         first.UsageHeader.Should().Be(header);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden, 200, InstagramPollKind.Fatal)] // Graph kodu 200: izin hatası
+    [InlineData(HttpStatusCode.BadRequest, 100, InstagramPollKind.NoBroadcast)] // Graph kodu 100: yayın bitti
+    [InlineData(HttpStatusCode.OK, null, InstagramPollKind.Fatal)] // hata yok: yayın var, comments alanı yok
+    public async Task Usage_header_is_carried_on_rare_outcomes(
+        HttpStatusCode status, int? errorCode, InstagramPollKind kind)
+    {
+        var observer = new RecordingObserver();
+        var header = UsageHeader(minutes: 0);
+        // Gövde burada kurulur: hata kodu verilmeyen satırın yanıtı, comments alanı olmayan bir
+        // media'dır ve kimliği üretilir (InlineData sabit ister).
+        var body = errorCode is { } code
+            ? "{\"error\":{\"message\":\"x\",\"code\":" + code + "}}"
+            : "{\"data\":[{\"id\":\"" + New("m") + "\"}]}";
+
+        using var poller = MakeObserved(new UsageHandler((status, body, header)), new ChatBus(), observer);
+        await RunUntil(poller, () => !observer.Completed.IsEmpty);
+
+        var first = observer.Completed.First();
+        first.Kind.Should().Be(kind);
+        first.UsageHeader.Should().Be(header);
+    }
+
     [Fact]
     public async Task Multi_valued_usage_header_is_joined_and_retry_after_is_read_per_value()
     {

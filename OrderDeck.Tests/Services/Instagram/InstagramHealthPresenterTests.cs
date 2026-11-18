@@ -226,4 +226,24 @@ public sealed class InstagramHealthPresenterTests
         var blank = H(State.Starting, sinceAgo: 5) with { Username = "" };
         Row(blank).Should().Be(new InstagramAccountStatusViewModel(blank.PageId, blank.PageName, "bağlanıyor", $"{blank.PageName} bağlanıyor", Severity.Neutral, null));
     }
+    [Fact] public void Saat_geri_alinirsa_canli_ipucu_eksi_saniye_yazmaz()
+    {
+        Row(H(State.Live, sinceAgo: 300, contactAgo: -3, wasLive: true)).Tooltip.Should().Be("Son yanıt 0 sn önce");   // son temas now'dan 3 sn ileride
+    }
+    [Fact] public void En_erken_canli_hesap_anlik_goruntude_ilk_sirada_olmasa_da_esas_alinir()
+    {
+        Eval(Healthy(50), Healthy(200, primary: false), H(State.WaitingForBroadcast, sinceAgo: 300, contactAgo: 5, primary: false))
+            .Rows[2].StateText.Should().Be("canlı yayın bulunamadı");        // ilk sıradaki 50 sn'lik canlı esas alınsaydı 90 sn dolmazdı
+    }
+    [Fact] public void Atlanan_ve_duran_girdi_eskise_de_RetryAt_tasisa_da_satir_uretmez()
+    {
+        Eval(Healthy(), H(State.Skipped, sinceAgo: 400, retryIn: -46, primary: false)).Rows.Should().ContainSingle();   // atlanan Sayfa RetryAt taşır: o saat 45 sn'den fazla geçilse de "yanıt yok" olmaz
+        Eval(H(State.Stopped, sinceAgo: 400, contactAgo: 300, wasLive: true), H(State.Stopped, sinceAgo: 400, primary: false)).Rows.Should().BeEmpty();   // duran girdi eskir: eski temas "yanıt yok" üretmez
+    }
+    [Fact] public void Aciklama_ya_da_kullanici_adi_yalniz_bosluksa_yok_sayilir()
+    {
+        var blank = H(State.Starting, sinceAgo: 5) with { Username = " " };
+        Row(blank).Label.Should().Be(blank.PageName);
+        Row(H(State.Faulted, wasLive: true, detail: " ")).Tooltip.Should().Be(Reauth);
+    }
 }
