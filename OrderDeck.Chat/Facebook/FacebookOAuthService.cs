@@ -117,6 +117,15 @@ public sealed class FacebookOAuthService
     // güncelleme). Kilit altında önce diske yazılır, sonra _bundle TEK atamayla
     // değişir: yazım düşerse bellek eski hâlinde kalır. Kilit tarayıcı beklemesini
     // KAPSAMAZ. Okuyan üyeler kilit almaz: demet değişmez bir kayıttır.
+    //
+    // Tembel yükleme (IsConnectedAsync) de kilitsizdir, ama alanı yalnız BOŞKEN
+    // yayımlar: kilit altında yayımlanmış demeti ezemez. Bilinen ve kabul edilen
+    // pencere: yüklemesi süren bir okuyucu, o sırada tamamlanan DisconnectAsync'ten
+    // sonra eski demeti belleğe geri koyabilir. Ön koşul pratikte süreçteki İLK
+    // yüklemenin bitmemiş olmasıdır (bağlantıyı kaldırma düğmesi ancak o yükleme
+    // bittikten sonra etkinleşir). Kapatmak tembel yüklemeyi kilide almak demektir
+    // ve yeniden giriş riski taşır: değiştiren üyeler demeti kilit altında aynı
+    // yoldan okur.
     private readonly SemaphoreSlim _mutate = new(1, 1);
 
     // Cached after a successful Connect / IsConnected probe; cleared on
@@ -158,7 +167,9 @@ public sealed class FacebookOAuthService
     public async Task<bool> IsConnectedAsync(CancellationToken ct = default)
     {
         if (_bundle is not null) return true;
-        _bundle = await _tokenStore.LoadAsync(ct).ConfigureAwait(false);
+        var loaded = await _tokenStore.LoadAsync(ct).ConfigureAwait(false);
+        // Yalnız alan hâlâ boşsa yayımla: kilit altında yazılmış taze demeti ezme.
+        Interlocked.CompareExchange(ref _bundle, loaded, null);
         return _bundle is not null;
     }
 
@@ -325,6 +336,9 @@ public sealed class FacebookOAuthService
         }
         catch (FacebookGraphException ex) when (ex.Code is 190 or 463 or 200 or 10 or 100)
         {
+            _log.LogInformation(
+                "Facebook OAuth Page listing needs reauthorize (Graph code {Code}, subcode {Subcode})",
+                ex.Code, ex.Subcode);
             return new FacebookPageListing(Array.Empty<FacebookAddablePage>(), NeedsReauthorize: true);
         }
 
@@ -522,8 +536,11 @@ public sealed class FacebookOAuthService
     /// Güncel demet; bağlı değilse null. Bellekte demet yoksa önce token dosyasından
     /// yüklenir (ağ yok), sonra alan BİR KEZ okunur. NEDEN tek okuma: okuyan üyeler
     /// kilitsizdir; yüklemeyle okuma arasına <see cref="DisconnectAsync"/> girerse alan
-    /// null olur ve çağıran istisna yerine "bağlı değil" görür. Değiştiren üyeler bunu
-    /// <see cref="_mutate"/> altında çağırır: o zaman dönen demet günceldir.
+    /// null olur ve çağıran istisna yerine "bağlı değil" görür. Yükleme de kilitsizdir
+    /// ama alanı yalnız BOŞKEN yayımlar (<see cref="IsConnectedAsync"/>): kilit altında
+    /// yayımlanmış demeti ezemez. Değiştiren üyeler bunu <see cref="_mutate"/> altında
+    /// çağırır: o zaman dönen demet günceldir (kalan pencere <see cref="_mutate"/>
+    /// alanının yorumunda).
     /// </summary>
     private async Task<FacebookTokenBundle?> ReadBundleAsync(CancellationToken ct)
     {
@@ -684,11 +701,14 @@ public sealed class FacebookOAuthService
         using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
-            // Surface the Graph error body — it's small JSON, very useful in logs.
+            // Graph hata gövdesi iletiye girer (küçük JSON, günlükte çok işe yarar), ama
+            // önce isteğin kendi token değerleri silinir. NEDEN: Graph ayrıştıramadığı
+            // token'ı hata metninde geri yazabiliyor; bu ileti günlüğe ve Ayarlar'daki
+            // durum satırına kadar çıkabilir. Kod ve alt kod ÖZGÜN gövdeden okunur.
             var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             var (code, subcode) = ReadGraphError(body);
             throw new FacebookGraphException(
-                $"Graph API {(int)resp.StatusCode} {resp.ReasonPhrase}: {body}",
+                $"Graph API {(int)resp.StatusCode} {resp.ReasonPhrase}: {MaskRequestTokens(body, url)}",
                 resp.StatusCode, code, subcode);
         }
         var parsed = await resp.Content.ReadFromJsonAsync<T>(cancellationToken: ct).ConfigureAwait(false);
@@ -730,6 +750,44 @@ public sealed class FacebookOAuthService
             value.TryGetInt32(out var number)
                 ? number
                 : null;
+    }
+
+    /// <summary>
+    /// Hata gövdesinden İSTEĞİN KENDİ token değerlerini siler. Kural: adresin sorgu
+    /// dizgisinde adı <c>token</c> ile biten (büyük / küçük harf ayırmadan:
+    /// <c>access_token</c>, <c>fb_exchange_token</c>, <c>input_token</c> …) her
+    /// parametrenin boş olmayan değeri, gövdede hem adreste yazıldığı (yüzde kodlu)
+    /// hâliyle hem çözülmüş hâliyle <c>***</c> olur. Hiç fırlatmaz; sorgusu
+    /// ayrıştırılamayan adreste gövde olduğu gibi kalır: asıl hata bu yardımcının
+    /// hatasıyla örtülmesin.
+    /// </summary>
+    private static string MaskRequestTokens(string body, string url)
+    {
+        const string Mask = "***";
+
+        // Sorgu dizgisi: ilk '?' ile (varsa) '#' arası.
+        var fragment = url.IndexOf('#');
+        var address = fragment < 0 ? url : url[..fragment];
+        var queryStart = address.IndexOf('?');
+        if (queryStart < 0 || body.Length == 0) return body;
+
+        foreach (var part in address[(queryStart + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = part.IndexOf('=');
+            if (separator < 0 ||
+                !part[..separator].EndsWith("token", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var written = part[(separator + 1)..];
+            if (written.Length == 0) continue;
+
+            // İki hâli de: Graph değeri çözülmüş hâliyle yankılar, istek adresini
+            // aktaran bir hata ise yazıldığı hâliyle. Değer yüzde kodlu karakter
+            // taşımıyorsa ikisi aynıdır.
+            body = body.Replace(written, Mask, StringComparison.Ordinal)
+                .Replace(Uri.UnescapeDataString(written), Mask, StringComparison.Ordinal);
+        }
+        return body;
     }
 
     private static string GenerateState()

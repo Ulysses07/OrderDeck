@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using System.Web;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Chat.Facebook;
@@ -83,6 +84,15 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
     private static string NextUrl() =>
         $"https://graph.facebook.com/{FacebookOAuthDefaults.GraphApiVersion}/me/accounts?after={Kit.NewId()}";
 
+    /// <summary>
+    /// İletisini testin verdiği Graph hata yanıtı (HTTP 400): <c>{"error":{"message":…,"code":…}}</c>.
+    /// Kitin <see cref="FakeGraph.Error"/>'ı iletiyi kendi yazar; gövdenin nereye çıktığını sınayan
+    /// testler iletiyi kendileri kurar.
+    /// </summary>
+    private static HttpResponseMessage GraphError(int code, string message) => FakeGraph.Json(
+        new JsonObject { ["error"] = new JsonObject { ["message"] = message, ["code"] = code } }.ToJsonString(),
+        HttpStatusCode.BadRequest);
+
     private static bool IsAccounts(Uri u) => u.AbsolutePath.EndsWith("/me/accounts", StringComparison.Ordinal);
 
     private static bool IsPageToken(Uri u, string pageId) =>
@@ -165,6 +175,30 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
         (await IdsAsync()).Should().Equal(seeded[0].Page.PageId, fresh.PageId);   // ikinci servis örneği diskten görür
         AssertLogged(log, "Facebook OAuth", fresh.PageId, fresh.PageName);
         log.Entries.Should().NotContain(e => e.Full.Contains(added.PageAccessToken));
+    }
+
+    /// <summary>
+    /// Saklanan değer Graph'ın o Sayfa için verdiği token'dır ve türetme isteği saklı KULLANICI
+    /// token'ını taşır. Yanlış token saklansaydı hata ancak sahada, o hesabın ilk yoklamasında görünürdü.
+    /// </summary>
+    [Fact]
+    public async Task Eklenen_sayfanin_tokeni_Graphin_verdigi_degerdir_turetme_sakli_kullanici_tokeniyla_yapilir()
+    {
+        var (service, seeded) = await ConnectedAsync();
+        var (userToken, fresh) = ((await service.GetUserAccessTokenAsync())!, NewGraphPage());
+        var issued = Kit.NewToken();
+        _kit.Graph.Map(u => IsPageToken(u, fresh.PageId),
+            _ => FakeGraph.Json(new JsonObject { ["access_token"] = issued }.ToJsonString()));
+
+        var added = await service.AddExtraPageAsync(fresh.PageId, fresh.PageName);
+
+        added.PageAccessToken.Should().Be(issued);
+        // ikinci servis örneği diskten okur: diske inen de o değer
+        (await _kit.CreateService().GetConnectedPagesAsync()).Single(p => p.PageId == fresh.PageId)
+            .PageAccessToken.Should().Be(issued);
+        var derivation = _kit.Graph.Requests.Single(u => IsPageToken(u, fresh.PageId));
+        HttpUtility.ParseQueryString(derivation.Query)["access_token"]
+            .Should().Be(userToken).And.NotBe(seeded[0].Page.PageAccessToken);   // birincil Sayfanınki değil
     }
 
     /// <summary>TK13: en çok 4 Sayfa (birincil dahil).</summary>
@@ -253,6 +287,31 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
         (listing.NeedsReauthorize, listing.Pages.Count).Should().Be((true, 0));
     }
 
+    /// <summary>
+    /// "Facebook izinlerini güncelle" yönlendirmesinin hangi koddan doğduğu günlükten okunabilmeli
+    /// (özellikle 100 dalı); satır yalnız kodları taşır.
+    /// </summary>
+    [Theory]
+    [InlineData(190)]
+    [InlineData(200)]
+    [InlineData(100)]
+    public async Task Listeleme_izin_yonlendirmesine_donunce_kod_gunluge_yazilir_govde_ve_token_yazilmaz(int code)
+    {
+        var log = new CapturingLogger<FacebookOAuthService>();
+        var (service, _) = await ConnectedAsync(log: log);
+        var (userToken, bodyText) = ((await service.GetUserAccessTokenAsync())!, "ileti-" + Kit.NewId());
+        _kit.Graph.Map(IsAccounts, _ => GraphError(code, bodyText));
+
+        (await service.ListAddablePagesAsync()).NeedsReauthorize.Should().BeTrue();
+
+        log.Entries
+            .Where(e => e.Level == LogLevel.Information
+                && e.Message.StartsWith("Facebook OAuth Page listing needs reauthorize", StringComparison.Ordinal))
+            .Should().ContainSingle().Which.Message.Should().Contain($"code {code}");
+        log.Entries.Should().NotContain(e =>
+            e.Full.Contains(userToken) || e.Full.Contains("access_token") || e.Full.Contains(bodyText));
+    }
+
     [Fact]
     public async Task Sunucu_ve_kota_hatasinda_NeedsReauthorize_kurulmaz_hata_yukari_cikar()
     {
@@ -284,6 +343,46 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
         (await IdsAsync(service)).Should().HaveCount(1);
     }
 
+    /// <summary>
+    /// Graph ayrıştıramadığı token'ı hata metninde geri yazabiliyor. İstisna iletisi günlüğe ve Ayarlar'daki
+    /// durum satırına çıkabildiği için isteğin kendi token'ı iletiden silinir; kod özgün gövdeden okunur.
+    /// </summary>
+    [Fact]
+    public async Task Graph_hata_govdesi_istegin_tokenini_yankilarsa_istisna_iletisinde_maskelenir()
+    {
+        var log = new CapturingLogger<FacebookOAuthService>();
+        var (service, seeded) = await ConnectedAsync(log: log);
+        var (userToken, pageId) = ((await service.GetUserAccessTokenAsync())!, Kit.NewId());
+        _kit.Graph.Map(u => IsPageToken(u, pageId), _ => GraphError(190, "Malformed access token " + userToken));
+
+        var error = (await FluentActions.Awaiting(() => service.AddExtraPageAsync(pageId, NewName()))
+            .Should().ThrowAsync<FacebookGraphException>()).Which;
+
+        error.Code.Should().Be(190);
+        error.Message.Should().NotContain(userToken).And.Contain("***").And.StartWith("Graph API 400 ");
+        log.Entries.Should().NotContain(e => e.Full.Contains(userToken));
+        (await IdsAsync()).Should().Equal(seeded[0].Page.PageId);   // demet yazılmadı: ikinci servis örneği ek Sayfa görmez
+    }
+
+    [Fact]
+    public async Task Maskeleme_yuzde_kodlu_tokenin_cozulmus_halini_de_yakalar()
+    {
+        // "|" adreste %7C diye yazılır: token'ın adresteki hâli ile çözülmüş hâli ayrıdır
+        var (userToken, primary, pageId) = ($"{Kit.NewToken()}|{Kit.NewToken()}", NewPage(), Kit.NewId());
+        var written = Uri.EscapeDataString(userToken);
+        await _kit.Store.SaveAsync(new FacebookTokenBundle(
+            userToken, primary.PageId, primary.PageAccessToken, primary.PageName, ExpiresAt: null));
+        // Graph çözülmüş hâli yankılar; istek satırını aktaran bir hata adresteki hâli de taşır
+        _kit.Graph.Map(u => IsPageToken(u, pageId),
+            _ => GraphError(190, $"Malformed access token {userToken} (access_token={written})"));
+
+        var error = (await FluentActions.Awaiting(() => _kit.CreateService().AddExtraPageAsync(pageId, NewName()))
+            .Should().ThrowAsync<FacebookGraphException>()).Which;
+
+        _kit.Graph.Requests.Single(u => IsPageToken(u, pageId)).Query.Should().Contain(written);   // adreste kodlu gitti
+        error.Message.Should().NotContain(userToken).And.NotContain(written).And.Contain("***");
+    }
+
     [Fact]
     public async Task Depo_yazimi_duserse_ekleme_istisna_verir_bagli_sayfalar_degismez()
     {
@@ -302,6 +401,29 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
         }
 
         (await IdsAsync(service)).Should().Equal(seeded[0].Page.PageId);
+    }
+
+    /// <summary>Kilit yazım düşünce de bırakılır: sızsaydı sonraki ekle / kaldır süresiz beklerdi.</summary>
+    [Fact]
+    public async Task Yazimi_dusen_degisiklikten_sonra_kilit_birakilir_sonraki_degisiklik_calisir()
+    {
+        var (service, seeded) = await ConnectedAsync();
+        var (failed, next) = (NewGraphPage(), NewGraphPage());
+        // hedef salt okunur: deponun taşıma adımı düşer
+        File.SetAttributes(_kit.TokenFilePath, FileAttributes.ReadOnly);
+        try
+        {
+            await FluentActions.Awaiting(() => service.AddExtraPageAsync(failed.PageId, failed.PageName))
+                .Should().ThrowAsync<UnauthorizedAccessException>();
+        }
+        finally
+        {
+            File.SetAttributes(_kit.TokenFilePath, FileAttributes.Normal);
+        }
+
+        await service.AddExtraPageAsync(next.PageId, next.PageName).WaitAsync(TestPatience.Upper);
+
+        (await IdsAsync()).Should().Equal(seeded[0].Page.PageId, next.PageId);   // ikinci servis örneği diskten görür
     }
 
     [Fact]

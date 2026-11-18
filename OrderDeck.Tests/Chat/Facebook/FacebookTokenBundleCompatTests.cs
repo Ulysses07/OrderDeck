@@ -229,4 +229,17 @@ public sealed class FacebookTokenBundleCompatTests : IDisposable
 
         FileNames().Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task ClearAsync_gecici_dosya_silinemezse_de_ana_dosyayi_siler_istisna_cikarmaz()
+    {
+        await _store.SaveAsync(WithExtras(NewLegacy(), 0));
+        // Geçici dosyanın yolunu bir klasör tutar: File.Delete klasörü silemez, istisna verir.
+        // Artık silinemedi diye bağlantı kaldırılamaz kalmamalı: ana dosya yine gider.
+        Directory.CreateDirectory(BlobPath + ".tmp");
+
+        await FluentActions.Awaiting(() => _store.ClearAsync()).Should().NotThrowAsync();
+
+        File.Exists(BlobPath).Should().BeFalse();
+    }
 }

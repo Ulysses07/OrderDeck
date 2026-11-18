@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.Chat.Facebook;
 using OrderDeck.Tests.TestHelpers;
 using Kit = OrderDeck.Tests.TestHelpers.FacebookOAuthTestKit;
@@ -41,6 +42,24 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         await _kit.Browser.WaitUntilOpenedAsync();
         _kit.Browser.Complete();
         await flow.WaitAsync(TestPatience.Upper);
+    }
+
+    /// <summary>
+    /// Kitin sahte tarayıcısını sarar ve geri çağrıdan yalnız <c>code</c>'u düşürür; <c>state</c> aynen
+    /// geçer. NEDEN: kitin sahtesi "doğru state, code yok" geri çağrısını üretemiyor. Bekleme yine kitin
+    /// sahtesinde tutulur: <c>PendingWaits</c> onu sayar.
+    /// </summary>
+    private sealed class CodeDroppingBrowser(IFacebookOAuthBrowser inner) : IFacebookOAuthBrowser
+    {
+        public IFacebookOAuthCallbackWait Open(string authorizeUrl) => new Wait(inner.Open(authorizeUrl));
+
+        private sealed class Wait(IFacebookOAuthCallbackWait inner) : IFacebookOAuthCallbackWait
+        {
+            public async Task<FacebookOAuthCallback> WaitAsync(CancellationToken ct) =>
+                (await inner.WaitAsync(ct)) with { Code = null };
+
+            public void Dispose() => inner.Dispose();
+        }
     }
 
     [Fact]
@@ -137,6 +156,33 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         _kit.Broker.ExchangeCalls.Should().Be(0);
     }
 
+    /// <summary>Geri çağrı doğru <c>state</c> ile ama <c>code</c> ve <c>error</c> olmadan gelir: takas edilecek bir şey yok.</summary>
+    [Fact]
+    public async Task Geri_cagri_code_tasimiyorsa_takas_cagrilmaz_diske_yazilmaz()
+    {
+        var service = new FacebookOAuthService(
+            () => _kit.Settings, _kit.Store, _kit.Broker, _kit.HttpFactory.CreateClient(string.Empty),
+            NullLogger<FacebookOAuthService>.Instance, new CodeDroppingBrowser(_kit.Browser),
+            FacebookOAuthService.CallbackTimeout);
+
+        var codeless = service.ConnectAsync(NoPicker);
+        await _kit.Browser.WaitUntilOpenedAsync();
+        _kit.Browser.Complete();   // doğru state + code; sarmalayıcı code'u düşürür
+        (await FluentActions.Awaiting(() => codeless.WaitAsync(TestPatience.Upper))
+                .Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be("Facebook OAuth callback missing ?code");
+        (_kit.Broker.ExchangeCalls, File.Exists(_kit.TokenFilePath), _kit.Browser.PendingWaits)
+            .Should().Be((0, false, 0));
+
+        var next = service.ConnectAsync(NoPicker);   // koruma bırakılmış: "bekleyen onay" ile reddedilmez, yeni akış açılır
+        await _kit.Browser.WaitUntilOpenedAsync();
+        _kit.Browser.Complete();
+        (await FluentActions.Awaiting(() => next.WaitAsync(TestPatience.Upper))
+                .Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be("Facebook OAuth callback missing ?code");
+        _kit.Browser.OpenedUrls.Should().HaveCount(2);
+    }
+
     /// <summary>Üretimdeki dinleyici: yalnız loopback; tarayıcı yerine adresi kaydeden bir temsilci.</summary>
     [Fact]
     public async Task Gercek_dinleyici_iptalden_sonra_ayni_oneki_yeniden_baglar_ve_geri_cagriya_HTML_doner()
@@ -164,11 +210,51 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         using var wait = browser.Open(url);   // iptalden sonra aynı önek yeniden bağlanır
         var callback = wait.WaitAsync(CancellationToken.None);
         using var http = new HttpClient();
-        var html = await http.GetStringAsync($"{prefix}?code={code}&state={state}");
+        var html = await http.GetStringAsync($"{prefix}?code={code}&state={state}").WaitAsync(TestPatience.Upper);
 
         (await callback.WaitAsync(TestPatience.Upper)).Should().Be(new FacebookOAuthCallback(code, state, null, null));
         html.Should().Contain("Facebook bağlantısı tamamlandı.");
         launched.Should().Equal(url, url, url);
+    }
+
+    /// <summary>
+    /// Önek doluyken (başka bir süreç, kapanmamış bir dinleyici) hata nedenini söyleyen iletiyle çıkar ve
+    /// tarayıcı hiç açılmaz: dinleyicisi olmayan bir onay sayfası kullanıcıyı boşuna bekletirdi.
+    /// </summary>
+    [Fact]
+    public void Open_onek_baska_dinleyicide_iken_Failed_to_bind_iletisiyle_duser()
+    {
+        var (launched, prefix) = (new List<string>(), $"http://localhost:{FreePort()}/facebook/callback/");
+        using var occupant = new HttpListener();
+        occupant.Prefixes.Add(prefix);
+        occupant.Start();
+        var browser = new LoopbackFacebookOAuthBrowser(prefix, launched.Add);
+
+        var error = FluentActions.Invoking(() => browser.Open("https://example.invalid/" + Kit.NewId()).Dispose())
+            .Should().Throw<InvalidOperationException>().Which;
+
+        error.Message.Should().StartWith($"Failed to bind {prefix}");
+        error.InnerException.Should().BeOfType<HttpListenerException>();
+        launched.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Tarayıcı açılamadıysa beklenecek bir onay yoktur: dinleyici açık kalsaydı sonraki deneme aynı
+    /// adrese bağlanamazdı.
+    /// </summary>
+    [Fact]
+    public void Open_tarayici_acilamazsa_dinleyiciyi_kapatir_ayni_onek_hemen_yeniden_baglanir()
+    {
+        var (launched, url) = (new List<string>(), "https://example.invalid/" + Kit.NewId());
+        var prefix = $"http://localhost:{FreePort()}/facebook/callback/";
+        var failure = new InvalidOperationException(Kit.NewId());
+        var failing = new LoopbackFacebookOAuthBrowser(prefix, _ => throw failure);
+
+        FluentActions.Invoking(() => failing.Open(url).Dispose())
+            .Should().Throw<InvalidOperationException>().Which.Should().BeSameAs(failure);
+
+        using var wait = new LoopbackFacebookOAuthBrowser(prefix, launched.Add).Open(url);   // aynı önek hemen bağlanır
+        launched.Should().Equal(url);
     }
 
     /// <summary>TK5: ek Sayfa saklı kullanıcı token'ıyla eklenir, tarayıcı açılmaz.</summary>
