@@ -238,6 +238,29 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
     }
 
     /// <summary>
+    /// Uyarı satırının HTTP durumunu taşımasının nedeni olan durum: gövde JSON değilse (ağ geçidinin hata sayfası,
+    /// kota yanıtı) Graph kodları okunamaz, satırları birbirinden ayıran tek bilgi HTTP durumudur. Gövde yine
+    /// yazılmaz: istisna günlüğe verilseydi iletisiyle birlikte gövde de yazılırdı.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task Turetme_JSON_olmayan_govdeyle_duserse_uyari_satiri_HTTP_durumunu_tasir_govdeyi_tasimaz(
+        HttpStatusCode status)
+    {
+        var log = new CapturingLogger<FacebookOAuthService>();
+        var (service, seeded) = await ConnectedAsync(1, log);
+        var body = "govde-" + Kit.NewId();   // JSON değil: Graph kodları okunamaz
+        _kit.Graph.Map(u => IsPageToken(u, seeded[1].Page.PageId), _ => FakeGraph.Json(body, status));
+
+        await RunAsync(service, Answer(true));
+
+        var warning = log.Warnings.Should().ContainSingle().Which;
+        warning.Message.Should().EndWith($"(FacebookGraphException, HTTP {status}, Graph code (null), subcode (null))");
+        warning.Full.Should().NotContain(body);
+    }
+
+    /// <summary>
     /// Önce disk, sonra bellek: yazım düşerse bellekteki demet eski hâlinde kalır (yoksa yeni token'lar
     /// yalnız o oturumda görünür, yeniden başlatınca eskileri geri gelirdi) ve kilit bırakılır.
     /// </summary>
