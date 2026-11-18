@@ -52,6 +52,13 @@ internal sealed record InstagramLoopServices(
 /// "önce oku, değiştir, sonra oku" diye yazıldığı için ikinci bir yazar yanlış geçiş yazdırırdı;
 /// döngü bu yüzden poller'ının BİTMESİNİ bekler, çağıran da girdileri ancak döngü bittikten
 /// sonra durdurur.</para>
+///
+/// <para><b>Token değişimi.</b> Çalışan sağlıklı poller'a dokunulmaz: kurulduğu token geçerli
+/// oldukça sürer, Sayfanın yeni token'ı sonraki kurulumda kullanılır. Token'a yalnız iki uzun
+/// bekleme bakar (hesap çözülemedi, kalıcı hata): saklı token o turda kullanılandan farklıysa
+/// beklenmez (<see cref="WaitUnlessTokenChangedAsync"/>); "Facebook izinlerini güncelle"den
+/// sonra bozuk hesap 5 dakika daha susmaz. Yeni token'la ilk iş hesabın bir kez yeniden
+/// çözülmesidir (<see cref="ForgetAccountIfTokenChanged"/>).</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class InstagramAccountLoop
@@ -60,6 +67,7 @@ internal sealed class InstagramAccountLoop
     private readonly InstagramLoopServices _services;
     private readonly InstagramAccountResolver _resolver;
     private readonly ConcurrentDictionary<string, string> _owners;
+    private readonly ConcurrentDictionary<string, string> _resolvedTokens;
     private readonly InstagramMergeGate? _gate;
     private readonly RoundObserver _observer;
 
@@ -73,6 +81,10 @@ internal sealed class InstagramAccountLoop
     /// diye servis ömrünce yaşar, bu yüzden dışarıdan verilir.</param>
     /// <param name="owners">Instagram hesabı (IgUserId) → onu yoklayan Sayfa (PageId); bütün
     /// döngülerin ortak sözlüğü.</param>
+    /// <param name="resolvedTokens">Sayfa (PageId) → o Sayfanın çözümleyicisine en son verilen
+    /// Sayfa token'ı; bütün döngülerin ortak sözlüğü. Çözümleyiciyle aynı ömürde yaşasın diye
+    /// dışarıdan verilir: token döngü örnekleri ve oturumlar arasında değişse de fark görülür.
+    /// Günlüğe yazılmaz.</param>
     /// <param name="gate">İki ve üzeri Sayfada birleştirme kapısı; tek Sayfada null (poller
     /// doğrudan sohbet bus'ına yazar, mesaj etiketsizdir).</param>
     internal InstagramAccountLoop(
@@ -80,12 +92,14 @@ internal sealed class InstagramAccountLoop
         InstagramLoopServices services,
         InstagramAccountResolver resolver,
         ConcurrentDictionary<string, string> owners,
+        ConcurrentDictionary<string, string> resolvedTokens,
         InstagramMergeGate? gate)
     {
         _pageId = pageId;
         _services = services;
         _resolver = resolver;
         _owners = owners;
+        _resolvedTokens = resolvedTokens;
         _gate = gate;
         _observer = new RoundObserver(this);
     }
@@ -120,7 +134,8 @@ internal sealed class InstagramAccountLoop
                     Track(() => health.Report(_pageId, InstagramAccountState.Starting));
 
                     // 2) Çözümleme. "Hesap yok" ile "çağrı düştü" ayrı durumlardır; ikisi de
-                    // uzun bekler.
+                    // uzun bekler. Token değiştiyse önbellekteki hesap önce unutulur.
+                    ForgetAccountIfTokenChanged(page.PageAccessToken);
                     var (resolved, status) = await _resolver
                         .ResolveDetailedAsync(_pageId, page.PageAccessToken, ct).ConfigureAwait(false);
                     if (resolved is not { } account)
@@ -128,7 +143,8 @@ internal sealed class InstagramAccountLoop
                         ReportWaiting(status == InstagramResolveStatus.NotLinked
                             ? InstagramAccountState.NotLinked
                             : InstagramAccountState.ResolveFailed);
-                        await IdleAsync(timings.IdleAfterFatal, ct).ConfigureAwait(false);
+                        await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, ct)
+                            .ConfigureAwait(false);
                         continue;
                     }
 
@@ -143,6 +159,7 @@ internal sealed class InstagramAccountLoop
                             "{IgUserId} is already polled through page {OwnerPageId}",
                             _pageId, account.IgUserId, owner);
                         ReportWaiting(InstagramAccountState.Skipped);
+                        // Düz bekleme, token'a bakmaz: Sayfa token yüzünden atlanmadı.
                         await IdleAsync(timings.IdleAfterFatal, ct).ConfigureAwait(false);
                         continue;
                     }
@@ -216,7 +233,8 @@ internal sealed class InstagramAccountLoop
                         Track(
                             () => health.Report(_pageId, InstagramAccountState.Faulted, reason, RetryAt()),
                             from: _observer.TakeStateBeforeFatal());
-                        await IdleAsync(timings.IdleAfterFatal, ct).ConfigureAwait(false);
+                        await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, ct)
+                            .ConfigureAwait(false);
                         continue;
                     }
 
@@ -268,6 +286,66 @@ internal sealed class InstagramAccountLoop
     }
 
     private Task IdleAsync(TimeSpan duration, CancellationToken ct) => Task.Delay(duration, _services.Time, ct);
+
+    /// <summary>
+    /// Çözümleyici önbelleğini boşaltan TEK yer; her çözümlemeden önce çağrılır. Bu turun token'ı
+    /// çözümleyiciye en son verilenden farklıysa önbellekteki hesap unutulur: yeni token'la ilk iş
+    /// hesabın bir kez yeniden çözülmesidir (tek Graph isteği). İzin güncellemede Instagram
+    /// hesabının işareti kaldırıldıysa bu böylece poller'ın hatasında değil çözümlemede, "hesap
+    /// yok" olarak görünür. Token aynıysa önbellek korunur, istek eklenmez; ilk çözümlemede
+    /// karşılaştırılacak kayıt yoktur.
+    ///
+    /// <para>Kayıt döngünün değil servisin ömründe tutulur: token poller sağlıklıyken ya da oturum
+    /// dışında, yani hiçbir beklemeye girilmeden değişse de sonraki kurulum farkı görür. Kesilen
+    /// bekleme de buraya iner: bekleme önbelleğe dokunmaz, tur baştan başlar ve fark burada
+    /// görülür.</para>
+    /// </summary>
+    /// <param name="token">Bu turun 1. adımında okunan, çözümlemeye verilecek Sayfa token'ı.</param>
+    private void ForgetAccountIfTokenChanged(string token)
+    {
+        if (_resolvedTokens.TryGetValue(_pageId, out var resolvedWith)
+            && !string.Equals(resolvedWith, token, StringComparison.Ordinal))
+        {
+            _resolver.Invalidate();
+        }
+
+        _resolvedTokens[_pageId] = token;
+    }
+
+    /// <summary>
+    /// Uzun beklemenin token'a bakan biçimi (hesap çözülemedi, kalıcı hata): Sayfanın saklı token'ı
+    /// <paramref name="usedToken"/>'dan farklıysa beklenmez. Fark bekleme başlarken varsa bekleme
+    /// atlanır, bekleme sırasında oluşursa kesilir. Sayfa bağlı Sayfalar arasından çıktıysa da
+    /// beklenmez: döngü 1. adımda biter.
+    ///
+    /// <para>Ayrı bir sinyal yoktur: bekleme <see cref="InstagramChatTimings.WatchInterval"/>
+    /// adımlarına bölünür (son adım kalan süre kadardır) ve her adımdan önce saklı token yeniden
+    /// okunur. Bu bir bellek okumasıdır, Graph'a istek atılmaz: beklemeyi yalnız token değişimi
+    /// keser, ağın düzelmesi kesmez. Kalan süre saat okunarak DEĞİL adımlar toplanarak sayılır:
+    /// elle ilerletilen saat (testler) kendiliğinden ilerlemez, saatle ölçülen bekleme hiç
+    /// bitmezdi.</para>
+    /// </summary>
+    /// <param name="wait">Token değişmezse beklenecek toplam süre.</param>
+    /// <param name="usedToken">Bu turun 1. adımında okunup çözümlemeye ya da poller'a verilen token.</param>
+    /// <param name="ct">Oturum belirteci; beklemeyi iptal eder.</param>
+    /// <returns>Bekleme atlandıysa ya da kesildiyse true, süre dolduysa false. İkisinde de tur
+    /// baştan başlar; önbelleği yeni turdaki <see cref="ForgetAccountIfTokenChanged"/> boşaltır.</returns>
+    private async Task<bool> WaitUnlessTokenChangedAsync(TimeSpan wait, string usedToken, CancellationToken ct)
+    {
+        var interval = _services.Timings.WatchInterval;
+        for (var remaining = wait; remaining > TimeSpan.Zero;)
+        {
+            var page = await FindPageAsync(ct).ConfigureAwait(false);
+            if (page is null || !string.Equals(page.PageAccessToken, usedToken, StringComparison.Ordinal))
+                return true;
+
+            var step = remaining < interval ? remaining : interval;
+            await IdleAsync(step, ct).ConfigureAwait(false);
+            remaining -= step;
+        }
+
+        return false;
+    }
 
     /// <summary>Uzun beklemenin biteceği an: şimdi + <see cref="InstagramChatTimings.IdleAfterFatal"/>.</summary>
     private DateTimeOffset RetryAt() => _services.Time.GetUtcNow() + _services.Timings.IdleAfterFatal;

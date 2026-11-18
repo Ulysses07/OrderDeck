@@ -66,6 +66,12 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     /// ve çıkarken bırakır.</summary>
     private readonly ConcurrentDictionary<string, string> _owners = new(StringComparer.Ordinal);
 
+    /// <summary>Sayfa (PageId) → o Sayfanın çözümleyicisine en son verilen Sayfa token'ı.
+    /// Çözümleyicilerle aynı ömürde yaşar (oturumlar ve döngü örnekleri arasında korunur): token
+    /// hangi yolda değişirse değişsin sonraki kurulumda hesap bir kez yeniden çözülür. Kaydı o
+    /// Sayfanın hesap döngüsü okur ve yazar; hiçbir yere loglanmaz.</summary>
+    private readonly ConcurrentDictionary<string, string> _resolvedTokens = new(StringComparer.Ordinal);
+
     private CancellationTokenSource? _cts;
     private Task? _runner;
 
@@ -255,7 +261,8 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         {
             for (var i = 0; i < pages.Count; i++)
             {
-                var loop = new InstagramAccountLoop(pages[i].PageId, services, resolvers[i], _owners, gate);
+                var loop = new InstagramAccountLoop(
+                    pages[i].PageId, services, resolvers[i], _owners, _resolvedTokens, gate);
                 loops.Add(Task.Run(() => loop.RunAsync(session), CancellationToken.None));
             }
 
@@ -321,8 +328,10 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
 /// <param name="IdleAfterPollerExit">Poller kalıcı hata olmadan bittikten, hesap döngüsü ya da üst
 /// döngü beklenmeyen bir istisna yakaladıktan ve oturum toplandıktan sonraki bekleme.</param>
 /// <param name="IdleAfterFatal">Kalıcı hatadan, çözülemeyen hesaptan ve başka bir Sayfanın
-/// yokladığı hesaptan sonra hesabın yeniden denenmesine kadarki bekleme.</param>
-/// <param name="WatchInterval">Oturum açıkken bağlı Sayfa listesinin izlenme aralığı.</param>
+/// yokladığı hesaptan sonra hesabın yeniden denenmesine kadarki bekleme. İlk ikisi Sayfanın
+/// saklı token'ı değişince beklenmez.</param>
+/// <param name="WatchInterval">Oturum açıkken bağlı Sayfa listesinin izlenme aralığı; token'a
+/// bakan beklemelerin saklı token'ı yeniden okuma adımı.</param>
 /// <param name="UsageLogInterval">Hesap başına kota günlük satırının en sık yazılma aralığı.</param>
 [SupportedOSPlatform("windows")] // Default, yalnız Windows'ta desteklenen servisin sabitlerinden kurulur.
 internal sealed record InstagramChatTimings(
