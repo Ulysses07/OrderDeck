@@ -216,4 +216,17 @@ public sealed class FacebookTokenBundleCompatTests : IDisposable
             File.SetAttributes(BlobPath, FileAttributes.Normal);
         }
     }
+
+    [Fact]
+    public async Task ClearAsync_gecici_dosya_artigini_da_siler()
+    {
+        await _store.SaveAsync(WithExtras(NewLegacy(), 0));
+        // Yarım kalmış bir yazımın artığı: süreç geçici dosyayı yazdı, yerine taşıyamadan
+        // öldü. Sahada o dosyada şifreli demet durur; bağlantı kaldırılınca o da gitmeli.
+        File.WriteAllBytes(BlobPath + ".tmp", Guid.NewGuid().ToByteArray());
+
+        await _store.ClearAsync();
+
+        FileNames().Should().BeEmpty();
+    }
 }
