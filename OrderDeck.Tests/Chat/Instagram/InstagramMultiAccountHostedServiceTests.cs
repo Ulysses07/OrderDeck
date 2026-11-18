@@ -605,13 +605,12 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         return _service.StartAsync(CancellationToken.None);
     }
 
-    /// <summary>Kapının (tek) özet satırındaki kulvar parçaları: <c>… lanes: {etiket} rounds=…; {etiket} rounds=…</c>.</summary>
-    private string[] SummaryLanes()
-    {
-        const string marker = "lanes: ";
-        var summary = Lines("[InstagramMergeGate]").Single();
-        return summary[(summary.IndexOf(marker, StringComparison.Ordinal) + marker.Length)..].Split("; ");
-    }
+    /// <summary>
+    /// Kapının (tek) özet satırında o etiketi taşıyan kulvar sayısı. Her kulvar özete etiketiyle bir kez girer;
+    /// satırın öbür ayrıntısına (ayraç, sayaç adları) bakılmaz.
+    /// </summary>
+    private int LanesInSummary(string label) =>
+        Regex.Matches(Lines("[InstagramMergeGate]").Single(), Regex.Escape(label)).Count;
 
     [Fact] // AH4: operatör "Yayın Başlat"a basmadıysa Graph'a dokunulmaz
     public async Task Oturum_yokken_Graph_a_dokunulmaz_oturum_acilinca_yoklama_baslar()
@@ -716,9 +715,8 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         Got(gap).Should().BeFalse(); // filigran taze: yeni poller'ın ilk çekimi yutuldu
         EndSession(session);
         await Until(() => Lines("[InstagramMergeGate]").Count == 1);
-        SummaryLanes().Should().HaveCount(2) // hesap başına TEK kulvar: yeniden kurulan poller yenisini açmadı
-            .And.ContainSingle(l => l.StartsWith($"@{a.IgUsername} rounds="))
-            .And.ContainSingle(l => l.StartsWith($"@{b.IgUsername} rounds="));
+        // Hesap başına TEK kulvar: yeniden kurulan poller yenisini açmadı.
+        (LanesInSummary("@" + a.IgUsername), LanesInSummary("@" + b.IgUsername)).Should().Be((1, 1));
     }
 
     [Fact]
