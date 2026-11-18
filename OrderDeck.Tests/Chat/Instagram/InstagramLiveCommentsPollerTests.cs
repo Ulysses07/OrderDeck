@@ -1,13 +1,16 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.Chat.Ingestors.Instagram;
 using OrderDeck.Core.Chat;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Chat.Instagram;
@@ -166,6 +169,201 @@ public class InstagramLiveCommentsPollerTests
         await poller.Completion.WaitAsync(TimeSpan.FromSeconds(5));
 
         poller.FatalReason.Should().Contain("izni");
+    }
+
+    // ── Gözlemci, kota başlığı, devredilen filigran ──────────────────────────
+    // Bu bölümde kimlik, token ve izleyici adı yazılmaz, üretilir (depo herkese açık).
+
+    private sealed record Round(InstagramPollKind Kind, string? Message, TimeSpan RetryAfter, string? UsageHeader);
+
+    /// <summary>Log'a "start" / "done:{Kind}", Completed'a tur sonucu yazar; Throws true ise
+    /// iki yöntem de kayıttan sonra InvalidOperationException fırlatır.</summary>
+    private sealed class RecordingObserver(ConcurrentQueue<string>? log = null) : IInstagramPollObserver
+    {
+        public ConcurrentQueue<string> Log { get; } = log ?? new();
+        public ConcurrentQueue<Round> Completed { get; } = new();
+        public bool Throws { get; init; }
+
+        public void RoundStarting()
+        {
+            Log.Enqueue("start");
+            if (Throws) throw new InvalidOperationException("observer failed");
+        }
+
+        public void RoundCompleted(InstagramPollKind kind, string? message, TimeSpan retryAfter, string? usageHeader)
+        {
+            Log.Enqueue($"done:{kind}");
+            Completed.Enqueue(new Round(kind, message, retryAfter, usageHeader));
+            if (Throws) throw new InvalidOperationException("observer failed");
+        }
+    }
+
+    /// <summary>ScriptedHandler'ın başlık taşıyan eşi: sıradaki yanıtı döner, bitince sonuncuyu
+    /// yineler; Usage null ise X-Business-Use-Case-Usage eklenmez.</summary>
+    private sealed class UsageHandler : HttpMessageHandler
+    {
+        private readonly Queue<(HttpStatusCode Status, string Body, string? Usage)> _queue;
+        private readonly (HttpStatusCode Status, string Body, string? Usage) _last;
+
+        public UsageHandler(params (HttpStatusCode Status, string Body, string? Usage)[] responses)
+        {
+            _queue = new Queue<(HttpStatusCode Status, string Body, string? Usage)>(responses);
+            _last = responses[^1];
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var next = _queue.Count > 0 ? _queue.Dequeue() : _last;
+            var response = new HttpResponseMessage(next.Status)
+            {
+                Content = new StringContent(next.Body),
+            };
+            if (next.Usage is not null)
+                response.Headers.TryAddWithoutValidation("X-Business-Use-Case-Usage", next.Usage);
+            return Task.FromResult(response);
+        }
+    }
+
+    private static string New(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
+
+    /// <summary>Tek kovalı kota başlığı; işletme kimliği üretilir, <paramref name="minutes"/>
+    /// <c>estimated_time_to_regain_access</c> alanına yazılır.</summary>
+    private static string UsageHeader(int minutes) =>
+        $"{{\"{New("b")}\":[{{\"type\":\"instagram\",\"call_count\":100,\"total_cputime\":25," +
+        $"\"total_time\":25,\"estimated_time_to_regain_access\":{minutes}}}]}}";
+
+    /// <summary>MediaJson'ın media kimliği verilen eşi.</summary>
+    private static string MediaJsonFor(string mediaId, params string[] comments) =>
+        "{\"data\":[{\"id\":\"" + mediaId + "\",\"comments\":{\"data\":[" + string.Join(",", comments) + "]}}]}";
+
+    /// <summary>1. çekim: eski yorum (12:00:00); sonraki çekimler: yeni (12:00:05) + eski.</summary>
+    private static ScriptedHandler PrimeThenNew(string oldId, string newId, string user)
+    {
+        var media = New("m");
+        var old = Comment(oldId, "eski", "2026-08-05T12:00:00+0000", user);
+        return new ScriptedHandler(
+            (HttpStatusCode.OK, MediaJsonFor(media, old)),
+            (HttpStatusCode.OK, MediaJsonFor(media,
+                Comment(newId, "yeni", "2026-08-05T12:00:05+0000", user), old)));
+    }
+
+    /// <summary>Kimliği ve token'ı üretilmiş poller.</summary>
+    private static InstagramLiveCommentsPoller MakeObserved(
+        HttpMessageHandler handler, IChatBus bus, IInstagramPollObserver? observer = null,
+        InstagramCommentWatermark? watermark = null, ILogger<InstagramLiveCommentsPoller>? log = null) =>
+        new(New("ig"), New("t"), bus, new HttpClient(handler),
+            log ?? NullLogger<InstagramLiveCommentsPoller>.Instance,
+            observer: observer, watermark: watermark);
+
+    /// <summary>Poller'ı başlatır, koşul sağlanana dek (üst sınır TestPatience.Upper) bekler, durdurur.</summary>
+    private static async Task RunUntil(InstagramLiveCommentsPoller poller, Func<bool> until)
+    {
+        await poller.StartAsync(CancellationToken.None);
+        await WaitUntil(until, TestPatience.Upper);
+        await poller.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Observer_sees_start_then_completion_and_ok_arrives_after_the_publishes()
+    {
+        var order = new ConcurrentQueue<string>();
+        var bus = new ChatBus(ringBufferSize: 50);
+        using var sub = bus.Subscribe(_ => order.Enqueue("pub"));
+
+        using var poller = MakeObserved(
+            PrimeThenNew(New("c"), New("c"), New("u")), bus, new RecordingObserver(order));
+        await RunUntil(poller, () => order.Count >= 5);
+
+        // 1. tur ilk çekim: yayım yok.
+        order.Take(5).Should().Equal("start", "done:Ok", "start", "pub", "done:Ok");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error\":{\"message\":\"x\",\"code\":190}}",
+        InstagramPollKind.Fatal, "Instagram bağlantını yenilemen gerekiyor.")]
+    [InlineData(HttpStatusCode.OK, "{\"data\":[]}", InstagramPollKind.NoBroadcast, null)]
+    public async Task Observer_gets_fatal_with_the_operator_message_and_no_broadcast_on_empty_data(
+        HttpStatusCode status, string body, InstagramPollKind kind, string? message)
+    {
+        var observer = new RecordingObserver();
+
+        using var poller = MakeObserved(new ScriptedHandler((status, body)), new ChatBus(), observer);
+        await RunUntil(poller, () => !observer.Completed.IsEmpty);
+
+        observer.Log.Take(2).Should().Equal("start", $"done:{kind}");
+        observer.Completed.First().Should().Be(new Round(kind, message, TimeSpan.Zero, null));
+    }
+
+    [Fact]
+    public async Task Observer_gets_rate_limited_with_the_wait_before_the_poller_sleeps()
+    {
+        var observer = new RecordingObserver();
+        var header = UsageHeader(minutes: 7);
+        var handler = new UsageHandler(
+            (HttpStatusCode.BadRequest, "{\"error\":{\"message\":\"x\",\"code\":4}}", header));
+
+        using var poller = MakeObserved(handler, new ChatBus(), observer);
+        await RunUntil(poller, () => !observer.Completed.IsEmpty); // bildirim 7 dk'lık beklemeden önce gelir
+
+        observer.Completed.First().Should().Be(
+            new Round(InstagramPollKind.RateLimited, null, TimeSpan.FromMinutes(7), header));
+    }
+
+    [Fact]
+    public async Task Usage_header_is_carried_raw_on_every_response()
+    {
+        var observer = new RecordingObserver();
+        var header = UsageHeader(minutes: 0);
+        var body = MediaJson(Comment(New("c"), "x", "2026-08-05T12:00:00+0000", New("u")));
+
+        using var poller = MakeObserved(
+            new UsageHandler((HttpStatusCode.OK, body, header), (HttpStatusCode.OK, body, null)),
+            new ChatBus(), observer);
+        await RunUntil(poller, () => observer.Completed.Count >= 2);
+
+        observer.Completed.Take(2).Should().Equal(
+            new Round(InstagramPollKind.Ok, null, TimeSpan.Zero, header),
+            new Round(InstagramPollKind.Ok, null, TimeSpan.Zero, null)); // başlık yoksa null
+    }
+
+    [Fact]
+    public async Task Throwing_observer_does_not_stop_the_loop()
+    {
+        var log = new CapturingLogger<InstagramLiveCommentsPoller>();
+        var bus = new ChatBus(ringBufferSize: 50);
+        var received = new ConcurrentQueue<ChatMessage>();
+        using var sub = bus.Subscribe(received.Enqueue);
+        var newId = New("c");
+
+        using var poller = MakeObserved(
+            PrimeThenNew(New("c"), newId, New("u")), bus, new RecordingObserver { Throws = true }, log: log);
+        await RunUntil(poller, () => !received.IsEmpty);
+
+        received.Should().ContainSingle().Which.ExternalId.Should().Be(newId); // iki tur da tamamlandı
+        log.Entries.Should().Contain(e => e.Level == LogLevel.Debug && e.Exception != null);
+        log.Warnings.Should().BeEmpty();
+        poller.FatalReason.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handed_over_watermark_publishes_the_first_fetch()
+    {
+        var (media, oldId, newId, user) = (New("m"), New("c"), New("c"), New("u"));
+        var at = new DateTimeOffset(2026, 8, 5, 12, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+        var watermark = new InstagramCommentWatermark(); // önceki poller'ın filigranı
+        watermark.Advance(media, new[] { new InstagramComment(oldId, "eski", at, user) });
+        var bus = new ChatBus(ringBufferSize: 50);
+        var received = new ConcurrentQueue<ChatMessage>();
+        using var sub = bus.Subscribe(received.Enqueue);
+        var handler = new ScriptedHandler((HttpStatusCode.OK, MediaJsonFor(media,
+            Comment(newId, "yeni", "2026-08-05T12:00:05+0000", user),
+            Comment(oldId, "eski", "2026-08-05T12:00:00+0000", user))));
+
+        using var poller = MakeObserved(handler, bus, watermark: watermark);
+        await RunUntil(poller, () => !received.IsEmpty);
+
+        received.Should().ContainSingle().Which.ExternalId.Should().Be(newId); // İLK çekimde basıldı, yutulmadı
     }
 
     private static async Task WaitUntil(Func<bool> predicate, TimeSpan timeout)
