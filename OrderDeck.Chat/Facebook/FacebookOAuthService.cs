@@ -465,9 +465,12 @@ public sealed class FacebookOAuthService
     /// <para>Kilit yalnız yazımı kapsar: tarayıcı beklemesi, soru ve türetme sürerken
     /// bağlantı kaldırılabilir, ek Sayfa eklenip kaldırılabilir. Yazım bu yüzden
     /// GÜNCEL demetin üstüne yapılır: o arada kaldırılan bağlantı dirilmez, kaldırılan
-    /// ek Sayfa geri gelmez, eklenen korunur. Listede görünmeyen Sayfanın girdisi
-    /// SİLİNMEZ, eski token'ıyla kalır: erişimi gerçekten düştüyse sessizce kaybolmak
-    /// yerine sağlık göstergesinde görünür.</para>
+    /// ek Sayfa geri gelmez, eklenen korunur. Bağlantı o arada kaldırılıp YENİDEN
+    /// kurulduysa da (güncel demetin kullanıcı token'ı, bağlı Sayfalar okunurken
+    /// saklanandan farklıdır) hiçbir şey yazılmaz ve akış, bağlantı kaldırılmış gibi
+    /// aynı istisnayla biter: bu akışın token'ları yeni bağlantının demetini ezmez.
+    /// Listede görünmeyen Sayfanın girdisi SİLİNMEZ, eski token'ıyla kalır: erişimi
+    /// gerçekten düştüyse sessizce kaybolmak yerine sağlık göstergesinde görünür.</para>
     ///
     /// <para>İstisnayla biten her yolda diskteki demet değişmemiştir.</para>
     /// </summary>
@@ -512,10 +515,13 @@ public sealed class FacebookOAuthService
         foreach (var row in listed) listedIds.Add(row.PageId);
 
         // 3. Bağlı Sayfalar ŞİMDİ okunur: tarayıcı beklemesi kilit dışındaydı, o arada
-        //    bağlantı kaldırılmış ya da ek Sayfalar değişmiş olabilir.
-        var connected = await GetConnectedPagesAsync(ct).ConfigureAwait(false);
-        if (connected.Count == 0)
-            throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
+        //    bağlantı kaldırılmış ya da ek Sayfalar değişmiş olabilir. Sayfalarla AYNI
+        //    demetin kullanıcı token'ı saklanır: kayıt adımı, bağlantının bundan sonra
+        //    kaldırılıp yeniden kurulduğunu ondan anlar.
+        var snapshot = await ReadBundleAsync(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
+        var connected = ConnectedPagesOf(snapshot);
+        var connectedUserToken = snapshot.UserAccessToken;
 
         var missing = new List<FacebookLinkedPage>();
         foreach (var page in connected)
@@ -548,25 +554,36 @@ public sealed class FacebookOAuthService
             }
             catch (Exception ex)
             {
-                // Satır yalnız hata tipini ve Graph kodunu taşır: istisna iletisi (Graph
-                // gövdesi) yazılmaz.
+                // Satır yalnız hata tipini, HTTP durumunu ve Graph kodlarını taşır: istisna
+                // iletisi (Graph gövdesi) yazılmaz. NEDEN HTTP durumu: JSON olmayan 5xx / 429
+                // gövdesinde Graph kodları okunamaz; durum yazılmasa 500, 502, 429 ve 404
+                // günlükte ayırt edilemezdi. İstisna durum taşımıyorsa (bağlantı hatası, ağ
+                // zaman aşımı, token'sız 200 gövdesi) null yazılır.
                 var graph = ex as FacebookGraphException;
                 _log.LogWarning(
                     "Facebook OAuth reauthorize kept the stored token for Page {PageId}: " +
-                    "a new one could not be derived ({Error}, Graph code {Code}, subcode {Subcode})",
-                    page.PageId, ex.GetType().Name, graph?.Code, graph?.Subcode);
+                    "a new one could not be derived " +
+                    "({Error}, HTTP {Status}, Graph code {Code}, subcode {Subcode})",
+                    page.PageId, ex.GetType().Name, (ex as HttpRequestException)?.StatusCode,
+                    graph?.Code, graph?.Subcode);
             }
         }
 
         // 5. Tek yazım, kilit altında (gerekçe: _mutate) ve GÜNCEL demetin üstüne: kilit
         //    yukarıdaki adımları kapsamadı. Bağlantı o arada kaldırıldıysa hiçbir şey
-        //    yazılmaz (bağlantı dirilmez). Sayfa eklenmez, çıkarılmaz: türetilen
+        //    yazılmaz (bağlantı dirilmez). Kaldırılıp YENİDEN kurulduysa da yazılmaz
+        //    (yenisi ezilmez): o zaman güncel demetin kullanıcı token'ı 3. adımda
+        //    saklanandan farklıdır; yazılsaydı bu akışın kullanıcı token'ı başka bir
+        //    girişin demetine girerdi. Ek Sayfa eklemek / kaldırmak kullanıcı token'ını
+        //    değiştirmez, bu denetime takılmaz. Sayfa eklenmez, çıkarılmaz: türetilen
         //    token'lar yalnız hâlâ bağlı Sayfalara, PageId eşleşmesiyle yazılır.
         await _mutate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var current = await ReadBundleAsync(ct).ConfigureAwait(false)
-                ?? throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
+            var current = await ReadBundleAsync(ct).ConfigureAwait(false);
+            if (current is null ||
+                !string.Equals(current.UserAccessToken, connectedUserToken, StringComparison.Ordinal))
+                throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
 
             var refreshed = 0;
             var primaryToken = current.PageAccessToken;

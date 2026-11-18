@@ -307,7 +307,7 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
         log.Entries
             .Where(e => e.Level == LogLevel.Information
                 && e.Message.StartsWith("Facebook OAuth Page listing needs reauthorize", StringComparison.Ordinal))
-            .Should().ContainSingle().Which.Message.Should().Contain($"code {code}");
+            .Should().ContainSingle().Which.Message.Should().Contain($"(Graph code {code},");
         log.Entries.Should().NotContain(e =>
             e.Full.Contains(userToken) || e.Full.Contains("access_token") || e.Full.Contains(bodyText));
     }

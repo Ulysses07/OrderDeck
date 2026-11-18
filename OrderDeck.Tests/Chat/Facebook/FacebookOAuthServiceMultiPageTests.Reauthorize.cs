@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json.Nodes;
 using System.Web;
 using FluentAssertions;
@@ -231,6 +232,9 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         warning.Message.Should().StartWith("Facebook OAuth").And.Contain(seeded[1].Page.PageId);
         warning.Full.Should().NotContain(_kit.Broker.LastIssuedToken!)
             .And.NotContain("access_token").And.NotContain("graph.facebook.com");
+        // HTTP durumu da yazılır: JSON olmayan 5xx / 429 gövdesinde Graph kodları okunamaz, satırı ayıran odur.
+        // Kitin Graph hatası HTTP 400 döner; ağ zaman aşımında HTTP yanıtı yoktur.
+        warning.Message.Should().Contain(timedOut ? "HTTP (null)," : $"HTTP {HttpStatusCode.BadRequest},");
     }
 
     /// <summary>
@@ -265,7 +269,7 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
     [Fact]
     public async Task Bagli_degilken_ReauthorizeAsync_tarayici_acmadan_reddedilir()
     {
-        await FluentActions.Awaiting(() => _kit.CreateService().ReauthorizeAsync(Answer(true)))
+        await FluentActions.Awaiting(() => _kit.CreateService().ReauthorizeAsync(Answer(true)).WaitAsync(TestPatience.Upper))
             .Should().ThrowAsync<InvalidOperationException>();
 
         _kit.Browser.OpenedUrls.Should().BeEmpty();
@@ -338,6 +342,44 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         (await FluentActions.Awaiting(() => pending).Should().ThrowAsync<InvalidOperationException>())
             .Which.Message.Should().Be(DisconnectedWhileWaitingMessage);
         (File.Exists(_kit.TokenFilePath), await service.IsConnectedAsync()).Should().Be((false, false));
+    }
+
+    /// <summary>
+    /// "Kaldırılmış bağlantı dirilmez" kuralının ikizi: yenisi ezilmez. Türetme sürerken bağlantı kaldırılıp
+    /// YENİDEN kurulursa kayıt adımı bir demet bulur, ama o demet başka bir girişindir. NEDEN: yazılsaydı bu
+    /// akışın kullanıcı token'ı ve süresi yeni bağlantının demetine girerdi; yeni bağlantı başka bir Facebook
+    /// kullanıcısıyla kurulduysa saklanan kullanıcı token'ı Sayfalarla uyuşmazdı. Yeni bağlantı burada AYNI
+    /// Sayfayla kurulur: iki bağlantıyı ayıran Sayfa kimliği değil, kullanıcı token'ıdır.
+    /// </summary>
+    [Fact]
+    public async Task Tokenlar_turetilirken_baglanti_kaldirilip_yeniden_kurulursa_yeni_baglanti_ezilmez()
+    {
+        var (service, seeded) = await ConnectedAsync();
+        var (reached, release) = HoldPrimaryTokenRequest(seeded[0]);
+        var pending = RunAsync(service, Answer(true));
+        await reached.WaitAsync(TestPatience.Upper);   // bağlı Sayfalar okundu; türetme birincilin token isteğinde bekliyor
+        var reauthUserToken = _kit.Broker.LastIssuedToken!;
+
+        await service.DisconnectAsync().WaitAsync(TestPatience.Upper);
+        // yeni bağlantının token isteği kapıda beklemesin: son eklenen kural önce denenir
+        var connectPageToken = Kit.NewToken();
+        _kit.Graph.Map(u => IsPageToken(u, seeded[0].Page.PageId),
+            _ => FakeGraph.Json(new JsonObject { ["access_token"] = connectPageToken }.ToJsonString()));
+        await CompleteAsync(service.ConnectAsync(NoPicker));   // Graph tek Sayfa tanıyor: seçici sorulmaz
+        var (connectUserToken, before) = (_kit.Broker.LastIssuedToken!, Blob());
+        release();
+
+        (await FluentActions.Awaiting(() => pending).Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be(DisconnectedWhileWaitingMessage);
+        Blob().Should().Equal(before);   // kapı bırakılmadan önceki baytlar: hiçbir şey yazılmadı
+        var bundle = (await _kit.Store.LoadAsync())!;   // diskteki demet yeni bağlantınınki
+        bundle.UserAccessToken.Should().Be(connectUserToken).And.NotBe(reauthUserToken);
+        bundle.PageAccessToken.Should().Be(connectPageToken);
+        (await service.GetUserAccessTokenAsync()).Should().Be(connectUserToken);   // bellek de değişmedi
+        // kilit bırakıldı: sonraki değişiklik beklemeden çalışır
+        var fresh = NewGraphPage();
+        await service.AddExtraPageAsync(fresh.PageId, fresh.PageName).WaitAsync(TestPatience.Upper);
+        (await IdsAsync()).Should().Equal(seeded[0].Page.PageId, fresh.PageId);   // ikinci servis örneği diskten görür
     }
 
     [Fact]
