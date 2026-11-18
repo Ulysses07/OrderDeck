@@ -26,6 +26,22 @@ public enum InstagramErrorKind
 }
 
 /// <summary>
+/// <c>X-Business-Use-Case-Usage</c> başlığındaki tek bir kota kovası. Üç oran da
+/// <b>yüzdedir</b> (0–100+), çağrı sayısı değil; pencere kayan 1 saattir.
+/// </summary>
+/// <param name="BusinessId">Başlığın üst düzey anahtarı: çağrıyı yapan token'la
+/// ilişkili işletmenin kimliği.</param>
+/// <param name="CallCountPercent">Başlıktaki <c>call_count</c>.</param>
+/// <param name="TotalCpuTimePercent">Başlıktaki <c>total_cputime</c>.</param>
+/// <param name="TotalTimePercent">Başlıktaki <c>total_time</c>.</param>
+/// <param name="MinutesToRegainAccess">Başlıktaki
+/// <c>estimated_time_to_regain_access</c> (dakika); alan yoksa null.</param>
+public sealed record InstagramBucUsage(
+    string BusinessId,
+    double CallCountPercent, double TotalCpuTimePercent, double TotalTimePercent,
+    double? MinutesToRegainAccess);
+
+/// <summary>
 /// Graph hata gövdesini ve kota başlığını yorumlayan saf yardımcılar.
 /// Ağ erişimi yok, tamamen test edilebilir.
 /// </summary>
@@ -114,4 +130,54 @@ public static class InstagramGraphError
         wait = TimeSpan.FromMinutes(maxMinutes);
         return true;
     }
+
+    /// <summary>
+    /// <c>X-Business-Use-Case-Usage</c> başlığındaki bütün kovaları belge sırasıyla
+    /// okur: üst düzey her anahtar bir işletme, altındaki dizinin her nesnesi bir
+    /// kova. Oranlar aynen taşınır (yuvarlanmaz; alan yoksa 0), bekleme süresi varsa
+    /// aynen (0 dahil), yoksa null. Yalnız ölçüm ve günlük içindir: otomatik fren
+    /// yok, bekleme kararı <see cref="TryGetRetryAfter"/>'da kalır.
+    /// </summary>
+    /// <returns>En az bir kova okunduysa true; boş, bozuk ya da kovasız başlıkta
+    /// false ve boş liste (<paramref name="usage"/> hiç null olmaz).</returns>
+    public static bool TryGetUsage(string? headerValue, out IReadOnlyList<InstagramBucUsage> usage)
+    {
+        usage = Array.Empty<InstagramBucUsage>();
+        if (string.IsNullOrWhiteSpace(headerValue)) return false;
+
+        var buckets = new List<InstagramBucUsage>();
+        try
+        {
+            using var doc = JsonDocument.Parse(headerValue);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return false;
+
+            foreach (var business in doc.RootElement.EnumerateObject())
+            {
+                if (business.Value.ValueKind != JsonValueKind.Array) continue;
+                foreach (var bucket in business.Value.EnumerateArray())
+                {
+                    if (bucket.ValueKind != JsonValueKind.Object) continue;
+                    buckets.Add(new InstagramBucUsage(
+                        business.Name,
+                        ReadNumber(bucket, "call_count") ?? 0,
+                        ReadNumber(bucket, "total_cputime") ?? 0,
+                        ReadNumber(bucket, "total_time") ?? 0,
+                        ReadNumber(bucket, "estimated_time_to_regain_access")));
+                }
+            }
+        }
+        catch (JsonException) { return false; }
+
+        if (buckets.Count == 0) return false;
+        usage = buckets;
+        return true;
+    }
+
+    /// <summary>Kovanın sayısal alanı; alan yoksa ya da sayı değilse null.</summary>
+    private static double? ReadNumber(JsonElement bucket, string name) =>
+        bucket.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.Number &&
+        value.TryGetDouble(out var number)
+            ? number
+            : null;
 }

@@ -12,6 +12,23 @@ namespace OrderDeck.Chat.Ingestors.Instagram;
 public readonly record struct InstagramAccount(string IgUserId, string? Username);
 
 /// <summary>
+/// <see cref="InstagramAccountResolver.ResolveDetailedAsync"/> sonucunun durumu.
+/// "Sayfada hesap yok" ile "çağrı düştü" ayrı tutulur: ilki kurulumun hâlidir
+/// (yalnız Facebook kullanan Sayfa), ikincisi geçici olabilir.
+/// </summary>
+public enum InstagramResolveStatus
+{
+    /// <summary>Sayfaya bağlı hesap bulundu.</summary>
+    Found,
+
+    /// <summary>Çağrı başarılı, ama Sayfaya bağlı Instagram professional hesabı yok.</summary>
+    NotLinked,
+
+    /// <summary>Çağrı düştü: 2xx dışı yanıt, ağ hatası ya da ayrıştırılamayan gövde.</summary>
+    Failed,
+}
+
+/// <summary>
 /// <c>GET /{page-id}?fields=instagram_business_account{id,username}</c> ile
 /// bağlı IG hesabını çözer.
 ///
@@ -42,10 +59,22 @@ public sealed class InstagramAccountResolver
 
     /// <summary>Bağlı IG hesabını döner; yoksa veya çağrı başarısızsa null.</summary>
     public async Task<InstagramAccount?> ResolveAsync(
+        string pageId, string pageAccessToken, CancellationToken ct) =>
+        (await ResolveDetailedAsync(pageId, pageAccessToken, ct).ConfigureAwait(false)).Account;
+
+    /// <summary>
+    /// <see cref="ResolveAsync"/> ile aynı çağrı ve aynı önbellek; ek olarak null'ın
+    /// sebebini söyler: Sayfada hesap yok (<see cref="InstagramResolveStatus.NotLinked"/>)
+    /// ya da çağrı düştü (<see cref="InstagramResolveStatus.Failed"/>). <c>Account</c>
+    /// yalnız <see cref="InstagramResolveStatus.Found"/>'da doludur ve yalnız o
+    /// önbelleklenir; öbür ikisi her çağrıda yeniden sorulur. Çağıranın iptali
+    /// <see cref="InstagramResolveStatus.Failed"/> sayılmaz, yükselir.
+    /// </summary>
+    public async Task<(InstagramAccount? Account, InstagramResolveStatus Status)> ResolveDetailedAsync(
         string pageId, string pageAccessToken, CancellationToken ct)
     {
         if (_cached is not null && string.Equals(_cachedPageId, pageId, StringComparison.Ordinal))
-            return _cached;
+            return (_cached, InstagramResolveStatus.Found);
 
         var url = $"{GraphBase}/{Uri.EscapeDataString(pageId)}" +
                   $"?fields={Uri.EscapeDataString("instagram_business_account{id,username}")}" +
@@ -61,7 +90,7 @@ public sealed class InstagramAccountResolver
                 _log.LogDebug(
                     "[InstagramAccountResolver] {Status} for page {PageId}: {Body}",
                     (int)resp.StatusCode, pageId, Truncate(body));
-                return null;
+                return (null, InstagramResolveStatus.Failed);
             }
 
             using var doc = JsonDocument.Parse(body);
@@ -72,11 +101,11 @@ public sealed class InstagramAccountResolver
                 _log.LogInformation(
                     "[InstagramAccountResolver] page {PageId} has no linked Instagram professional account",
                     pageId);
-                return null;
+                return (null, InstagramResolveStatus.NotLinked);
             }
 
             var igUserId = idEl.GetString();
-            if (string.IsNullOrEmpty(igUserId)) return null;
+            if (string.IsNullOrEmpty(igUserId)) return (null, InstagramResolveStatus.NotLinked);
 
             var username = acc.TryGetProperty("username", out var u) ? u.GetString() : null;
             var account = new InstagramAccount(igUserId, username);
@@ -87,7 +116,7 @@ public sealed class InstagramAccountResolver
             _log.LogInformation(
                 "[InstagramAccountResolver] page {PageId} → IG @{Username} ({IgUserId})",
                 pageId, username ?? "?", igUserId);
-            return account;
+            return (account, InstagramResolveStatus.Found);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -96,7 +125,7 @@ public sealed class InstagramAccountResolver
         catch (Exception ex)
         {
             _log.LogDebug(ex, "[InstagramAccountResolver] resolve failed for page {PageId}", pageId);
-            return null;
+            return (null, InstagramResolveStatus.Failed);
         }
     }
 
