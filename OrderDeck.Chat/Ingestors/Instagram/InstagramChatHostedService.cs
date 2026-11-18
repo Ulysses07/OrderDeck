@@ -318,8 +318,8 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
 /// dahil değildir).
 /// </summary>
 /// <param name="IdleWhenOffline">Bağlı Sayfa ya da etkin oturum yokken üst döngünün beklemesi.</param>
-/// <param name="IdleAfterPollerExit">Poller kalıcı hata olmadan bittikten, hesap döngüsü
-/// beklenmeyen bir istisna yakaladıktan ve oturum toplandıktan sonraki bekleme.</param>
+/// <param name="IdleAfterPollerExit">Poller kalıcı hata olmadan bittikten, hesap döngüsü ya da üst
+/// döngü beklenmeyen bir istisna yakaladıktan ve oturum toplandıktan sonraki bekleme.</param>
 /// <param name="IdleAfterFatal">Kalıcı hatadan, çözülemeyen hesaptan ve başka bir Sayfanın
 /// yokladığı hesaptan sonra hesabın yeniden denenmesine kadarki bekleme.</param>
 /// <param name="WatchInterval">Oturum açıkken bağlı Sayfa listesinin izlenme aralığı.</param>

@@ -501,11 +501,10 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         Health(b)!.RetryAt.Should().Be(_time.GetUtcNow() + Long); // TK15
         Lines(UsagePrefix).Should().Equal(
             $"{UsagePrefix}@{a.IgUsername} (page {a.Page.PageId}): X-Business-Use-Case-Usage header absent");
-        // Geçiş satırı durum izleyiciye yazıldıktan hemen SONRA günlüğe düşer: doğrudan bakmak yerine yoklanır.
-        await Until(() => Lines(AccountPrefix).Any(l => Regex.IsMatch(
+        Lines(AccountPrefix).Should().Contain(l => Regex.IsMatch(
             l,
             @"^\[InstagramChatHostedService\] account .+ \(page " + Regex.Escape(b.Page.PageId)
-            + @"\): Starting -> NotLinked, retry at \d\d:\d\d:\d\d$")));
+            + @"\): Starting -> NotLinked, retry at \d\d:\d\d:\d\d$"));
     }
 
     [Fact]
@@ -693,7 +692,9 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
 
         string? skipped = null;
         await Until(() => (skipped = _health.Snapshot().FirstOrDefault(h => h.State == Skipped)?.PageId) is not null);
-        await Until(() => _logs.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains(skipped!)) >= 3); // iki kez yeniden bakıldı
+        // Her bakış bir uyarı satırı yazar: üçüncüsü, Sayfaya iki kez yeniden bakıldığını gösterir.
+        await Until(() =>
+            _logs.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains(skipped!)) >= 3);
         Lines(AccountPrefix).Where(l => l.Contains($"(page {skipped}): ")).Should().SatisfyRespectively(
             first => first.Should().EndWith("Stopped -> Starting"),
             second => second.Should().MatchRegex(@"Starting -> Skipped, retry at \d\d:\d\d:\d\d$"));
