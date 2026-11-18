@@ -109,6 +109,23 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
     }
 
     /// <summary>
+    /// Son adım kalan süre kadardır: adım beklemeden uzun olsa da bekleme kendi süresinde biter. Tam adım beklenseydi
+    /// hesap burada <see cref="Long"/> kadar susardı.
+    /// </summary>
+    [Fact]
+    public async Task Adim_beklemeden_uzunsa_bekleme_yine_kendi_suresinde_biter()
+    {
+        var (page, _) = await OneAsync();
+        _kit.Graph.AddPage(page.Page.PageId, page.Page.PageName); // Instagram'sız
+        await RunAsync(Fast with { WatchInterval = Long }); // IdleAfterFatal 200 ms, adım ondan uzun
+        await Until(() => State(page) == NotLinked);
+
+        _kit.Graph.AddPage(page.Page.PageId, page.Page.PageName, page.IgUserId, page.IgUsername);
+
+        await Until(() => State(page) == Live);
+    }
+
+    /// <summary>
     /// Canlı olmuş bir hesap izin güncellemeden sonra "hesap yok"a düşebilir (§8.5): yeni onayda Instagram hesabının
     /// işareti kaldırılmıştır. Önbellek boşaltılmasaydı poller önbellekteki hesapla yeniden kurulur; kopan bağ
     /// çözümlemede değil, Meta'nın o an döndüğü hataya bağlı olarak poller'da görünürdü.
