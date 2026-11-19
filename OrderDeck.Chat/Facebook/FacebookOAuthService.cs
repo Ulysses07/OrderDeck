@@ -465,12 +465,14 @@ public sealed class FacebookOAuthService
     /// <para>Kilit yalnız yazımı kapsar: tarayıcı beklemesi, soru ve türetme sürerken
     /// bağlantı kaldırılabilir, ek Sayfa eklenip kaldırılabilir. Yazım bu yüzden
     /// GÜNCEL demetin üstüne yapılır: o arada kaldırılan bağlantı dirilmez, kaldırılan
-    /// ek Sayfa geri gelmez, eklenen korunur. Bağlantı o arada kaldırılıp YENİDEN
-    /// kurulduysa da (güncel demetin kullanıcı token'ı, bağlı Sayfalar okunurken
-    /// saklanandan farklıdır) hiçbir şey yazılmaz ve akış, bağlantı kaldırılmış gibi
-    /// aynı istisnayla biter: bu akışın token'ları yeni bağlantının demetini ezmez.
-    /// Listede görünmeyen Sayfanın girdisi SİLİNMEZ, eski token'ıyla kalır: erişimi
-    /// gerçekten düştüyse sessizce kaybolmak yerine sağlık göstergesinde görünür.</para>
+    /// ek Sayfa geri gelmez, eklenen korunur. Akışın çapası, akış BAŞLARKEN okunan
+    /// demetin kullanıcı token'ıdır; bağlı Sayfalar okunurken ve kayıt adımında güncel
+    /// demet onunla karşılaştırılır. Denetime üç durum takılır: bağlantı kaldırıldı;
+    /// kaldırılıp YENİDEN kuruldu; bu akış sürerken başka bir izin güncellemesi önce
+    /// kaydetti (ilk kaydeden kazanır). Üçünde de hiçbir şey yazılmaz ve akış aynı
+    /// istisnayla biter: bu akışın token'ları başka bir girişin demetini ezmez. Listede
+    /// görünmeyen Sayfanın girdisi SİLİNMEZ, eski token'ıyla kalır: erişimi gerçekten
+    /// düştüyse sessizce kaybolmak yerine sağlık göstergesinde görünür.</para>
     ///
     /// <para>İstisnayla biten her yolda diskteki demet değişmemiştir.</para>
     /// </summary>
@@ -481,7 +483,10 @@ public sealed class FacebookOAuthService
     /// <param name="ct">Akışın tamamını iptal eder.</param>
     /// <exception cref="InvalidOperationException">Facebook bağlı değil (tarayıcı
     /// açılmaz); bekleyen bir onay var; akış hatayla bitti (Facebook ekranındaki
-    /// "İptal" dahil); ya da onay beklenirken bağlantı kaldırıldı.</exception>
+    /// "İptal" dahil); ya da akış sürerken bağlantı değişti. Son durumda ileti, akış
+    /// başlarken alınan çapaya takılan üç durumda da aynıdır: bağlantı kaldırıldı;
+    /// kaldırılıp yeniden kuruldu; bu akış sürerken başka bir izin güncellemesi önce
+    /// kaydetti (ilk kaydeden kazanır).</exception>
     /// <exception cref="TimeoutException">Onay süresinde tamamlanmadı.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="confirmMissing"/>
     /// false döndü ya da <paramref name="ct"/> iptal edildi. Listeleme ağ zaman
@@ -494,9 +499,14 @@ public sealed class FacebookOAuthService
         Func<IReadOnlyList<FacebookLinkedPage>, CancellationToken, Task<bool>> confirmMissing,
         CancellationToken ct = default)
     {
-        // 1. Yalnız bağlıyken: bağlı değilse tarayıcı hiç açılmaz.
-        if (await ReadBundleAsync(ct).ConfigureAwait(false) is null)
-            throw new InvalidOperationException(NotConnectedMessage);
+        // 1. Yalnız bağlıyken: bağlı değilse tarayıcı hiç açılmaz. Okunan demetin kullanıcı
+        //    token'ı akışın ÇAPASIDIR: 3. ve 5. adım, bağlantının bundan sonra kaldırılıp
+        //    yeniden kurulduğunu ya da başka bir izin güncellemesinin önce kaydettiğini
+        //    ondan anlar. NEDEN akışın başında: 3. adımda alınsaydı, listeleme sürerken
+        //    yeniden kurulan bağlantının demeti çapa olur ve kayıt adımı onu ezerdi.
+        var anchor = await ReadBundleAsync(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(NotConnectedMessage);
+        var anchorUserToken = anchor.UserAccessToken;
 
         var longLived = await AcquireUserTokenAsync(ct).ConfigureAwait(false);
 
@@ -514,14 +524,17 @@ public sealed class FacebookOAuthService
         var listedIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var row in listed) listedIds.Add(row.PageId);
 
-        // 3. Bağlı Sayfalar ŞİMDİ okunur: tarayıcı beklemesi kilit dışındaydı, o arada
-        //    bağlantı kaldırılmış ya da ek Sayfalar değişmiş olabilir. Sayfalarla AYNI
-        //    demetin kullanıcı token'ı saklanır: kayıt adımı, bağlantının bundan sonra
-        //    kaldırılıp yeniden kurulduğunu ondan anlar.
-        var snapshot = await ReadBundleAsync(ct).ConfigureAwait(false)
-            ?? throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
+        // 3. Bağlı Sayfalar ŞİMDİ okunur: tarayıcı beklemesi ve listeleme kilit dışındaydı,
+        //    o arada bağlantı kaldırılmış ya da ek Sayfalar değişmiş olabilir. Demet yoksa
+        //    ya da kullanıcı token'ı çapadan farklıysa (bağlantı kaldırıldı; kaldırılıp
+        //    yeniden kuruldu; başka bir izin güncellemesi önce kaydetti) akış burada biter:
+        //    soru sorulmaz, token türetilmez, diske yazılmaz. Ek Sayfa eklemek / kaldırmak
+        //    kullanıcı token'ını değiştirmez, bu denetime takılmaz.
+        var snapshot = await ReadBundleAsync(ct).ConfigureAwait(false);
+        if (snapshot is null ||
+            !string.Equals(snapshot.UserAccessToken, anchorUserToken, StringComparison.Ordinal))
+            throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
         var connected = ConnectedPagesOf(snapshot);
-        var connectedUserToken = snapshot.UserAccessToken;
 
         var missing = new List<FacebookLinkedPage>();
         foreach (var page in connected)
@@ -570,19 +583,21 @@ public sealed class FacebookOAuthService
         }
 
         // 5. Tek yazım, kilit altında (gerekçe: _mutate) ve GÜNCEL demetin üstüne: kilit
-        //    yukarıdaki adımları kapsamadı. Bağlantı o arada kaldırıldıysa hiçbir şey
-        //    yazılmaz (bağlantı dirilmez). Kaldırılıp YENİDEN kurulduysa da yazılmaz
-        //    (yenisi ezilmez): o zaman güncel demetin kullanıcı token'ı 3. adımda
-        //    saklanandan farklıdır; yazılsaydı bu akışın kullanıcı token'ı başka bir
-        //    girişin demetine girerdi. Ek Sayfa eklemek / kaldırmak kullanıcı token'ını
-        //    değiştirmez, bu denetime takılmaz. Sayfa eklenmez, çıkarılmaz: türetilen
-        //    token'lar yalnız hâlâ bağlı Sayfalara, PageId eşleşmesiyle yazılır.
+        //    yukarıdaki adımları kapsamadı. Denetim 3. adımınkiyle aynıdır, aynı çapayla:
+        //    bağlantı o arada kaldırıldıysa hiçbir şey yazılmaz (bağlantı dirilmez);
+        //    kaldırılıp YENİDEN kurulduysa da yazılmaz (yenisi ezilmez); bu akış sürerken
+        //    başka bir izin güncellemesi önce kaydettiyse de yazılmaz (ilk kaydeden
+        //    kazanır). Son ikisinde güncel demetin kullanıcı token'ı çapadan farklıdır;
+        //    yazılsaydı bu akışın kullanıcı token'ı başka bir girişin demetine girerdi. Üç
+        //    durumda da istisna metni aynıdır. Ek Sayfa eklemek / kaldırmak kullanıcı
+        //    token'ını değiştirmez, bu denetime takılmaz. Sayfa eklenmez, çıkarılmaz:
+        //    türetilen token'lar yalnız hâlâ bağlı Sayfalara, PageId eşleşmesiyle yazılır.
         await _mutate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var current = await ReadBundleAsync(ct).ConfigureAwait(false);
             if (current is null ||
-                !string.Equals(current.UserAccessToken, connectedUserToken, StringComparison.Ordinal))
+                !string.Equals(current.UserAccessToken, anchorUserToken, StringComparison.Ordinal))
                 throw new InvalidOperationException(DisconnectedWhileWaitingMessage);
 
             var refreshed = 0;

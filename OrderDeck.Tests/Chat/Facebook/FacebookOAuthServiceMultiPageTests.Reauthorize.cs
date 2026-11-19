@@ -62,6 +62,29 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         return (reached.Task, () => released.TrySetResult());
     }
 
+    /// <summary>
+    /// Yalnız İLK <c>/me/accounts</c> isteğini tutar (yeniden onayın 2. adımı): istek Graph'a varınca <c>Reached</c>
+    /// tamamlanır; yanıt <c>Release</c> çağrılana dek (en çok <see cref="TestPatience.Upper"/>) bekler. Sonraki
+    /// listelemeler (ör. yeni bağlantının <see cref="FacebookOAuthService.ConnectAsync"/>'i) beklemez. Her yanıt
+    /// <paramref name="listed"/> Sayfalarını döner.
+    /// </summary>
+    private (Task Reached, Action Release) HoldFirstAccountsRequest(params SeededPage[] listed)
+    {
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = 0;
+        _kit.Graph.Map(IsAccounts, _ =>
+        {
+            if (Interlocked.Exchange(ref held, 1) == 0)
+            {
+                reached.TrySetResult();
+                released.Task.Wait(TestPatience.Upper);
+            }
+            return FakeGraph.Json(AccountsJson(null, listed.Select(Row).ToArray()));
+        });
+        return (reached.Task, () => released.TrySetResult());
+    }
+
     [Fact]
     public async Task Butun_bagli_sayfalarin_tokeni_yenilenir_birincil_degismez()
     {
@@ -403,6 +426,66 @@ public sealed partial class FacebookOAuthServiceMultiPageTests
         var fresh = NewGraphPage();
         await service.AddExtraPageAsync(fresh.PageId, fresh.PageName).WaitAsync(TestPatience.Upper);
         (await IdsAsync()).Should().Equal(seeded[0].Page.PageId, fresh.PageId);   // ikinci servis örneği diskten görür
+    }
+
+    /// <summary>
+    /// Aynı kural, daha erken bir pencerede: tarayıcı onayı bitmiş, yeni girişin Sayfaları listelenirken bağlantı
+    /// kaldırılıp YENİDEN kurulur. Akışın çapası (karşılaştırılan kullanıcı token'ı) akış BAŞLARKEN alınır; bağlı
+    /// Sayfalar okunurken alınsaydı yeni bağlantının demeti çapa olurdu ve kayıt adımı onu ezerdi. Akış Sayfalar
+    /// okunurken biter: soru sorulmaz, token türetilmez, diske yazılmaz.
+    /// </summary>
+    [Fact]
+    public async Task Sayfalar_listelenirken_baglanti_kaldirilip_yeniden_kurulursa_yeni_baglanti_ezilmez()
+    {
+        var (service, seeded) = await ConnectedAsync();
+        var (reached, release) = HoldFirstAccountsRequest(seeded[0]);
+        var pending = RunAsync(service, Answer(true));
+        await reached.WaitAsync(TestPatience.Upper);   // tarayıcı onayı bitti; listeleme bekliyor
+        var reauthUserToken = _kit.Broker.LastIssuedToken!;
+
+        await service.DisconnectAsync().WaitAsync(TestPatience.Upper);
+        await CompleteAsync(service.ConnectAsync(NoPicker));   // listelemesi tutulmaz; Graph tek Sayfa tanıyor
+        bool IsPrimaryToken(Uri u) => IsPageToken(u, seeded[0].Page.PageId);
+        var (connectUserToken, before, tokenRequests) =
+            (_kit.Broker.LastIssuedToken!, Blob(), _kit.Graph.Requests.Count(IsPrimaryToken));
+        release();
+
+        (await FluentActions.Awaiting(() => pending).Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be(DisconnectedWhileWaitingMessage);
+        Blob().Should().Equal(before);   // bırakmadan önceki baytlar: hiçbir şey yazılmadı
+        (await _kit.Store.LoadAsync())!.UserAccessToken.Should().Be(connectUserToken).And.NotBe(reauthUserToken);
+        (await service.GetUserAccessTokenAsync()).Should().Be(connectUserToken);   // bellek de değişmedi
+        _kit.Graph.Requests.Count(IsPrimaryToken).Should().Be(tokenRequests, "akış türetmeye geçmeden bitti");
+        // kilit bırakıldı: sonraki değişiklik beklemeden çalışır
+        var fresh = NewGraphPage();
+        await service.AddExtraPageAsync(fresh.PageId, fresh.PageName).WaitAsync(TestPatience.Upper);
+        (await IdsAsync()).Should().Equal(seeded[0].Page.PageId, fresh.PageId);   // ikinci servis örneği diskten görür
+    }
+
+    /// <summary>
+    /// Kayıt adımının kullanıcı token'ı denetimine takılan üçüncü durum: bu akış sürerken AYNI serviste başka bir
+    /// izin güncellemesi önce kaydeder. İlk kaydeden kazanır; geç kalan, bağlantı kaldırılmış gibi aynı istisnayla
+    /// biter ve diske yazmaz. NEDEN: yazsaydı kazananın kullanıcı token'ını eski girişe ait token'la ezerdi.
+    /// </summary>
+    [Fact]
+    public async Task Ayni_anda_iki_izin_guncellemesinden_ilk_kaydeden_kazanir_gec_kalan_yazmadan_biter()
+    {
+        var (service, seeded) = await ConnectedAsync();
+        var (reached, release) = HoldPrimaryTokenRequest(seeded[0]);
+        var late = RunAsync(service, Answer(true));
+        await reached.WaitAsync(TestPatience.Upper);   // geç kalan: türetme birincilin token isteğinde bekliyor
+
+        // öncekinin token isteği kapıda beklemesin: son eklenen kural önce denenir
+        _kit.Graph.Map(u => IsPageToken(u, seeded[0].Page.PageId),
+            _ => FakeGraph.Json(new JsonObject { ["access_token"] = Kit.NewToken() }.ToJsonString()));
+        await _kit.ReauthorizeAllAsync(service);
+        var (winnerUserToken, before) = (_kit.Broker.LastIssuedToken!, Blob());
+        release();
+
+        (await FluentActions.Awaiting(() => late).Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be(DisconnectedWhileWaitingMessage);
+        Blob().Should().Equal(before);
+        (await _kit.Store.LoadAsync())!.UserAccessToken.Should().Be(winnerUserToken);
     }
 
     [Fact]
