@@ -107,4 +107,61 @@ public class ChatPanelLayoutTests
         trimmed.TextTrimming.Should().Be(TextTrimming.CharacterEllipsis);
         ((string)trimmed.ToolTip).Should().Contain(longer.AccountTag);
     });
+
+    // ── Ek sabitlemeler: kuralların, yukarıdaki iki testin doğrulamadığı cümleleri ──
+
+    private static double Left(FrameworkElement element, Visual root) =>
+        element.TransformToAncestor(root).Transform(new Point(0, 0)).X;
+
+    private static double Right(FrameworkElement element, Visual root) => Left(element, root) + element.ActualWidth;
+
+    /// <summary>Satırın içerik alanı: öğeyi taşıyan liste satırının içerik sunucusu (satır şablonunun kökünü o tutar).</summary>
+    private static ContentPresenter RowContent(DependencyObject element)
+    {
+        for (var parent = VisualTreeHelper.GetParent(element); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+            if (parent is ContentPresenter presenter) return presenter;
+        throw new InvalidOperationException("öğe bir liste satırının içinde değil");
+    }
+
+    /// <summary>
+    /// "Kodun x konumu kaymaz" tek başına etiketin SAĞDA durduğunu söylemez: mesajın hemen ardına yazılan etiket de
+    /// x konumunu kaydırmaz. Etiketsiz satır da bugünküyle aynı olmalı: gizli etiket (boşluğuyla) yer tutarsa
+    /// mesaj kolonu her satırda daralır.
+    /// </summary>
+    [Fact]
+    public void Etiket_satirin_sag_kenarina_yaslidir_etiketsiz_satirda_mesaj_o_kenara_kadar_uzanir() => OnSta(() =>
+    {
+        var (tagged, plain) = (Row("@" + Guid.NewGuid().ToString("N")[..12]), Row(null));
+        var panel = Layout(new ChatStub { ChatView = { tagged, plain } });
+        var tag = Bound(panel, tagged, nameof(ChatMessageViewModel.AccountTag));
+        var taggedMessage = Bound(panel, tagged, nameof(ChatMessageViewModel.Text));
+        var plainMessage = Bound(panel, plain, nameof(ChatMessageViewModel.Text));
+
+        tag.ActualWidth.Should().BeGreaterThan(0, "ön koşul: etiket çizildi");
+        Right(tag, panel).Should().BeApproximately(Right(RowContent(tag), panel), 0.01, "etiket satırın sağ kenarındadır");
+        Right(taggedMessage, panel).Should().BeLessThanOrEqualTo(Left(tag, panel), "mesaj etiketin üstüne binmez");
+        Right(plainMessage, panel).Should().BeApproximately(Right(RowContent(plainMessage), panel), 0.01,
+            "gizli etiket ve boşluğu yer tutmaz: etiketsiz satırda mesaj kolonu bugünkü genişliğindedir");
+    });
+
+    /// <summary>
+    /// Sınır 112 DIP'lik tema belirtecidir ve onaltılık rakamlardan üretilen EN GENİŞ 16 karakterlik etiket de
+    /// sığar. Rakamlar harflerden geniştir ("a"–"f" en çok 0,58 em, rakam 0,6 em); rastgele üretilen etiket
+    /// çoğunlukla daha dardır ve küçülen bir sınırı ancak ara sıra yakalar, yalnız rakamlı etiket her koşuda yakalar.
+    /// </summary>
+    [Fact]
+    public void Genislik_siniri_112_DIP_belirtecidir_yalniz_rakamli_en_genis_16_karakterlik_etiket_de_kirpilmaz() => OnSta(() =>
+    {
+        var digits = string.Concat(Guid.NewGuid().ToByteArray().Take(15).Select(b => (char)('0' + b % 10)));
+        var widest = Row("@" + digits);
+        var panel = Layout(new ChatStub { ChatView = { widest } });
+        var tag = Bound(panel, widest, nameof(ChatMessageViewModel.AccountTag));
+        var limit = (double)panel.FindResource("OD.Layout.ChatAccountTagMaxWidth");
+
+        limit.Should().Be(112);
+        tag.MaxWidth.Should().Be(limit, "etiketin sınırı belirtecin değeridir");
+        tag.Text.Should().HaveLength(16);
+        NaturalWidth(tag).Should().BeLessThanOrEqualTo(limit);
+        tag.ActualWidth.Should().BeGreaterThanOrEqualTo(NaturalWidth(tag) - 0.5, "en geniş 16 karakter de kırpılmadan sığar");
+    });
 }
