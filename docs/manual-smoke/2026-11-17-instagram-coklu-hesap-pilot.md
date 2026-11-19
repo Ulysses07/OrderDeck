@@ -127,7 +127,7 @@ Hangi satır hangi önekle gelir:
 - `[InstagramMergeGate]`: kapı özeti (biçimi 6. bölümde); yalnız iki ve üzeri Sayfa bağlıyken.
 - `[InstagramAccountResolver]`: Sayfanın Instagram hesabını çözen adım (tek hesapta da yazılır). Şerit `hesap bilgisi okunamadı` derse sebebe bakılacak yer burasıdır.
   - Warning, Graph hata döndü: `[InstagramAccountResolver] <HTTP durumu> for page <PageId>: Graph code <kod>, subcode <alt kod>`. Alt kod yoksa yalnız `Graph code <kod>`; yanıt Graph hatası değilse (ör. HTML sayfası) `no Graph error code` yazar.
-  - Warning, istek düştü (ağ, zaman aşımı): `[InstagramAccountResolver] resolve failed for page <PageId>: <hata tipi>`.
+  - Warning, istek düştü (ağ, zaman aşımı ya da 2xx ama okunamayan yanıt, ör. `JsonException`): `[InstagramAccountResolver] resolve failed for page <PageId>: <hata tipi>`.
   - Information: `page <PageId> → IG @<hesap> (<Instagram kimliği>)` (çözüldü) ve `page <PageId> has no linked Instagram professional account` (Sayfada hesap yok).
   - Ayarlar kartının kendi okuması bu satırları yazmaz; satırlar yayın sırasındaki hesap döngüsünden gelir.
 - `Facebook OAuth …`: bağlantı servisinin satırları.
