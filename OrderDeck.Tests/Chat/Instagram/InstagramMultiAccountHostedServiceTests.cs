@@ -588,6 +588,21 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         }
     }
 
+    /// <summary>Saat HER okunduğunda verilen ölçümü alır ve sonuncusunu tutar (sistem saati).</summary>
+    private sealed class SamplingClock(Func<int> sample) : TimeProvider
+    {
+        private int _lastSample = -1;
+
+        /// <summary>Saatin son okunduğu anda alınan ölçüm; saat hiç okunmadıysa -1.</summary>
+        public int LastSample => Volatile.Read(ref _lastSample);
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            Volatile.Write(ref _lastSample, sample());
+            return base.GetUtcNow();
+        }
+    }
+
     /// <summary>Sabit an (2026-03-01 20:00:00 UTC) ve sabit yerel ofset (+05:30); zamanlayıcılar gerçek süre bekler.</summary>
     private sealed class FixedZoneTime : TimeProvider
     {
@@ -660,6 +675,28 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         _health.Snapshot().Should().HaveCount(2).And.OnlyContain(h => h.State == Stopped);
     }
 
+    /// <summary>
+    /// Oturum sonu sırası: hesap döngülerinin BİTMESİ → kapının kapanması (özet satırı) → girdilerin durması. İzleyici
+    /// geç gelen tur olayını durmuş girdide de işler: girdiler poller'lar bitmeden durdurulsaydı o olay hesabı yeniden
+    /// canlı gösterirdi. Tanık izleyicinin saatidir: izleyici saati girdilere yazan her çağrıda okur; son okuma
+    /// girdileri durduran çağrınındır ve o an kapının özet satırı yazılmış olmalıdır.
+    /// </summary>
+    [Fact]
+    public async Task Oturum_toplanirken_once_donguler_biter_sonra_kapi_kapanir_en_son_girdiler_durur()
+    {
+        var (_, _, feedA, feedB) = await TwoAsync();
+        var clock = new SamplingClock(() => Lines("[InstagramMergeGate]").Count);
+        var health = new InstagramHealthMonitor(clock);
+        StartSession();
+        await StartServiceAsync(health, _time);
+        await Task.WhenAll(feedA.PrimedAsync(), feedB.PrimedAsync());
+
+        await _service!.StopAsync(CancellationToken.None);
+
+        clock.LastSample.Should().Be(1); // izleyicinin son saat okuması StopAll'ındır: özet satırı o an yazılmıştı
+        health.Snapshot().Should().HaveCount(2).And.OnlyContain(h => h.State == Stopped);
+    }
+
     // ── Hesap döngüsü ────────────────────────────────────────────────────────────────────────────────────────────
 
     [Fact] // TK15 + §8.8: saat UTC'den çevrilmezse günlükteki saat Türkiye'de 3 saat kayar
@@ -697,6 +734,38 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         Lines(AccountPrefix).Where(l => l.Contains($"(page {skipped}): ")).Should().SatisfyRespectively(
             first => first.Should().EndWith("Stopped -> Starting"),
             second => second.Should().MatchRegex(@"Starting -> Skipped, retry at \d\d:\d\d:\d\d$"));
+    }
+
+    /// <summary>
+    /// Sahiplik döngü çıkarken bırakılır. Bırakılmasaydı aynı Instagram hesabına çözülen iki Sayfadan sahibi
+    /// kaldırıldığında kalan Sayfa sonraki oturumlarda hep atlanırdı; atlanan Sayfa sağlık şeridine girmediği için
+    /// hesabın sustuğu da görünmezdi.
+    /// </summary>
+    [Fact]
+    public async Task Hesabin_sahibi_olan_sayfa_kaldirilinca_sonraki_oturumda_hesabi_kalan_sayfa_yoklar()
+    {
+        var (a, b, feedA, _) = await TwoAsync();
+        _kit.Graph.AddPage(b.Page.PageId, b.Page.PageName, a.IgUserId, a.IgUsername); // iki Sayfa aynı hesaba çözülür
+        // Hesabı B sahiplensin (tek başına kaldırılabilen Sayfa ektir): A'nın çözümleme isteği B canlı olana dek tutulur.
+        var ownedByB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _kit.Graph.Map(u => IsResolve(u, a), _ =>
+        {
+            ownedByB.Task.Wait(TestPatience.Upper);
+            var account = new JsonObject { ["id"] = a.IgUserId, ["username"] = a.IgUsername };
+            return FakeGraph.Json(new JsonObject { ["instagram_business_account"] = account }.ToJsonString());
+        });
+        var session = await RunAsync(Fast with { IdleAfterFatal = Long });
+        await Until(() => State(b) == Live);
+        ownedByB.SetResult();
+        await Until(() => State(a) == Skipped);
+        EndSession(session);
+        await Until(() => _health.Snapshot().All(h => h.State == Stopped)); // döngüler bitti
+
+        (await _oauth.RemoveExtraPageAsync(b.Page.PageId)).Should().BeTrue();
+        StartSession();
+
+        await Until(() => State(a) == Live); // sahiplik bırakılmıştı: hesabı kalan Sayfa yokluyor
+        feedA.Tokens.Should().Equal(b.Page.PageAccessToken, a.Page.PageAccessToken); // önce sahibi, o kaldırılınca kalan Sayfa
     }
 
     [Fact]
@@ -769,6 +838,7 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
     [Fact]
     public async Task Kota_satiri_okunamayan_basligi_soyler_kovalari_noktali_virgulle_ayirir_sayilari_kulturden_bagimsiz_yazar()
     {
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR"); // ondalık ayırıcı virgül; servise akar, öteki testlere sızmaz
         var (page, feed) = await OneAsync();
         var who = $"@{page.IgUsername} (page {page.Page.PageId}): ";
         feed.UsageHeader = "okunamaz";

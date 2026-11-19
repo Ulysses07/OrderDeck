@@ -129,6 +129,32 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         ResolveRequests(page).Should().Be(2); // token değişti: hesap bir kez yeniden çözüldü (token aynıyken 1 kalır)
     }
 
+    /// <summary>
+    /// "Bir kez": token kaydı her çözümlemeden önce o turun token'ıyla YAZILIR. Kayıt ilk token'da kalsaydı token
+    /// değişiminden sonraki HER kurulum önbelleği yeniden boşaltır, kurulum başına bir çözümleme isteği atardı.
+    /// </summary>
+    [Fact]
+    public async Task Token_degisiminden_sonraki_ikinci_kurulumda_hesap_yeniden_cozulmez()
+    {
+        var (page, feed) = await OneAsync();
+        var session = await RunAsync();
+        await Until(() => State(page) == Live);
+        await _kit.ReauthorizeAllAsync(_oauth); // poller sağlıklı: iki beklemeye de girilmedi
+        var fresh = await StoredTokenAsync(page);
+        EndSession(session);
+        await Until(() => State(page) == Stopped);
+        var second = StartSession();
+        await Until(() => feed.ServedFor(fresh) >= 1); // ikinci kurulum yeni token'la
+        ResolveRequests(page).Should().Be(2); // token değişti: hesap bir kez yeniden çözüldü
+        EndSession(second);
+        await Until(() => State(page) == Stopped);
+
+        StartSession();
+
+        await Until(() => PollerStarts(page) == 3); // üçüncü kurulum: token ikincisiyle aynı
+        ResolveRequests(page).Should().Be(2); // kayıt güncellendi: önbellek korundu, istek eklenmedi
+    }
+
     [Fact]
     public async Task Token_degismezse_bekleme_suresi_dolunca_yeniden_denenir()
     {
