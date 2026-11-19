@@ -1,10 +1,12 @@
 namespace OrderDeck.App.Services.Instagram;
 
 /// <summary>
-/// Ayarlar'daki Instagram kartının operatöre görünen metinleri (çoklu hesap tasarımı §8.6.1). Tek yer:
-/// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/> durum satırına, hesap satırlarına ve sonuç satırına bunları
-/// yazar; kartın sabit metinleri de buradan okunur (<c>x:Static</c>). Metinlerde yalnız hesap ve Sayfa adı ile sayı
-/// geçer.
+/// Ayarlar'daki Instagram kartının çoklu hesapla gelen, operatöre görünen metinleri (çoklu hesap tasarımı §8.6.1):
+/// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'in durum satırına, hesap satırlarına ve sonuç satırına
+/// yazdıkları ve XAML'in <c>x:Static</c> ile okuduğu yeni sabit metinler. Kartın çoklu hesaptan ÖNCEKİ sabit metinleri
+/// (başlık, izin uyarısı, ipucu paragrafı) <c>SettingsPage.xaml</c>'de, durum satırının ilk değeri ve genel hata
+/// metni <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'de kalır. Metinlerde yalnız hesap ve Sayfa adı ile
+/// sayı geçer.
 /// </summary>
 public static class InstagramSettingsTexts
 {

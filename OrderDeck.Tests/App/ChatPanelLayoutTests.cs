@@ -146,8 +146,9 @@ public class ChatPanelLayoutTests
 
     /// <summary>
     /// Sınır 112 DIP'lik tema belirtecidir ve onaltılık rakamlardan üretilen EN GENİŞ 16 karakterlik etiket de
-    /// sığar. Rakamlar harflerden geniştir ("a"–"f" en çok 0,58 em, rakam 0,6 em); rastgele üretilen etiket
-    /// çoğunlukla daha dardır ve küçülen bir sınırı ancak ara sıra yakalar, yalnız rakamlı etiket her koşuda yakalar.
+    /// sığar. Rakamlar onaltılık harflerden geniştir ("a"–"f" en çok 0,58 em, rakam 0,6 em); rastgele üretilen
+    /// etiket çoğunlukla daha dardır ve 108,8'in az altına inen bir sınırı her koşuda yakalamaz, yalnız rakamlı
+    /// etiket her koşuda yakalar.
     /// </summary>
     [Fact]
     public void Genislik_siniri_112_DIP_belirtecidir_yalniz_rakamli_en_genis_16_karakterlik_etiket_de_kirpilmaz() => OnSta(() =>
