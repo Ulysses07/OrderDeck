@@ -274,14 +274,14 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         _kit.Graph.Map( // bundan sonra A'nın çözümleme isteği geçici hata alır
             u => IsResolve(u, a) && Volatile.Read(ref down) == 1,
             _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError));
-        // Eski poller yorumu göremesin: devre dek her istek geçici hata alır (filigran ilerlemez).
-        feedA.Intercept = _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError);
+        // Eski poller yorumu göremesin: yeni poller kurulana dek her istek "yayın yok" alır (filigran ilerlemez, hata
+        // sayacı dolmaz: eski poller kendi çıkıp devri kaçırmaz). Yeni poller'ın ilk isteği gerçek gövdeyi alır.
+        feedA.Intercept = _ => PollerStarts(a) < 2 ? FakeGraph.Json("""{"data":[]}""") : null;
         var during = feedA.Add();
 
         await AddPageAsync();
 
         await Until(() => PollerStarts(a) == 2);
-        feedA.Intercept = null;
         await Until(() => Got(during)); // susmadı, devredilen filigranla ilk çekim yutulmadı
         Message(during).SourceAccount.Should().Be("@" + a.IgUsername); // yeni (kulvarlı) poller'dan
         ResolveRequests(a).Should().Be(resolves); // devir ağa çıkmadı: hesap önbellekten

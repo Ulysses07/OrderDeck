@@ -93,15 +93,17 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         await RunAsync(Fast with { IdleAfterPollerExit = Long });
         await feedA.PrimedAsync();
         await feedA.NextAsync(); // eski poller az önce yanıt aldı; sıradaki isteğine ~1 sn var
-        // Eski poller yorumu göremesin: devre dek her istek geçici hata alır (filigran ilerlemez). Yük altında eski
+        // Eski poller yorumu göremesin: yeni poller kurulana dek her istek "yayın yok" alır. Yük altında eski
         // poller'ın sıradaki isteği devirden önce gelirse yorumu kendisi basardı ve test filigran aktarımını sınamazdı.
-        feedA.Intercept = _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError);
+        // NEDEN geçici hata değil: "yayın yok" filigranı ilerletmez ve poller'ın ardışık hata sayacını sıfırlar; geçici
+        // hata beş kez üst üste gelince eski poller kendi çıkar ve devir hiç olmaz. Koşul betiğin içinde okunur: yeni
+        // poller başlangıç satırını ilk isteğinden önce yazar, ilk isteği gerçek gövdeyi alır.
+        feedA.Intercept = _ => PollerStarts(a) < 2 ? FakeGraph.Json("""{"data":[]}""") : null;
         var during = feedA.Add(); // ilk kez yeni poller'ın ilk çekiminde görünür
 
         var (b, _) = await AddPageAsync();
 
         await Until(() => PollerStarts(a) == 2); // Long beklenmedi: devir beklemesiz
-        feedA.Intercept = null;
         await Until(() => Got(during)); // devredilen filigranla ilk çekim yutulmadı
         Message(during).SourceAccount.Should().Be("@" + a.IgUsername); // yeni (kulvarlı) poller'dan; eski poller etiketsiz basar
         Message(await FlowAsync(feedA)).SourceAccount.Should().Be("@" + a.IgUsername); // artık kulvardan
