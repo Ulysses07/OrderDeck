@@ -62,6 +62,11 @@ internal sealed record InstagramLoopServices(
 /// saat göstermez, yeni poller yanıt alamazsa "yanıt yok" o saati beklemeden görünür. Yeni
 /// token'la ilk iş hesabın bir kez yeniden çözülmesidir
 /// (<see cref="ForgetAccountIfTokenChanged"/>).</para>
+///
+/// <para><b>Kapıya devir.</b> Oturum tek Sayfayla başlayıp ikinci Sayfa sonradan bağlanırsa kapı
+/// döngüye sonradan takılır (<see cref="AttachGate"/>): çalışan poller durdurulur ve beklenmeden,
+/// AYNI filigranla, kulvar üstünden yeniden kurulur. Filigran yalnız bu devirde aktarılır (sağlam
+/// hesap yorum kaybetmez, yarım dakika susmaz); öbür her kurulumda tazedir.</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class InstagramAccountLoop
@@ -71,12 +76,27 @@ internal sealed class InstagramAccountLoop
     private readonly InstagramAccountResolver _resolver;
     private readonly ConcurrentDictionary<string, string> _owners;
     private readonly ConcurrentDictionary<string, string> _resolvedTokens;
-    private readonly InstagramMergeGate? _gate;
     private readonly RoundObserver _observer;
 
-    /// <summary>Bu hesabın kulvarı: ilk poller kurulumunda bir kez açılır, sonraki kurulumlarda
-    /// aynısı kullanılır. Kapı yoksa (tek Sayfa) hep null.</summary>
+    /// <summary><see cref="_gate"/>, <see cref="_lane"/>'in açılması, <see cref="_pollerStop"/> ve
+    /// <see cref="_handover"/> bu kilit altında okunur ve yazılır: <see cref="AttachGate"/> üst
+    /// döngünün iş parçacığından, öbür her şey döngünün kendi iş parçacığından gelir.</summary>
+    private readonly Lock _sync = new();
+
+    /// <summary>Birleştirme kapısı; tek Sayfada null. Oturum içinde tekten çoka geçilirse sonradan
+    /// takılır (<see cref="AttachGate"/>).</summary>
+    private InstagramMergeGate? _gate;
+
+    /// <summary>Bu hesabın kulvarı: kapı varken yapılan ilk poller kurulumunda bir kez açılır,
+    /// sonraki kurulumlarda aynısı kullanılır. Kapı yoksa (tek Sayfa) null.</summary>
     private InstagramMergeGate.Lane? _lane;
+
+    /// <summary>Çalışan poller'ı (yalnız onu) durduran iptal kaynağı; poller çalışmıyorken null.</summary>
+    private CancellationTokenSource? _pollerStop;
+
+    /// <summary>Çalışan poller'ı <see cref="AttachGate"/> durdurdu; döngü poller bitince okur ve
+    /// sıfırlar (<see cref="EndPoller"/>).</summary>
+    private bool _handover;
 
     /// <param name="pageId">Yoklanacak Sayfa.</param>
     /// <param name="services">Ortak servisler.</param>
@@ -89,7 +109,8 @@ internal sealed class InstagramAccountLoop
     /// dışarıdan verilir: token döngü örnekleri ve oturumlar arasında değişse de fark görülür.
     /// Günlüğe yazılmaz.</param>
     /// <param name="gate">İki ve üzeri Sayfada birleştirme kapısı; tek Sayfada null (poller
-    /// doğrudan sohbet bus'ına yazar, mesaj etiketsizdir).</param>
+    /// doğrudan sohbet bus'ına yazar, mesaj etiketsizdir). Null verilen döngüye kapı sonradan
+    /// <see cref="AttachGate"/> ile takılabilir.</param>
     internal InstagramAccountLoop(
         string pageId,
         InstagramLoopServices services,
@@ -108,13 +129,37 @@ internal sealed class InstagramAccountLoop
     }
 
     /// <summary>
+    /// Kapısız çalışan döngüye kapıyı takar (oturum içinde tekten çoka geçiş): bundan sonra poller
+    /// kulvar üstünden yazar, mesaj kaynak hesabıyla etiketlenir. Üst döngünün iş parçacığından
+    /// çağrılır; döngüyle eşzamanlı çağrılması güvenlidir.
+    ///
+    /// <para>Poller çalışıyorsa durdurulur; döngü onu BEKLEMEDEN ve aynı filigranla, kulvar üstünden
+    /// yeniden kurar: yeni poller'ın ilk çekimi yutulmaz, aradaki yorum kaybolmaz. Poller
+    /// çalışmıyorsa (çözümleme, bekleme) hiçbir şey durdurulmaz; yalnız sonraki kurulum kulvarı
+    /// kullanır.</para>
+    /// </summary>
+    /// <param name="gate">Oturumun birleştirme kapısı.</param>
+    internal void AttachGate(InstagramMergeGate gate)
+    {
+        lock (_sync)
+        {
+            _gate = gate;
+            if (_pollerStop is null) return;
+
+            _handover = true;
+            _pollerStop.Cancel();
+        }
+    }
+
+    /// <summary>
     /// Döngüyü <paramref name="ct"/> iptal olana ya da Sayfa bağlı Sayfalar arasından çıkana dek
     /// koşturur. Fırlatmaz: iptal olağan çıkıştır, beklenmeyen istisna günlüğe yazılıp beklenir
     /// ve döngü sürer. Dönmeden önce poller'ı durmuştur, kulvarı kapanmış ve hesabın sahipliği
     /// bırakılmıştır.
     /// </summary>
-    /// <param name="ct">Oturum belirteci. Bütün beklemeler bununla yapılır: oturum bitince 5
-    /// dakikalık beklemeler de kesilir, yeni oturum hesabı hemen yeniden dener.</param>
+    /// <param name="ct">Döngünün belirteci: oturum bitince ya da Sayfa oturum içinde kaldırılınca
+    /// iptal olur. Bütün beklemeler bununla yapılır: oturum bitince 5 dakikalık beklemeler de
+    /// kesilir, yeni oturum hesabı hemen yeniden dener.</param>
     internal async Task RunAsync(CancellationToken ct)
     {
         var log = _services.Log;
@@ -122,12 +167,21 @@ internal sealed class InstagramAccountLoop
         var timings = _services.Timings;
         var consecutiveCrashes = 0;
 
+        // Kapıya devirde durdurulan poller'ın filigranı; yalnız devri izleyen tur kullanır.
+        InstagramCommentWatermark? carried = null;
+
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 try
                 {
+                    // Filigran her kurulumda tazedir (yeni poller'ın ilk çekimi yutulur); tek
+                    // istisna kapıya devirdir. Devredilen filigran yalnız bu turda geçerlidir: tur
+                    // poller'ı kuramadan beklemeye düşerse bırakılır, sonraki kurulum yine tazedir.
+                    var watermark = carried ?? new InstagramCommentWatermark();
+                    carried = null;
+
                     // 1) Kimlik: Sayfanın güncel token'ı. Sayfa artık bağlı değilse döngü biter.
                     var page = await FindPageAsync(ct).ConfigureAwait(false);
                     if (page is null) return;
@@ -180,30 +234,24 @@ internal sealed class InstagramAccountLoop
                     var pollHttp = _services.HttpFactory?.CreateClient(InstagramChatHostedService.HttpClientName)
                                    ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
-                    _lane ??= _gate?.AddLane(_pageId, AccountLabel(account.Username, page.PageName));
-
-                    // Filigran her kurulumda tazedir: yeni poller'ın ilk çekimi yutulur.
-                    using var poller = new InstagramLiveCommentsPoller(
-                        account.IgUserId,
-                        page.PageAccessToken,
-                        _lane is null ? _services.Bus : _lane,
-                        pollHttp,
-                        _services.LoggerFactory.CreateLogger<InstagramLiveCommentsPoller>(),
-                        _services.SpamFilter,
-                        _observer,
-                        new InstagramCommentWatermark());
+                    // Poller'ın kendi iptal kaynağı (döngünün belirtecine bağlı): kapıya devir
+                    // yalnız poller'ı durdurur, döngü sürer.
+                    using var pollerStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    using var poller = BuildPoller(account, page, pollHttp, watermark, pollerStop);
 
                     bool crashed = false;
+                    bool handover;
                     try
                     {
-                        await poller.StartAsync(ct).ConfigureAwait(false);
+                        await poller.StartAsync(pollerStop.Token).ConfigureAwait(false);
                         consecutiveCrashes = 0;
-                        // Poller döngüsü bitince tamamlanır; oturum iptalinde de olağan biçimde.
+                        // Poller döngüsü bitince tamamlanır; oturum iptalinde ve kapıya devirde de
+                        // olağan biçimde.
                         await poller.Completion.ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
                     {
-                        // Oturum bitti; aşağıda çıkılır.
+                        // Döngü durduruluyor; aşağıda çıkılır.
                     }
                     catch (Exception ex)
                     {
@@ -216,9 +264,10 @@ internal sealed class InstagramAccountLoop
                     finally
                     {
                         // Poller'ın BİTMESİ beklenir: buradan sonra tur olayı gelmez, sağlık
-                        // girdisine yalnız bu döngü yazar.
+                        // girdisine yalnız bu döngü yazar; filigranı da başka kimse kullanmaz.
                         try { await poller.StopAsync(CancellationToken.None).ConfigureAwait(false); }
                         catch { /* ignore */ }
+                        handover = EndPoller();
                     }
 
                     if (ct.IsCancellationRequested) return;
@@ -249,6 +298,17 @@ internal sealed class InstagramAccountLoop
                                 _pageId, InstagramAccountState.Faulted, reason, _services.Time.GetUtcNow()));
                         }
 
+                        continue;
+                    }
+
+                    // Kapıya devir: poller'ı AttachGate durdurdu. Beklenmez (sağlam hesap ikinci
+                    // hesap eklenir eklenmez yarım dakika susmasın) ve tur baştan başlar; yeni poller
+                    // kulvar üstünden, duran poller'ın filigranıyla kurulur. Kalıcı hatayla kendi
+                    // biten poller (yukarıda) ve başlatılamayan poller devredilmez: beklemeleri
+                    // geçerlidir, kapıyı sonraki kurulum kullanır.
+                    if (handover && !crashed)
+                    {
+                        carried = watermark;
                         continue;
                     }
 
@@ -300,6 +360,61 @@ internal sealed class InstagramAccountLoop
     }
 
     private Task IdleAsync(TimeSpan duration, CancellationToken ct) => Task.Delay(duration, _services.Time, ct);
+
+    /// <summary>
+    /// Poller'ı kurar ve "çalışıyor" diye kaydeder; başlatmaz. Kapı yokken poller doğrudan sohbet
+    /// bus'ına, kapı varken hesabın kulvarına yazar (kulvar, kapı varken yapılan ilk kurulumda bir
+    /// kez açılır).
+    ///
+    /// <para>Kulvar kararı ile kayıt AYNI kilit altındadır: <see cref="AttachGate"/> ya bundan önce
+    /// gelir (poller kulvarla kurulur) ya sonra (bu poller durdurulup kulvarla yeniden kurulur).
+    /// Ayrı olsalardı araya giren devir, kapı takıldığı hâlde bus'a yazmayı sürdüren bir poller
+    /// bırakırdı.</para>
+    /// </summary>
+    /// <param name="account">Sayfanın çözülen Instagram hesabı.</param>
+    /// <param name="page">Sayfanın güncel kaydı: poller bu token'la yoklar.</param>
+    /// <param name="http">Poller'ın istemcisi.</param>
+    /// <param name="watermark">Poller'ın filigranı: taze ya da kapıya devirde duran poller'dan kalan.</param>
+    /// <param name="stop">Poller'ın başlatılacağı iptal kaynağı; <see cref="EndPoller"/>'a dek kayıtlı kalır.</param>
+    private InstagramLiveCommentsPoller BuildPoller(
+        InstagramAccount account,
+        FacebookLinkedPage page,
+        HttpClient http,
+        InstagramCommentWatermark watermark,
+        CancellationTokenSource stop)
+    {
+        lock (_sync)
+        {
+            _lane ??= _gate?.AddLane(_pageId, AccountLabel(account.Username, page.PageName));
+
+            var poller = new InstagramLiveCommentsPoller(
+                account.IgUserId,
+                page.PageAccessToken,
+                _lane is null ? _services.Bus : _lane,
+                http,
+                _services.LoggerFactory.CreateLogger<InstagramLiveCommentsPoller>(),
+                _services.SpamFilter,
+                _observer,
+                watermark);
+
+            // Kayıt en sonda: yukarıdaki bir adım fırlatırsa geride çalışıyor görünen poller kalmaz.
+            _pollerStop = stop;
+            return poller;
+        }
+    }
+
+    /// <summary>Biten poller'ın "çalışıyor" kaydını siler; poller BİTTİKTEN sonra çağrılır.</summary>
+    /// <returns>Poller kayıtlıyken <see cref="AttachGate"/> çağrıldıysa true.</returns>
+    private bool EndPoller()
+    {
+        lock (_sync)
+        {
+            _pollerStop = null;
+            var handover = _handover;
+            _handover = false;
+            return handover;
+        }
+    }
 
     /// <summary>
     /// Çözümleyici önbelleğini boşaltan TEK yer; her çözümlemeden önce çağrılır. Bu turun token'ı

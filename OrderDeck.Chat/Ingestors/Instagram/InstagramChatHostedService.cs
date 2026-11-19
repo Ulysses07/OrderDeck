@@ -29,6 +29,10 @@ namespace OrderDeck.Chat.Ingestors.Instagram;
 /// hesabın kalıcı hatası, hız sınırı ya da çökmesi öbürünün sohbetini kesmez. İki ve üzeri
 /// Sayfada poller'lar <see cref="InstagramMergeGate"/> kulvarlarına yazar (mesaj kaynak
 /// hesabıyla etiketlenir); tek Sayfada kapı kurulmaz, poller doğrudan sohbet bus'ına yazar.</para>
+///
+/// <para><b>Oturum içinde değişen bağlantı.</b> Oturum açıkken bağlı Sayfa listesi
+/// <see cref="WatchInterval"/>'da bir yeniden okunur: eklenen Sayfanın döngüsü başlar,
+/// kaldırılanınki durur, ötekilere dokunulmaz (<see cref="RunSessionAsync"/>).</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class InstagramChatHostedService : IHostedService, IDisposable
@@ -229,44 +233,92 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
 
     /// <summary>
     /// Bir oturum: bağlı her Sayfa için bir hesap döngüsü başlatır (iki ve üzeri Sayfada
-    /// birleştirme kapısıyla) ve oturum kaynağı iptal olana dek bekler. Sayfa listesi oturum
-    /// başında okunur.
+    /// birleştirme kapısıyla), sonra oturum kaynağı iptal olana dek bağlı Sayfa listesini izler
+    /// ve çalışan döngüleri listeye uydurur. Yayın ortasında eklenen hesap yeni oturumu, kaldırılan
+    /// hesabın yoklaması oturum sonunu beklemez.
+    ///
+    /// <para><b>İzleme.</b> Liste <see cref="InstagramChatTimings.WatchInterval"/>'da bir yeniden
+    /// okunur (bellek okuması; bağlantı yokken ek olarak token dosyasına bakılır, Graph'a istek
+    /// atılmaz) ve Sayfa kümesi çalışan döngülerle karşılaştırılır. Küme aynıysa hiçbir şey
+    /// yapılmaz: token'ı değişen Sayfanın sağlıklı poller'ı kurulduğu token'la sürer. Küme
+    /// değiştiyse, sırayla:</para>
+    /// <list type="number">
+    /// <item>Listede olmayan Sayfaların döngüleri durdurulur ve BİTMELERİ beklenir; öbür
+    /// hesapların poller'ına ve filigranına dokunulmaz.</item>
+    /// <item>Liste boşaldıysa ("Bağlantıyı Kaldır") oturum sonuyla aynı sırayla kapı kapanır ve
+    /// girdiler durur. Girdiler SİLİNMEZ: aynı Sayfa yeniden bağlanırsa "bu oturumda canlıydı"
+    /// bilgisi durur, bozuk çıkan yeni bağlantı tek Sayfalı kurulumda da görünür. İzleme sürer
+    /// (bağlantı kapısının uzun beklemesine düşülmez); liste dolunca kurulum, oturum sıfırlaması
+    /// olmadan, baştan yapılır.</item>
+    /// <item>Liste boş değilse sağlık girdileri güncel listeye uydurulur: kaldırılanın girdisi
+    /// döngüsü bittikten SONRA silinir, eklenenin girdisi döngüsü başlamadan ÖNCE eklenir
+    /// (izleyici girdisi olmayan Sayfanın bildirimini yok sayar; girdisiz başlayan hesap hiç
+    /// görünmezdi). Sonra eklenen Sayfaların döngüleri başlar (<see cref="StartLoops"/>).</item>
+    /// </list>
     ///
     /// <para><b>Oturum sonu sırası:</b> hesap döngülerinin BİTMESİ beklenir → kapı kapanır (özet
     /// satırı) → sağlık girdileri durur. Sıra bağlayıcıdır: sağlık izleyicisi geç gelen tur
     /// olayını durmuş girdide de işler; poller'lar bitmeden durdurulan girdi yeniden canlı
     /// görünürdü.</para>
     /// </summary>
-    /// <param name="pages">Bağlı Sayfalar, birincil önce; boş değil.</param>
+    /// <param name="pages">Oturum başında bağlı Sayfalar, birincil önce; boş değil. Sağlık girdileri
+    /// bu listeyle yapılandırılmıştır.</param>
     /// <param name="session">Oturum belirteci: oturum bitince ya da servis durunca iptal olur.</param>
     private async Task RunSessionAsync(IReadOnlyList<FacebookLinkedPage> pages, CancellationToken session)
     {
-        // Çözümleyiciler kapıdan ve döngülerden ÖNCE hazırlanır: istemci alınamazsa geride
-        // toplanacak bir şey kalmaz.
-        var resolvers = new InstagramAccountResolver[pages.Count];
-        for (var i = 0; i < pages.Count; i++)
-            resolvers[i] = ResolverFor(pages[i].PageId);
-
         var services = new InstagramLoopServices(
             _oauth, _bus, _loggerFactory, _log, _spamFilter, _httpFactory, _health, _time, _timings);
 
-        // Ölçüt bağlı Sayfa sayısıdır, çözülmüş Instagram hesabı sayısı değil: Sayfa sayısı
-        // oturum başında bellidir, hesap çözümlemesi döngünün içinde ve gecikmeli olur.
-        var gate = pages.Count >= 2
-            ? new InstagramMergeGate(_bus, _time, _loggerFactory.CreateLogger<InstagramMergeGate>())
-            : null;
-
-        var loops = new List<Task>(pages.Count);
+        // Sayfa (PageId) → o Sayfanın hesap döngüsü.
+        var loops = new Dictionary<string, RunningLoop>(StringComparer.Ordinal);
+        InstagramMergeGate? gate = null;
         try
         {
-            for (var i = 0; i < pages.Count; i++)
-            {
-                var loop = new InstagramAccountLoop(
-                    pages[i].PageId, services, resolvers[i], _owners, _resolvedTokens, gate);
-                loops.Add(Task.Run(() => loop.RunAsync(session), CancellationToken.None));
-            }
+            StartLoops(pages, pages, loops, ref gate, services, session);
 
-            await Task.Delay(Timeout.InfiniteTimeSpan, _time, session).ConfigureAwait(false);
+            while (true)
+            {
+                await Task.Delay(_timings.WatchInterval, _time, session).ConfigureAwait(false);
+                var current = await _oauth.GetConnectedPagesAsync(session).ConfigureAwait(false);
+
+                // Önce çıkarmalar. Kendi kendine bitmiş döngü de (1. adımında Sayfasını bağlı
+                // bulamadı) çıkarılır: çalışan bir döngü değildir. Sayfası o arada yeniden
+                // bağlandıysa aşağıda eklenen sayılır ve yeni bir döngüyle başlar; sözlükte bitmiş
+                // hâliyle kalsaydı Sayfa oturum sonuna dek yoklanmazdı.
+                List<string>? removed = null;
+                foreach (var (pageId, running) in loops)
+                {
+                    if (running.Completion.IsCompleted || !IsListed(current, pageId))
+                        (removed ??= []).Add(pageId);
+                }
+
+                if (removed is not null)
+                    await StopLoopsAsync(loops, removed).ConfigureAwait(false);
+
+                List<FacebookLinkedPage>? added = null;
+                foreach (var page in current)
+                {
+                    if (!loops.ContainsKey(page.PageId))
+                        (added ??= []).Add(page);
+                }
+
+                // Küme aynı: yapılacak iş yok (Sayfanın token'ı değişmiş olsa da).
+                if (removed is null && added is null) continue;
+
+                if (current.Count == 0)
+                {
+                    // Liste boşaldı; bütün döngüler yukarıda durdu. Girdiler silinmez, yalnız durur.
+                    gate?.Dispose();
+                    gate = null;
+                    _health.StopAll();
+                    continue;
+                }
+
+                // Çıkarmalar bitti, yeni döngüler henüz başlamadı: girdiler tam burada uydurulur.
+                _health.Configure(current);
+                if (added is not null)
+                    StartLoops(current, added, loops, ref gate, services, session);
+            }
         }
         catch (OperationCanceledException) when (session.IsCancellationRequested)
         {
@@ -276,7 +328,9 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         {
             try
             {
-                await Task.WhenAll(loops).ConfigureAwait(false);
+                // Oturum iptalinde döngüler zaten duruyordur (kaynakları oturum kaynağına bağlı);
+                // izleme beklenmeyen bir istisnayla çıktıysa burada durdurulurlar.
+                await StopLoopsAsync(loops, [.. loops.Keys]).ConfigureAwait(false);
             }
             finally
             {
@@ -285,6 +339,101 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Eklenen Sayfaların hesap döngülerini başlatır; gerekiyorsa önce birleştirme kapısını kurar.
+    /// Her döngünün kendi iptal kaynağı vardır (oturum kaynağına bağlı): Sayfa kaldırılınca yalnız
+    /// o döngü durur.
+    ///
+    /// <para><b>Kapı.</b> Ölçüt bağlı Sayfa sayısıdır (iki ve üzeri), çözülmüş Instagram hesabı
+    /// sayısı değil: Sayfa sayısı hemen bellidir, hesap çözümlemesi döngünün içinde ve gecikmeli
+    /// olur. Kapı kurulu değilken sayı ikiye ulaşırsa kapı kurulur ve ÇALIŞAN her döngüye takılır
+    /// (<see cref="InstagramAccountLoop.AttachGate"/>: tekten çoka geçişte çalışan hesap kulvara
+    /// filigranıyla ve beklemeden taşınır); oturum başında çalışan döngü yoktur. Kapı kuruluyken
+    /// gelen ekleme çalışan döngülere dokunmaz. Kapı, Sayfa sayısı bire inse de liste boşalana ya
+    /// da oturum bitene dek yaşar: kalan hesap kulvarıyla, etiketli sürer (tek kulvarlı kapı
+    /// gecikme eklemez); tek hesap kipine sonraki oturumda dönülür.</para>
+    /// </summary>
+    /// <param name="current">Bağlı Sayfaların güncel listesi; boş değil.</param>
+    /// <param name="added">Döngüsü başlatılacak Sayfalar: <paramref name="current"/>'ta olup
+    /// çalışan döngüsü olmayanlar.</param>
+    /// <param name="loops">Oturumun çalışan döngüleri; başlatılanlar eklenir.</param>
+    /// <param name="gate">Oturumun kapısı; kurulu değilse null. Burada kurulursa atanır.</param>
+    /// <param name="services">Döngülerin ortak servisleri.</param>
+    /// <param name="session">Oturum belirteci.</param>
+    private void StartLoops(
+        IReadOnlyList<FacebookLinkedPage> current,
+        IReadOnlyList<FacebookLinkedPage> added,
+        Dictionary<string, RunningLoop> loops,
+        ref InstagramMergeGate? gate,
+        InstagramLoopServices services,
+        CancellationToken session)
+    {
+        // Çözümleyiciler kapıdan ve döngülerden ÖNCE hazırlanır: istemci alınamazsa geride
+        // yarım bir kurulum kalmaz.
+        var resolvers = new InstagramAccountResolver[added.Count];
+        for (var i = 0; i < added.Count; i++)
+            resolvers[i] = ResolverFor(added[i].PageId);
+
+        if (gate is null && current.Count >= 2)
+        {
+            gate = new InstagramMergeGate(_bus, _time, _loggerFactory.CreateLogger<InstagramMergeGate>());
+            foreach (var running in loops.Values)
+                running.Loop.AttachGate(gate);
+        }
+
+        for (var i = 0; i < added.Count; i++)
+        {
+            var loop = new InstagramAccountLoop(
+                added[i].PageId, services, resolvers[i], _owners, _resolvedTokens, gate);
+            var stop = CancellationTokenSource.CreateLinkedTokenSource(session);
+            var ct = stop.Token;
+            loops.Add(
+                added[i].PageId,
+                new RunningLoop(loop, stop, Task.Run(() => loop.RunAsync(ct), CancellationToken.None)));
+        }
+    }
+
+    /// <summary>
+    /// Verilen Sayfaların döngülerini durdurur, BİTMELERİNİ bekler ve sözlükten çıkarır. Dönüşte o
+    /// hesapların poller'ı durmuş, kulvarı kapanmış, sahipliği bırakılmıştır. Sağlık girdilerine
+    /// (silme, durdurma) ancak bundan sonra dokunulur: izleyici geç gelen tur olayını durmuş
+    /// girdide de işler.
+    /// </summary>
+    private static async Task StopLoopsAsync(Dictionary<string, RunningLoop> loops, IReadOnlyList<string> pageIds)
+    {
+        var stopping = new Task[pageIds.Count];
+        for (var i = 0; i < pageIds.Count; i++)
+        {
+            var running = loops[pageIds[i]];
+            try { running.Stop.Cancel(); } catch { /* ignore */ }
+            stopping[i] = running.Completion;
+        }
+
+        await Task.WhenAll(stopping).ConfigureAwait(false);
+
+        foreach (var pageId in pageIds)
+        {
+            if (loops.Remove(pageId, out var stopped))
+                stopped.Stop.Dispose();
+        }
+    }
+
+    private static bool IsListed(IReadOnlyList<FacebookLinkedPage> pages, string pageId)
+    {
+        foreach (var page in pages)
+        {
+            if (string.Equals(page.PageId, pageId, StringComparison.Ordinal)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Oturumda başlatılmış bir hesap döngüsü.</summary>
+    /// <param name="Loop">Döngü.</param>
+    /// <param name="Stop">Yalnız bu döngüyü durduran iptal kaynağı; oturum kaynağına bağlıdır.</param>
+    /// <param name="Completion">Döngü bitince tamamlanır; fırlatmaz.</param>
+    private sealed record RunningLoop(InstagramAccountLoop Loop, CancellationTokenSource Stop, Task Completion);
 
     /// <summary>O Sayfanın çözümleyicisi; ilk istekte kurulur (HttpClient'ı da o an alınır),
     /// sonra hep aynı örnek döner.</summary>
