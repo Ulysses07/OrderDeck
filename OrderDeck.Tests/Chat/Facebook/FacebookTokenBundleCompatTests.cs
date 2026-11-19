@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using OrderDeck.Chat.Facebook;
+using OrderDeck.Tests.TestHelpers;
 
 namespace OrderDeck.Tests.Chat.Facebook;
 
@@ -153,6 +155,41 @@ public sealed class FacebookTokenBundleCompatTests : IDisposable
         AssertPrimary(loaded, primary);
         loaded.ExtraPages!.Select(p => (p.PageId, p.PageAccessToken, p.PageName))
             .Should().Equal(saved.ExtraPages!.Select(p => (p.PageId, p.PageAccessToken, p.PageName)));
+    }
+
+    /// <summary>
+    /// Ek Sayfa girdisinin disk biçimi DONDURULMUŞTUR: alan adları literal, üretim tipine bağlanmaz. Bir üye yeniden
+    /// adlandırılırsa sahadaki demetlerde ikinci hesap sessizce kaybolurdu; öbür testler kendi yazdığını okuduğu için
+    /// yeşil kalırdı. Bugünkü serileştirilmiş biçimin adlarıdır.
+    /// </summary>
+    [Fact]
+    public async Task Ek_sayfa_girdisinin_disk_bicimi_donmustur()
+    {
+        using var kit = new FacebookOAuthTestKit();
+        var primary = NewLegacy();
+        var (extraId, extraToken, extraName) = (NewValue("ek-sayfa"), NewValue("ek-erisim"), NewValue("ek-ad"));
+        var json = new JsonObject
+        {
+            ["UserAccessToken"] = primary.UserAccessToken,
+            ["PageId"] = primary.PageId,
+            ["PageAccessToken"] = primary.PageAccessToken,
+            ["PageName"] = primary.PageName,
+            ["ExpiresAt"] = null,
+            ["ExtraPages"] = new JsonArray(new JsonObject
+            {
+                ["PageId"] = extraId,
+                ["PageAccessToken"] = extraToken,
+                ["PageName"] = extraName,
+            }),
+        }.ToJsonString();
+        File.WriteAllBytes(kit.TokenFilePath, Protect(json));
+
+        var stored = (await kit.Store.LoadAsync())!.ExtraPages!.Single();
+        var connected = await kit.CreateService().GetConnectedPagesAsync();
+
+        (stored.PageId, stored.PageAccessToken, stored.PageName).Should().Be((extraId, extraToken, extraName));
+        connected.Select(p => (p.PageId, p.PageAccessToken, p.PageName)).Should().Equal(
+            (primary.PageId, primary.PageAccessToken, primary.PageName), (extraId, extraToken, extraName));
     }
 
     [Fact]

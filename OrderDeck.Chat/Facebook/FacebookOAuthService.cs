@@ -752,9 +752,9 @@ public sealed class FacebookOAuthService
 
     /// <summary>
     /// Demetin geçerli EK Sayfaları, saklanan sırayla. Diskten gelen liste bozuk girdi
-    /// taşıyabilir: null öğe ile kimliği ya da token'ı boş girdi atlanır; birincilin
-    /// kimliğini taşıyan ya da yinelenen girdide ilk görülen kalır. Böylece tek bir
-    /// bozuk girdi öteki Sayfaları düşürmez.
+    /// taşıyabilir: null öğe ile kimliği, token'ı ya da adı boş girdi atlanır (adsız girdi
+    /// kulvar etiketini boş bırakırdı); birincilin kimliğini taşıyan ya da yinelenen girdide
+    /// ilk görülen kalır. Böylece tek bir bozuk girdi öteki Sayfaları düşürmez.
     /// </summary>
     private static List<FacebookLinkedPage> ExtraPagesOf(FacebookTokenBundle bundle)
     {
@@ -766,7 +766,8 @@ public sealed class FacebookOAuthService
         {
             if (extra is null ||
                 string.IsNullOrWhiteSpace(extra.PageId) ||
-                string.IsNullOrWhiteSpace(extra.PageAccessToken))
+                string.IsNullOrWhiteSpace(extra.PageAccessToken) ||
+                string.IsNullOrWhiteSpace(extra.PageName))
                 continue;
             if (seen.Add(extra.PageId)) extras.Add(extra);
         }

@@ -145,6 +145,26 @@ public sealed partial class FacebookOAuthServiceMultiPageTests : IDisposable
             .Should().Equal((primary.PageId, primary.PageAccessToken), (good.PageId, good.PageAccessToken));
     }
 
+    /// <summary>
+    /// Adı boş ek girdi de eksik alanlıdır (§8.1): elle düzenlenmiş ya da başka sürümün yazdığı demette olabilir.
+    /// Akarsa kulvar etiketi boş kalır, o hesabın yorumları etiketsiz basılır.
+    /// </summary>
+    [Fact]
+    public async Task Adi_bos_ek_girdi_atlanir_oteki_girdiler_korunur()
+    {
+        var (primary, good) = (NewPage(), NewPage());
+        await _kit.Store.SaveAsync(new FacebookTokenBundle(
+            Kit.NewToken(), primary.PageId, primary.PageAccessToken, primary.PageName, null,
+            new FacebookLinkedPage[]
+            {
+                NewPage() with { PageName = null! }, good, NewPage() with { PageName = "" }, NewPage() with { PageName = " " },
+            }));
+
+        (await _kit.CreateService().GetConnectedPagesAsync()).Select(p => (p.PageId, p.PageAccessToken, p.PageName))
+            .Should().Equal(
+                (primary.PageId, primary.PageAccessToken, primary.PageName), (good.PageId, good.PageAccessToken, good.PageName));
+    }
+
     [Fact]
     public async Task Bagli_degilken_liste_bostur_degistiren_uyeler_reddeder()
     {
