@@ -944,7 +944,9 @@ public sealed class InMemoryPaymentJobStoreContractTests : PaymentJobStoreContra
     {
         var ids = Enumerable.Range(0, count).Select(_ => Guid.NewGuid().ToString("N")).ToList();
         _people[ids[0]] = ids;
-        return new PaymentPerson(ids[0], ids.Select(id => new PaymentPersonMember(id, null, false)).ToList());
+        // SQLite fikstürüyle (Insert) aynı gönderilebilir alanlar: sahip kuralı onları ister (ortak bakiye §6.1-a).
+        return new PaymentPerson(ids[0], ids.Select(id => new PaymentPersonMember(id, null, false,
+            Platform: "instagram", Username: "u" + id[..10])).ToList());
     }
 
     protected override string JoinNewMember(IPaymentJobStore store, PaymentPerson person)
@@ -956,7 +958,8 @@ public sealed class InMemoryPaymentJobStoreContractTests : PaymentJobStoreContra
 
     protected override PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person)
         => new(person.LeasedId, _people.Values.First(m => m.Contains(person.LeasedId))
-            .Select(id => new PaymentPersonMember(id, null, false)).ToList());
+            .Select(id => new PaymentPersonMember(id, null, false,
+                Platform: "instagram", Username: "u" + id[..10])).ToList());
 
     protected override void SetAttemptAt(IPaymentJobStore store, string jobId, long at)
         => ((InMemoryPaymentJobStore)store).Seed(store.Get(jobId)! with { AttemptAt = at });

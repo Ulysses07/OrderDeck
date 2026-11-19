@@ -139,6 +139,80 @@ public sealed class PaymentResultPresenterTests
             .And.NotContain("istek gitmiş");
     }
 
+    // ── Birleştirme notunun üç durumu (spec 2026-10-11 §6.1-d, M3; W-havuz) ─────────────────────────────
+    // Var olan iki not testi (yukarıda) PersonPool vermez: varsayılan false bugünkü metni korur.
+
+    private const string SatirKipiNotu =
+        " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner, bu istekte kullanılmaz.";
+
+    private const string NotrNot =
+        " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner.";
+
+    /// <summary>Yerel biçimli birleştirme sorusu (iki teslim edilmiş istek, başka satırın düşümü iade ediliyor).</summary>
+    private static PaymentPrompt YerelBirlestirme(bool? personPool)
+        => new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            new[] { Istek(50m, 60), Istek(150m) }, "t", RefundsToOtherRow: true) { PersonPool = personPool };
+
+    [Fact] // §6.1-d: havuz kipinde iade kişinin bakiyesine döner ve birleşik istekte kullanılır — not yok
+    public void Birlestirme_notu_havuz_kipinde_yok()
+    {
+        var (title, message) = PaymentResultPresenter.PromptText(YerelBirlestirme(true), Simdi);
+
+        title.Should().Be("Birden çok ödeme isteği");
+        message.Should().EndWith("Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir.")
+            .And.NotContain("Not:", "havuz kipinde iade bu istekte kullanılır; söylenecek bir istisna yok");
+    }
+
+    [Fact] // §6.1-d: kip bilinmiyorsa (yerel planın sorusu) iki kipte de doğru nötr not
+    public void Birlestirme_notu_bilinmiyorsa_notr_metin()
+    {
+        var (_, message) = PaymentResultPresenter.PromptText(YerelBirlestirme(null), Simdi);
+
+        message.Should().EndWith(
+                "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir." + NotrNot)
+            .And.NotContain("bu istekte kullanılmaz",
+                "havuz kipinde iade birleşik istekte kullanılır; nötr not bunun tersini iddia etmez");
+    }
+
+    [Fact] // §6.1-d: satır kipi (ve alanı göndermeyen eski sunucu) bugünkü metni aynen gösterir
+    public void Birlestirme_notu_satir_kipinde_bugunku_metin()
+    {
+        var (_, message) = PaymentResultPresenter.PromptText(YerelBirlestirme(false), Simdi);
+
+        message.Should().EndWith(
+            "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir." + SatirKipiNotu);
+    }
+
+    [Theory] // §6.1-d: sunucunun bulduğu ayrı düşümlerin sorusunda da aynı tablo
+    [InlineData(true, "")]
+    [InlineData(false, SatirKipiNotu)]
+    [InlineData(null, NotrNot)]
+    public void Uzak_dusumlerde_birlestirme_notu_kipe_gore(bool? personPool, string not)
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            Array.Empty<PriorPaymentRequest>(), "t", RefundsToOtherRow: true,
+            RemoteDeductions: new[] { 40m, 210m }) { PersonPool = personPool };
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        message.Should().Be(
+            "Sunucuda bu kişinin bu yayın için 2 ayrı bakiye düşümü bulundu (40,00 TL, 210,00 TL); " +
+            "müşteriye gidip gitmedikleri bilinmiyor. Tek istekte birleştirilsin mi? " +
+            "En eski düşüm kalır, ötekiler iade edilir; kişinin toplamı tek istekte yeniden istenir." + not);
+    }
+
+    [Fact] // §6.1-d: iade başka hesabın düşümüne dokunmuyorsa kip ne olursa olsun not yok
+    public void Iade_yoksa_kipten_bagimsiz_not_yok()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            new[] { Istek(50m, 60), Istek(150m) }, "t") { PersonPool = null };
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        message.Should().EndWith("Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir.")
+            .And.NotContain("Not:");
+    }
+
     // Son inceleme: sonucu yazılamamış gönderim olgu diye anlatılmaz. Operatör az önce "WhatsApp açılamadı"
     // görmüş olabilir; "zaten gönderildi / 150 TL istendi" derse "Hayır"la müşteriye hiç istek gitmeyebilir.
     // Tutar O denemenin tutarıdır (an verilmezse saat yazılmaz; verilirse denemenin anıdır).
@@ -226,6 +300,19 @@ public sealed class PaymentResultPresenterTests
         calls[1].Should().BeEquivalentTo(["uzak-belirtec", "yerel-belirtec"]);
     }
 
+    [Fact] // Onay düğmesinin yazısı parametre oldu (spec 2026-10-11 §6.1-e, Ayır); ödeme soruları "Evet" kalır
+    public async Task Odeme_sorusunun_onay_dugmesi_Evet_kalir()
+    {
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService { ConfirmResult = _ => false };
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "cumulative",
+            new[] { new PriorPaymentRequest(550m, Onda, Machine: "PC-A") }, "t");
+
+        await PaymentResultPresenter.RequestConfirmedAsync(dialogs,
+            _ => Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.AlreadyRequested, prompt)));
+
+        dialogs.ConfirmTexts.Should().Equal(new[] { "Evet" }, "var olan çağıran düğme yazısı vermez");
+    }
+
     [Fact] // Birleştirmede de sonucu yazılamamış istek "gitmiş" diye kesin sayılmaz
     public void Birlestirme_sonucu_yazilamamis_istegi_gitmis_olabilir_diye_isaretler()
     {
@@ -236,5 +323,46 @@ public sealed class PaymentResultPresenterTests
 
         message.Should().StartWith(
             "Bu kişiye bu yayın için 2 istek gitmiş (50,00 TL, 150,00 TL (gitmiş olabilir)); tek istekte birleştirilsin mi?");
+    }
+
+    [Fact] // §6.1-b (K2): "Henüz eşitlenmedi" uyarısı spec'in metniyle birebir, Uyarı önemiyle (hata değil)
+    public void Esitlenmedi_uyarisi_baslik_ve_metin_birebir()
+    {
+        const string metin =
+            "Kişinin hesapları sunucuyla henüz eşitlenmedi; mesaj gönderilmedi. Birazdan tekrar deneyin — bakiye kaybolmaz, çift düşüm olmaz.";
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService();
+
+        PaymentResultPresenter.Notify(dialogs, new PaymentRequestOutcome(PaymentRequestResult.BalanceNotSynced));
+
+        dialogs.Shown.Should().ContainSingle().Which.Should().Be(("Henüz eşitlenmedi", metin, DialogSeverity.Warning));
+        PaymentResultPresenter.NotSyncedTitle.Should().Be("Henüz eşitlenmedi");
+        PaymentResultPresenter.NotSyncedText.Should().Be(metin);
+        dialogs.ErrorsShown.Should().BeEmpty();
+        dialogs.InfosShown.Should().BeEmpty();
+    }
+
+    [Fact] // §6.1-b: sonuç tek başına bildirilirse (kişi bilinmiyor) kısa metin
+    public void Esitlenmedi_sonucu_tek_basina_kisa_metin()
+    {
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService();
+
+        PaymentResultPresenter.Notify(dialogs, PaymentRequestResult.BalanceNotSynced);
+
+        dialogs.Shown.Should().ContainSingle().Which.Should().Be(
+            (PaymentResultPresenter.NotSyncedTitle, PaymentResultPresenter.NotSyncedText, DialogSeverity.Warning));
+    }
+
+    [Fact] // §6.1-b: 5 dakikadan uzun sürenin metni servisten (Message) gelir — başlık ve önem aynı
+    public void Esitlenmedi_uzun_metin_sonucun_mesajindan()
+    {
+        const string uzun =
+            "Bu kişinin hesaplarından biri sunucuya ulaşmıyor; mesaj gönderilmedi. Müşteri kaydını kontrol edin ya da grubu ayırıp yeniden birleştirin.";
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService();
+
+        PaymentResultPresenter.Notify(dialogs, new PaymentRequestOutcome(PaymentRequestResult.BalanceNotSynced,
+            Message: PaymentResultPresenter.NotSyncedPersistentText));
+
+        dialogs.Shown.Should().ContainSingle().Which.Should().Be(("Henüz eşitlenmedi", uzun, DialogSeverity.Warning));
+        PaymentResultPresenter.NotSyncedPersistentText.Should().Be(uzun, "spec §6.1-b'nin metni birebir");
     }
 }

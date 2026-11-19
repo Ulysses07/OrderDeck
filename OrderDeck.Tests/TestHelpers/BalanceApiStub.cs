@@ -36,6 +36,24 @@ public sealed class BalanceApiStub : HttpMessageHandler
     /// <summary>Geri alınan işlem kimlikleri.</summary>
     public List<Guid> ReverseCalls { get; } = new();
 
+    /// <summary>Panel bakiye okumasının (<c>GET /api/panel/customers/{id}/balance</c>) <c>members[]</c>'i, verilen
+    /// sırayla: (WpfCustomerId, satır bakiyesi, silinmiş mi) — Ayır onayı (ortak bakiye spec 2026-10-11 §6.1-e) ve
+    /// müşteri kartı (§6.1-f). Sunucu paritesi: <c>PanelCustomerBalanceController.MemberDto</c>.</summary>
+    public List<(Guid WpfCustomerId, decimal Balance, bool Purged)> PanelMembers { get; } = new();
+
+    /// <summary>Panel bakiye okumasının <c>balance.balance</c>'ı.</summary>
+    public decimal PanelBalance { get; set; }
+
+    /// <summary>true → panel bakiye okuması 404 problem döner (sahibin projeksiyonu sunucuda yok —
+    /// <c>PanelCustomerBalanceController.cs:87</c>).</summary>
+    public bool PanelFails { get; set; }
+
+    /// <summary>Panel bakiye okumasında istenen Id'ler (yolun segmenti), sırayla — kilit altında alınmış anlık
+    /// görüntü. Kartın <c>Load</c>'u kendi bakiye isteğini ateşle-unut başlatır; test okurken arka plan isteği
+    /// listeye yazıyor olabilir (kilitsiz okuma yarım eklenmiş öğeyi, <c>Guid.Empty</c>'yi görebilirdi).</summary>
+    public IReadOnlyList<Guid> PanelBalanceRequests { get { lock (_sync) return _panelBalanceRequests.ToArray(); } }
+    private readonly List<Guid> _panelBalanceRequests = new();
+
     public LicenseApiClient Client() =>
         new(new HttpClient(this) { BaseAddress = new Uri("https://stub") }, new LicenseTokenStore());
 
@@ -88,6 +106,32 @@ public sealed class BalanceApiStub : HttpMessageHandler
                      "reversed":{{(ReverseCalls.Contains(tx) ? "true" : "false")}}}
                     """);
             }
+        }
+
+        if (request.Method == HttpMethod.Get
+            && path.StartsWith("/api/panel/customers/", StringComparison.Ordinal)
+            && path.EndsWith("/balance", StringComparison.Ordinal))
+        {
+            var id = Guid.Parse(path.Split('/')[^2]);
+            List<(Guid WpfCustomerId, decimal Balance, bool Purged)> members;
+            lock (_sync)
+            {
+                _panelBalanceRequests.Add(id);
+                members = new(PanelMembers);
+            }
+            if (PanelFails)
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("""{"title":"Not Found","status":404}""", Encoding.UTF8,
+                        "application/problem+json"),
+                };
+            var items = string.Join(",", members.Select(m =>
+                $$"""{"wpfCustomerId":"{{m.WpfCustomerId}}","balance":{{Dec(m.Balance)}},"purged":{{(m.Purged ? "true" : "false")}}}"""));
+            return Json($$"""
+                {"balance":{"wpfCustomerId":"{{id}}","licenseId":"{{_licenseId}}","balance":{{Dec(PanelBalance)}},
+                  "updatedAt":"2030-01-01T00:00:00+00:00"},
+                 "transactions":[],"members":[{{items}}]}
+                """);
         }
 
         return new HttpResponseMessage(HttpStatusCode.NotFound);

@@ -187,7 +187,7 @@ public sealed class PaymentPersonViewModelTests : IDisposable
         ilk.CustomerId.Should().Be(tt);
 
         _customers.UpdatePhone(ig, TestPhone.NewE164());   // ayrılınca kendi mesajı gidebilsin
-        _search.UnmergeGroupCommand.Execute(_search.Results.Single());
+        await _search.UnmergeGroupCommand.ExecuteAsync(_search.Results.Single());
         _search.Results.Should().HaveCount(2);
         await _search.OpenWhatsAppCommand.ExecuteAsync(_search.Results.Single(c => c.Primary.Id == ig));
         await _search.OpenWhatsAppCommand.ExecuteAsync(_search.Results.Single(c => c.Primary.Id == tt));

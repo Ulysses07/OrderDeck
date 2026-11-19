@@ -543,7 +543,8 @@ public sealed class CorrectedPaymentRequests
                 PaymentRequestResult.MergeRequired => new(c, ResendStatus.Manual, "birden çok istek var, birleştirme sorusu gerekiyor"),
                 PaymentRequestResult.AlreadyRequested => new(c, ResendStatus.Manual, "istek bu arada değişti"),
                 PaymentRequestResult.PhoneRequired => new(c, ResendStatus.Manual, "WhatsApp numarası gerekli"),
-                PaymentRequestResult.BalanceUncertain => new(c, ResendStatus.Manual,
+                // W-havuz (spec 2026-10-11 §6.1-b, K2): eşitlenmemiş bakiye BalanceUncertain gibi ele alınır — aynı metin.
+                PaymentRequestResult.BalanceUncertain or PaymentRequestResult.BalanceNotSynced => new(c, ResendStatus.Manual,
                     "bakiye doğrulanamadı (sunucuya ulaşılamıyor olabilir)"),
                 PaymentRequestResult.PaymentInProgress => new(c, ResendStatus.Manual,
                     outcome.Message ?? "başka bir pencerede ödeme isteği sürüyor"),

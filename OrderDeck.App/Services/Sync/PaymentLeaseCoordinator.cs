@@ -159,7 +159,8 @@ public sealed record PaymentLeaseAmount(decimal ProductTotal, IReadOnlyList<Guid
 /// <summary><c>begin</c>'in girdisi (spec 2026-10-13 §6.4 istemci adımı 3): tutar okunduktan ve kargo hesaplandıktan sonra,
 /// bakiyeden ÖNCE.</summary>
 /// <param name="Person">Kira altında okunan kişi: <c>memberIds</c> bütün üyeleri (GUID'siz ham Id'ler dahil), sahip
-/// <see cref="PaymentPerson.OwnerId"/> ya da GUID'li üye yoksa sahip kuralının belirlenimli ilk üyesi.</param>
+/// <see cref="PaymentPerson.OwnerId"/> ya da sahip adayı (GUID'li ve gönderilebilir üye, ortak bakiye §6.1-a) yoksa
+/// sahip kuralının belirlenimli ilk üyesi.</param>
 /// <param name="OrderIds">Toplama giren etiketler (<see cref="PaymentLeaseAmount.OrderIds"/>).</param>
 /// <param name="ProductTotal">Kapsamdan yeniden okunan ürün toplamı.</param>
 /// <param name="TotalBeforeBalance"><paramref name="ProductTotal"/> + kargo, mesajla AYNI kargo ayarı anlık görüntüsünden
@@ -684,9 +685,10 @@ public sealed class PaymentLeaseCoordinator
 
     /// <summary>
     /// Kiraya ulaşılamadı (çevrimdışı, sunucu hatası, lisans çözülemedi, zarf hazır değil, uç yok; §5.8, §6.5-2, §8.6).
-    /// İstisna: GUID'li üyesi olmayan VE kapsamdaki hiçbir etiketi uzak (akıştan inmiş) bir yayında olmayan kişi bugünkü
-    /// yerel yoldan gider (null, <see cref="PaymentLeaseFlow.RecordsLocally"/>) — çevrimdışı canlı yayın sürebilsin (Y3);
-    /// uzak etiketi olan hiçbir kişi kirayı atlayamaz. Öbürlerinde mesaj gitmez.
+    /// İstisna: sahip adayı (GUID'li ve gönderilebilir üye, <see cref="PaymentOwnerRule.IsOwnerCandidate"/>) olmayan VE
+    /// kapsamdaki hiçbir etiketi uzak (akıştan inmiş) bir yayında olmayan kişi bugünkü yerel yoldan gider (null,
+    /// <see cref="PaymentLeaseFlow.RecordsLocally"/>) — çevrimdışı canlı yayın sürebilsin (Y3); böyle kişide bakiye işi
+    /// açılmaz, sunucu satırı hiç görmez. Uzak etiketi olan hiçbir kişi kirayı atlayamaz. Öbürlerinde mesaj gitmez.
     /// </summary>
     private PaymentRequestOutcome? Unreachable(
         PaymentLeaseFlow flow, PaymentLeaseBeginInput input, bool endpointMissing, string reason)
@@ -709,8 +711,9 @@ public sealed class PaymentLeaseCoordinator
         {
             flow.RecordsLocally = true;
             _log.LogInformation(
-                "Ödeme isteği kirasına ulaşılamadı ({Reason}); GUID'siz ve yalnız kendi etiketleri olan kişi yerel yoldan "
-              + "gidiyor, kayıt bağlantı gelince (customer={CustomerId})", reason, person.LeasedId);
+                "Ödeme isteği kirasına ulaşılamadı ({Reason}); sahip adayı (GUID'li ve gönderilebilir üye) olmayan ve "
+              + "yalnız kendi etiketleri olan kişi yerel yoldan gidiyor, kayıt bağlantı gelince (customer={CustomerId})",
+                reason, person.LeasedId);
             return null;
         }
 

@@ -157,6 +157,17 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Musteri_arama_Ayir_onayi_lisans_istemcisini_DIdan_alir()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var vm = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.CustomerSearchViewModel>();
+
+        PrivateField<global::OrderDeck.Licensing.Api.LicenseApiClient>(vm, "_api").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.Licensing.Api.LicenseApiClient>(),
+            "spec §6.1-e: isteğe bağlı parametre DI'dan gelmezse Ayır onayı sessizce hiç sorulmazdı");
+    }
+
+    [Fact]
     public void Form_senkronu_durum_izleyicisini_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();
@@ -379,6 +390,24 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<SalesSyncEnvelope>(), "zarf tekil: geri yüklemeden sonra kip tazelenene kadar istek yok");
         PrivateField<global::OrderDeck.App.Services.IAppUpdatePrompt>(lease, "_updatePrompt").Should().BeSameAs(
             host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>());
+    }
+
+    [Fact]
+    public void Odeme_servisi_musteri_turunu_DIdan_alinan_akis_servisine_baglar()
+    {
+        // Ortak bakiye W-havuz (spec 2026-10-11 §6.1-b, K2): customer-not-synced'te fire-and-forget müşteri senkron turu.
+        // PaymentRequestService'in isteğe bağlı parametresi — DI vermezse tur sessizce hiç koşmaz, kişi 30 sn'lik çekme
+        // döngüsünü beklerdi. Tur, müşteri akışının TEK örneğinin PullOnceAsync'i: tek tur kilidi (_tourGate) yalnız
+        // tek örnekte geçerli (arka plan işi ve satış akışı da aynı örneği tutar).
+        using var host = new global::OrderDeck.App.AppHost();
+        var payment = host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>();
+        var pull = host.Services.GetRequiredService<CustomerChangesPullService>();
+
+        payment.CustomerTour.Should().NotBeNull(
+            "spec §6.1-b: isteğe bağlı parametre DI'dan gelmezse customer-not-synced turu sessizce hiç koşmazdı");
+        payment.CustomerTour!.Target.Should().BeSameAs(pull, "müşteri akışının tekil örneği");
+        payment.CustomerTour.Method.Name.Should().Be(nameof(CustomerChangesPullService.PullOnceAsync),
+            "önce gönderir sonra çeker; yalnız gönderim turu kural 3'ün çekme kolunu kapatmaz");
     }
 
     [Fact]

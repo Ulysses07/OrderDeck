@@ -46,9 +46,11 @@ public interface IDialogService
     // ViewModel'lerin akışını da async'e taşımak demek, o Faz 2b'nin işi.
     // Dönüşüm bitince senkron beşli silinecek.
 
-    /// <summary>Evet/Vazgeç onayı, çekmecede. <see cref="Confirm"/> ile aynı
-    /// sözleşme: Evet ise true, ESC/Vazgeç ise false.</summary>
-    Task<bool> ConfirmAsync(string message, string title);
+    /// <summary>Onay/Vazgeç sorusu, çekmecede. <see cref="Confirm"/> ile aynı
+    /// sözleşme: onay ise true, ESC/Vazgeç ise false. <paramref name="confirmText"/>
+    /// onay düğmesinin yazısı; varsayılan "Evet" (ödeme soruları). Ayır onayı
+    /// "Ayır" verir (ortak bakiye spec 2026-10-11 §6.1-e: [Ayır] [Vazgeç]).</summary>
+    Task<bool> ConfirmAsync(string message, string title, string confirmText = "Evet");
 
     /// <summary>Tek düğmeli bildirim, çekmecede. <see cref="Show"/>'un
     /// karşılığı; önem şeridin rengine dönüşür.</summary>

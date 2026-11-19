@@ -1,5 +1,5 @@
 {
-  "_aciklama": "PaymentOwnerRule ortak test vektörleri. Sunucu ileride aynı sahip kuralını uygularsa bu dosya ona da koşturulur. Telefonlar sembolik: valid = geçerli TR cep (test anında üretilir), invalid = numara şekilli geçersiz, none = boş. Id'ler sembolik 32 haneli GUID 'N' biçimi; 'c...' ile başlayanlar GUID değildir.",
+  "_aciklama": "PaymentOwnerRule ortak test vektörleri. Sunucu ileride aynı sahip kuralını uygularsa bu dosya ona da koşturulur. Telefonlar sembolik: valid = geçerli TR cep (test anında üretilir), invalid = numara şekilli geçersiz, none = boş. Id'ler sembolik 32 haneli GUID 'N' biçimi; 'c...' ile başlayanlar GUID değildir. platform/username gönderilebilirliktir (ServerCustomerRule, ortak bakiye §6.1-a): ok = kabul edilir (alan yoksa ok), empty = boş, long = sunucu sınırının bir fazlası (Platform 33, Username 129).",
   "vectors": [
     {
       "name": "tek_uye_sahiptir",
@@ -86,6 +86,47 @@
         { "id": "a0000000000000000000000000000003", "phone": "valid" }
       ],
       "owner": "a0000000000000000000000000000003"
+    },
+    {
+      "name": "gonderilemeyen_guid_uye_sahip_olmaz",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "valid", "username": "empty" },
+        { "id": "a0000000000000000000000000000002", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "uzun_platform_gonderilemez",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "valid", "platform": "long" },
+        { "id": "a0000000000000000000000000000002", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "uzun_kullanici_adi_gonderilemez",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "valid", "username": "long" },
+        { "id": "a0000000000000000000000000000002", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "hicbir_guid_uye_gonderilemezse_sahip_yok",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "none", "username": "empty" },
+        { "id": "a0000000000000000000000000000002", "phone": "none", "platform": "empty" },
+        { "id": "c1", "phone": "valid" }
+      ],
+      "owner": null
+    },
+    {
+      "name": "silinmis_ama_gonderilebilir_uye_hala_aday",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "none", "purged": true },
+        { "id": "a0000000000000000000000000000002", "phone": "none", "username": "empty" }
+      ],
+      "owner": "a0000000000000000000000000000001"
     }
   ]
 }

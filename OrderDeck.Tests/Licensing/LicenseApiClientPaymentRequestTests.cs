@@ -16,6 +16,11 @@ namespace OrderDeck.Tests.Licensing;
 /// (<c>Services/Sync/PaymentRequests/PaymentRequestContracts.cs</c>, <c>LicensesShippingSettingsController.PutRequest</c>,
 /// <c>LicenseShippingSettingsStore.Snapshot</c>) birebir olmalı. Uçlar fırlatmaz: 200 tipli, 400/409 ProblemDetails ek
 /// üyeleriyle, 404 uç yok, ağ hatası ve zaman aşımı çevrimdışı, 5xx ve bozuk gövde başarısız; yalnız iptal fırlar.
+/// <para>Ortak bakiye W-havuz (spec 2026-10-11 §6.1-a/d/e): önizlemenin tekrarlı <c>memberIds</c> sorgu parametresi,
+/// apply gövdesinin <c>memberIds</c> alanı, kapsam yanıtının <c>personPool</c>'u ve panel GET'in <c>members</c>'ı sunucunun
+/// S2 kayıtlarıyla (<c>LicensesCustomerBalanceApplyController.PreviewResponse/ApplyRequest/ScopeResponse</c>,
+/// <c>PanelCustomerBalanceController.MemberDto</c>) birebir. customer-balance uçları "fırlatmaz" kuralına girmez: 4xx
+/// <see cref="ValidationException"/> olur, <c>Code</c> = problem başlığı.</para>
 /// </summary>
 public sealed class LicenseApiClientPaymentRequestTests
 {
@@ -865,5 +870,226 @@ public sealed class LicenseApiClientPaymentRequestTests
         var down = Client(_ => FakeHttpMessageHandler.Problem(503, "fake-fault"));
         await FluentActions.Awaiting(() => down.ApplyBalanceAsync(License, Apply()))
             .Should().ThrowAsync<LicenseApiUnknownException>();
+    }
+
+    // ── customer-balance: W-havuz (ortak bakiye §6.1) ─────────────────────
+
+    /// <summary>S2 önizleme yanıtı (<c>PreviewResponse</c>): havuz kipinde <c>personPool: true</c>. İstemci DTO'su alanı
+    /// okumaz (plan fark 22); bilinmeyen alan çözümü bozmamalı.</summary>
+    private static string PreviewJson(Guid customer) => $$"""
+        {"wpfCustomerId":"{{customer}}","balance":40.00,"updatedAt":"2026-11-01T18:42:10+00:00","personPool":true}
+        """;
+
+    private static CustomerBalanceApplyRequest PoolApply(Guid customer, IReadOnlyList<Guid> members) =>
+        new(customer, 250m, 250m, Guid.NewGuid(), "cumulative", MemberIds: members);
+
+    [Fact] // §6.1-a, R05: sunucu [FromQuery(Name = "memberIds")] Guid[] — virgüllü liste bağlanmaz (S2 fark 18f)
+    public async Task Onizleme_memberIds_tekrarli_sorgu_parametresi_olarak_gider()
+    {
+        var a = Guid.NewGuid();
+        var m1 = Guid.NewGuid();
+        var m2 = Guid.NewGuid();
+        HttpRequestMessage? captured = null;
+        var client = Client(req =>
+        {
+            captured = req;
+            return FakeHttpMessageHandler.Json(200, PreviewJson(a));
+        });
+
+        var preview = await client.GetBalancePreviewAsync(License, a, [m1, m2]);
+
+        preview.WpfCustomerId.Should().Be(a);
+        preview.Balance.Should().Be(40m, "yanıttaki personPool alanı önizleme DTO'sunun çözümünü bozmaz");
+        captured!.Method.Should().Be(HttpMethod.Get);
+        captured.Content.Should().BeNull("GET gövde taşımaz");
+        captured.RequestUri!.AbsolutePath.Should().Be($"/api/v1/licenses/{License}/customer-balance/preview");
+        captured.RequestUri.Query.Should().Be($"?wpfCustomerId={a:D}&memberIds={m1:D}&memberIds={m2:D}",
+            "her üye ayrı memberIds= ile, verilen sırayla; virgüllü liste sunucuda 400 alır");
+        var query = HttpUtility.ParseQueryString(captured.RequestUri.Query);
+        query["wpfCustomerId"].Should().Be(a.ToString("D"));
+        query.GetValues("memberIds").Should().Equal(m1.ToString("D"), m2.ToString("D"));
+    }
+
+    [Theory] // R10: boş listede parametre yok — bugünkü çağrı biçimi (satır kipi, eski sunucu) bayttan bayta aynı
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Onizleme_bos_uye_listesinde_memberIds_parametresi_yok(bool eskiAsiriYukleme)
+    {
+        var a = Guid.NewGuid();
+        HttpRequestMessage? captured = null;
+        var client = Client(req =>
+        {
+            captured = req;
+            return FakeHttpMessageHandler.Json(200, PreviewJson(a));
+        });
+
+        var preview = eskiAsiriYukleme
+            ? await client.GetBalancePreviewAsync(License, a)
+            : await client.GetBalancePreviewAsync(License, a, Array.Empty<Guid>());
+
+        preview.Balance.Should().Be(40m);
+        captured!.RequestUri!.AbsolutePath.Should().Be($"/api/v1/licenses/{License}/customer-balance/preview");
+        captured.RequestUri.Query.Should().Be($"?wpfCustomerId={a:D}", "üye yoksa memberIds hiç yazılmaz");
+    }
+
+    [Fact] // §6.1-a, R06: sunucu ApplyRequest.MemberIds (IReadOnlyList<Guid>?) — gövde alanı "memberIds", JSON dizisi
+    public async Task Apply_govdesi_memberIds_dizisini_tasir()
+    {
+        var a = Guid.NewGuid();
+        var m1 = Guid.NewGuid();
+        var m2 = Guid.NewGuid();
+        var key = Guid.NewGuid();
+        string? body = null;
+        var client = Client(req =>
+        {
+            body = Read(req);
+            return FakeHttpMessageHandler.Json(200, $$"""
+                {"transactionId":"{{key}}","appliedAmount":250.00,"remainingBalance":40.00}
+                """);
+        });
+
+        var response = await client.ApplyBalanceAsync(License,
+            new CustomerBalanceApplyRequest(a, 250m, 250m, key, "cumulative", MemberIds: [m1, m2]));
+
+        response.Should().Be(new CustomerBalanceApplyResponse(key, 250m, 40m), "apply yanıtı S2'de değişmedi");
+        using var json = JsonDocument.Parse(body!);
+        var root = json.RootElement;
+        Names(root).Should().BeEquivalentTo(
+            ["wpfCustomerId", "amount", "productTotal", "idempotencyKey", "saleScope", "memberIds"],
+            "sunucu ApplyRequest'i bu adlarla okur");
+        root.GetProperty("wpfCustomerId").GetGuid().Should().Be(a);
+        root.GetProperty("memberIds").ValueKind.Should().Be(JsonValueKind.Array);
+        root.GetProperty("memberIds").EnumerateArray().Select(e => e.GetGuid()).Should().Equal(m1, m2);
+    }
+
+    [Fact] // C14: JsonOpts null'ı yazar; sunucu "memberIds": null'ı yok ile aynı sayar, S1 öncesi sunucu bilinmeyen alanı atlar
+    public async Task Apply_memberIds_verilmezse_alan_null_gider()
+    {
+        string? body = null;
+        var client = Client(req =>
+        {
+            body = Read(req);
+            return FakeHttpMessageHandler.Problem(409, "no-balance");
+        });
+
+        await FluentActions.Awaiting(() => client.ApplyBalanceAsync(License, Apply()))
+            .Should().ThrowAsync<ValidationException>();
+
+        using var json = JsonDocument.Parse(body!);
+        json.RootElement.TryGetProperty("memberIds", out var memberIds).Should()
+            .BeTrue("alan her gövdede yazılır; verilmezse null");
+        memberIds.ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Theory] // §6.1-d, R23: scope yanıtının personPool'u (S2 ScopeResponse.PersonPool); eski sunucu alanı göndermez → false
+    [InlineData(",\"personPool\":true", true)]
+    [InlineData(",\"personPool\":false", false)]
+    [InlineData("", false)]
+    public async Task Kapsam_yaniti_personPool_okunur_alan_yoksa_false(string ek, bool beklenen)
+    {
+        var a = Guid.NewGuid();
+        var tx = Guid.NewGuid();
+        HttpRequestMessage? captured = null;
+        var client = Client(req =>
+        {
+            captured = req;
+            return FakeHttpMessageHandler.Json(200, $$"""
+                {"transactionId":"{{tx}}","appliedAmount":250.00,"productTotal":250.00,"createdAt":"2026-11-01T18:42:10+00:00"{{ek}}
+                """ + "}");
+        });
+
+        var scope = await client.GetBalanceScopeAsync(License, a, "cumulative");
+
+        scope.Should().Be(new CustomerBalanceScope(
+            tx, 250m, 250m, DateTimeOffset.Parse("2026-11-01T18:42:10+00:00"), beklenen));
+        captured!.RequestUri!.Query.Should().Be($"?wpfCustomerId={a:D}&saleScope=cumulative",
+            "§6.1-h: scope memberIds almaz");
+
+        var bos = Client(_ => FakeHttpMessageHandler.Empty(204));
+        (await bos.GetBalanceScopeAsync(License, a, "cumulative")).Should().BeNull("204 = iz yok (değişmez)");
+    }
+
+    [Fact] // §6.1-e, R28: panel GET members[] (MemberDto(WpfCustomerId, Balance, Purged)); istemci sunucunun sırasını aynen korur (sıralamaz)
+    public async Task Panel_bakiye_yaniti_members_dizisini_okur()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var silinmis = Guid.NewGuid();
+        var lisans = Guid.NewGuid();
+        var islem = Guid.NewGuid();
+        HttpRequestMessage? captured = null;
+        var client = Client(req =>
+        {
+            captured = req;
+            return FakeHttpMessageHandler.Json(200, $$"""
+                {"balance":{"wpfCustomerId":"{{a}}","licenseId":"{{lisans}}","balance":-20.00,"updatedAt":"2026-11-01T18:42:10+00:00"},
+                 "transactions":[{"id":"{{islem}}","amount":-250.00,"kind":"purchase-deduction","originalAmount":250.00,
+                                  "shippingDeducted":null,"reason":null,"reversesTransactionId":null,"createdAt":"2026-11-01T18:42:10+00:00"}],
+                 "members":[{"wpfCustomerId":"{{a}}","balance":30.00,"purged":false},
+                            {"wpfCustomerId":"{{b}}","balance":-60.00,"purged":false},
+                            {"wpfCustomerId":"{{silinmis}}","balance":10.00,"purged":true}]}
+                """);
+        });
+
+        var details = await client.GetCustomerBalanceAsync(a, take: 1);
+
+        captured!.Method.Should().Be(HttpMethod.Get);
+        captured.RequestUri!.PathAndQuery.Should().Be($"/api/panel/customers/{a}/balance?take=1");
+        details.Balance.Balance.Should().Be(-20m, "havuz kipinde Σ_S, eksi olabilir (§4.6)");
+        details.Transactions.Should().ContainSingle().Which.Id.Should().Be(islem);
+        details.Members.Should().NotBeNull("S1'den beri sunucu members[]'i gönderir");
+        details.Members!.Select(m => m.WpfCustomerId).Should().Equal(a, b, silinmis);
+        details.Members!.Select(m => m.Balance).Should().Equal(30m, -60m, 10m);
+        details.Members!.Select(m => m.Purged).Should().Equal(false, false, true);
+    }
+
+    [Fact] // R10: members alanı olmayan gövde (S1 öncesi sunucu) → Members null; Balance ve Transactions bugünkü gibi
+    public async Task Panel_bakiye_yaniti_members_yoksa_null()
+    {
+        var a = Guid.NewGuid();
+        var lisans = Guid.NewGuid();
+        var client = Client(_ => FakeHttpMessageHandler.Json(200, $$"""
+            {"balance":{"wpfCustomerId":"{{a}}","licenseId":"{{lisans}}","balance":15.00,"updatedAt":"2026-11-01T18:42:10+00:00"},
+             "transactions":[]}
+            """));
+
+        var details = await client.GetCustomerBalanceAsync(a);
+
+        details.Members.Should().BeNull("alanın yokluğu boş dizi değil; Ayır onayı bunu 'dağılım alınamadı' sayar (Görev 7)");
+        details.Balance.Should().Be(new CustomerBalanceDto(a, lisans, 15m, DateTimeOffset.Parse("2026-11-01T18:42:10+00:00")));
+        details.Transactions.Should().BeEmpty();
+    }
+
+    [Theory] // C07–C09, C14: havuz retleri ValidationException.Code = başlık (MapProblem değişmez; Görev 3/4 bu koda bakar)
+    [InlineData(409, "customer-not-synced")]
+    [InlineData(409, "client-update-required")]
+    [InlineData(400, "member-ids-required")]
+    public async Task Onizleme_ve_apply_havuz_retleri_ValidationException_koduyla(int status, string code)
+    {
+        var a = Guid.NewGuid();
+        var client = Client(_ => FakeHttpMessageHandler.Problem(status, code, "x"));
+
+        (await FluentActions.Awaiting(() => client.GetBalancePreviewAsync(License, a, [a, Guid.NewGuid()]))
+                .Should().ThrowAsync<ValidationException>())
+            .Which.Code.Should().Be(code, "önizleme: GetExpectingJsonAsync → ThrowMappedAsync");
+
+        (await FluentActions.Awaiting(() => client.ApplyBalanceAsync(License, PoolApply(a, [a, Guid.NewGuid()])))
+                .Should().ThrowAsync<ValidationException>())
+            .Which.Code.Should().Be(code,
+                status == 409 ? "apply 409 gövdesini kendisi okur, scope-has-deduction dışı MapProblem" : "apply: ThrowMappedAsync");
+    }
+
+    [Fact] // K7'nin apply kolu: havuzda kural 1 kesin kolu ya da Σ ≤ 0 → 409 no-balance, gövdede detail yok (AC:623-629)
+    public async Task Apply_409_no_balance_ValidationException()
+    {
+        var a = Guid.NewGuid();
+        var client = Client(_ => FakeHttpMessageHandler.Json(409, """
+            {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.10","title":"no-balance","status":409}
+            """));
+
+        var thrown = await FluentActions.Awaiting(() => client.ApplyBalanceAsync(License, PoolApply(a, [a])))
+            .Should().ThrowAsync<ValidationException>();
+
+        thrown.Which.Code.Should().Be("no-balance", "ödeme akışı bu kodla bugünkü no-balance yolundan kapanır");
     }
 }
