@@ -41,7 +41,9 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
             => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{}") });
     }
 
-    private SettingsViewModel CreateVm(FacebookOAuthService? oauth)
+    /// <param name="oauth">Null: OAuth servisi yapılandırılmamış kurulum.</param>
+    /// <param name="httpFactory">Verilmezse kitin sahte Graph'ına bağlı fabrika.</param>
+    private SettingsViewModel CreateVm(FacebookOAuthService? oauth, IHttpClientFactory? httpFactory = null)
     {
         var store = new SettingsStore(_path);
         var shortcutsTab = new ShortcutsTabViewModel(new ShortcutRegistry(store), null!);   // bağlayıcı yalnız kısayol kaydında çağrılır
@@ -51,7 +53,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         return new SettingsViewModel(_kit.Settings, store, shortcutsTab,
             new IntakeFormSettingsViewModel(api),
             new ShopperAppSettingsViewModel(api, NullLogger<ShopperAppSettingsViewModel>.Instance),
-            facebookOAuth: oauth, httpFactory: _kit.HttpFactory);
+            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory);
     }
 
     private async Task SeedAsync(int extraPages = 0) => _pages = await _kit.SeedAsync(extraPages);
@@ -266,6 +268,33 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         vm.InstagramNeedsReconnect.Should().BeTrue();
         await vm.DisconnectFacebookCommand.ExecuteAsync(null);
         vm.InstagramNeedsReconnect.Should().BeFalse();
+    }
+
+    /// <summary>Kitin fabrikası; <see cref="FailWith"/> kurulunca istemci vermek yerine o mesajla fırlatır.</summary>
+    private sealed class FailableHttpFactory(IHttpClientFactory inner) : IHttpClientFactory
+    {
+        public string? FailWith { get; set; }
+
+        public HttpClient CreateClient(string name) =>
+            FailWith is { } message ? throw new InvalidOperationException(message) : inner.CreateClient(name);
+    }
+
+    /// <summary>Genel hata dalı çoklu hesaptan önceki gibidir: durum satırı sebebi yazar ve izin uyarısı söner (durum
+    /// bilinmiyorken uyarı gösterilmez).</summary>
+    [Fact]
+    public async Task Beklenmeyen_hatada_durum_satiri_sebebi_yazar_izin_uyarisi_soner()
+    {
+        await SeedAsync(extraPages: 1);
+        _kit.Graph.Map(IsPermissions, _ => Permissions("declined"));
+        var factory = new FailableHttpFactory(_kit.HttpFactory);
+        var vm = CreateVm(_kit.CreateService(), factory);
+        await vm.RefreshInstagramStatusAsync();
+        vm.InstagramNeedsReconnect.Should().BeTrue();                   // ön koşul: uyarı yanıyor
+
+        var reason = $"sebep {Guid.NewGuid():N}";
+        factory.FailWith = reason;
+        await vm.RefreshInstagramStatusAsync();
+        (vm.InstagramAccountStatus, vm.InstagramNeedsReconnect).Should().Be(($"Durum okunamadı: {reason}", false));
     }
 
     [Fact]
