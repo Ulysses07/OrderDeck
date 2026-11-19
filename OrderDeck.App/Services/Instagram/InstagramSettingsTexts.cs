@@ -99,6 +99,10 @@ public static class InstagramSettingsTexts
     public static string AuthorizationFailed(string pageName) =>
         $"\"{pageName}\" için yetki alınamadı: bu Sayfada yönetici olduğundan emin ol.";
 
+    /// <summary>Bağlantı kaydedilemedi (dosya, disk ya da şifreleme hatası): hiçbir şey eklenmedi, yeniden denemek
+    /// yeter. "Hesap kaldırılamadı, yeniden dene."nin eşi.</summary>
+    public const string AddFailed = "Hesap eklenemedi, yeniden dene.";
+
     /// <summary>Ekleme tamamlandı.</summary>
     /// <param name="accountLabel">Eklenen hesabın etiketi (<see cref="AccountLabel"/>).</param>
     public static string AccountAdded(string accountLabel) =>

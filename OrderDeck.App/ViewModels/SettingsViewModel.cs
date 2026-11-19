@@ -750,9 +750,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             // Satır yalnız Sayfa kimliğini taşır; sebep istisnadadır.
             _log.LogWarning(ex, "Instagram account add failed for Page {PageId}", chosen.PageId);
-            InstagramNotice = IsTransientAddFailure(ex)
-                ? InstagramSettingsTexts.PagesUnreadable
-                : InstagramSettingsTexts.AuthorizationFailed(chosen.PageName);
+            InstagramNotice = ex is System.IO.IOException or UnauthorizedAccessException
+                    or System.Security.Cryptography.CryptographicException
+                ? InstagramSettingsTexts.AddFailed
+                : IsTransientAddFailure(ex)
+                    ? InstagramSettingsTexts.PagesUnreadable
+                    : InstagramSettingsTexts.AuthorizationFailed(chosen.PageName);
             return;
         }
 
@@ -763,14 +766,15 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     /// <summary>
     /// Eklemenin geçici hatası (yeniden denemek çözebilir): Graph'ın 5xx'i ya da kota kodu
-    /// (<see cref="InstagramGraphError.IsQuotaError"/>), Graph dışı ağ hatası, zaman aşımı. Geri kalan her hata (token
-    /// türetilemedi, yetki, izin) Sayfa yetkisi sorunudur.
+    /// (<see cref="InstagramGraphError.IsQuotaError"/>), Graph dışı ağ hatası, JSON olmayan yanıt (ör. ağ geçidinin
+    /// HTML sayfası), zaman aşımı. Geri kalan her hata (token türetilemedi, yetki, izin) Sayfa yetkisi sorunudur.
     /// </summary>
     private static bool IsTransientAddFailure(Exception ex) => ex switch
     {
         FacebookGraphException graph => (int?)graph.StatusCode >= 500
             || InstagramGraphError.IsQuotaError(graph.Code, graph.Subcode),
         System.Net.Http.HttpRequestException => true,
+        System.Text.Json.JsonException => true,
         System.Threading.Tasks.TaskCanceledException => true,
         TimeoutException => true,
         _ => false,

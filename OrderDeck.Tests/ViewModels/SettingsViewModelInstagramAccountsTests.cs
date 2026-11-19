@@ -1347,4 +1347,39 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         await remove.WaitAsync(TestPatience.Upper);
         vm.InstagramAccountStatus.Should().Be($"Bağlı Instagram hesabı: @{_pages[0].IgUsername}");
     }
+
+    /// <summary>
+    /// Token türetildikten sonra demetin yazımı düşerse (kilitli dosya, dolu disk, şifreleme) metin yeniden denemeyi
+    /// söyler: "yetki alınamadı" operatörü Facebook'ta yönetici rolünü kontrol etmeye yollardı. JSON olmayan yanıt
+    /// (ör. ağ geçidinin HTML sayfası) geçici hatadır. Hiçbir şey eklenmez; sebep tek bir Warning olarak günlüğe düşer.
+    /// </summary>
+    [Theory, InlineData("disk"), InlineData("html")]
+    public async Task Ekleme_disk_hatasinda_yeniden_dene_der_JSON_olmayan_yanitta_internet_der(string fault)
+    {
+        await SeedAsync();
+        var candidate = AddCandidate();
+        var log = new CapturingLogger<SettingsViewModel>();
+        var vm = await OpenAsync(log);
+        _drawers.Decide = v => Pick(v, candidate.PageId);
+        if (fault == "html")
+            _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent($"<html>{Guid.NewGuid():N}</html>", System.Text.Encoding.UTF8, "text/html") });
+
+        if (fault == "disk") File.SetAttributes(_kit.TokenFilePath, FileAttributes.ReadOnly);    // hedef salt okunur: deponun yazımı düşer
+        try
+        {
+            await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        }
+        finally
+        {
+            File.SetAttributes(_kit.TokenFilePath, FileAttributes.Normal);
+        }
+
+        vm.InstagramNotice.Should().Be(fault == "disk"
+            ? "Hesap eklenemedi, yeniden dene."
+            : "Sayfalar okunamadı, internetini kontrol edip yeniden dene.");
+        vm.InstagramPages.Should().ContainSingle();
+        (await _kit.CreateService().GetConnectedPagesAsync()).Should().ContainSingle("hiçbir Sayfa eklenmedi");
+        log.Warnings.Should().ContainSingle().Which.Message.Should().Be($"Instagram account add failed for Page {candidate.PageId}");
+    }
 }
