@@ -612,9 +612,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// <summary>
     /// "Kaldır": bir EK Sayfanın bağlantısını kaldırır. Yazımın ardından satır HEMEN kalkar (tazelemenin Graph
     /// istekleri beklenmez), durum "Kontrol ediliyor..." olur ve sonuç satırı hesabı adıyla söyler; sonra kart
-    /// tazelenir. Yazım düşerse bağlantı
-    /// değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler, sebep günlüğe Warning olarak düşer. Birincil
-    /// satırda hiçbir şey yapmaz: birincil ancak "Bağlantıyı Kaldır" ile, bütün bağlantıyla birlikte kalkar.
+    /// tazelenir. Yazım düşerse bağlantı değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler, sebep
+    /// günlüğe Warning olarak düşer. Birincil satırda hiçbir şey yapmaz: birincil ancak "Bağlantıyı Kaldır" ile, bütün
+    /// bağlantıyla birlikte kalkar.
     /// </summary>
     [RelayCommand]
     private async System.Threading.Tasks.Task RemoveInstagramAccount(InstagramPageRow? row)
