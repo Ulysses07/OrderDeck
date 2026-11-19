@@ -34,9 +34,9 @@ Not: `<YYYYMMDD>` tarihli günlük: `~/Documents/OrderDeck/Logs/log-<YYYYMMDD>.t
 
 İkinci Instagram hesabı ayrı bir Facebook Sayfasına bağlıdır ve o Sayfa, OrderDeck'e bağlı Facebook hesabıyla yönetilir.
 
-- [ ] Ayarlar > Facebook > "Instagram hesabı ekle"ye basılır. Ayarlar açılır açılmaz basılırsa düğme önce ilk izin kontrolünün bitmesini bekler; kısa bir gecikme olağandır.
+- [ ] Ayarlar > Facebook > "Instagram hesabı ekle"ye basılır. Ayarlar açılır açılmaz basılırsa düğme önce ilk izin kontrolünün bitmesini bekler; kısa bir gecikme olağandır. Ekleme sürdükçe (liste okunurken, çekmece açıkken, eklenirken) "Instagram hesabı ekle" ve "Facebook izinlerini güncelle" pasiftir.
 - [ ] Açılan listede yeni Sayfa ve ona bağlı Instagram hesabı görünüyor mu? Not: `<görünüyor / görünmüyor>`.
-- [ ] Görünmüyorsa: "Facebook izinlerini güncelle"ye basılır. Açılan Facebook onay ekranında İKİ Sayfa ve İKİ Instagram hesabı da işaretli bırakılır. Ardından "Instagram hesabı ekle" listesi yeni Sayfayı gösteriyor mu? Not: `<görünüyor / görünmüyor>`.
+- [ ] Görünmüyorsa: "Facebook izinlerini güncelle"ye basılır. Açılan Facebook onay ekranında İKİ Sayfa ve İKİ Instagram hesabı da işaretli bırakılır. Onay bitince kartta `Facebook izinleri güncellendi: …` yazar; tarayıcı bekleme metni ve `[İptal]` hemen kalkar, kart arkadan tazelenir (o sırada iki düğme kısa bir süre pasif kalır). Ardından "Instagram hesabı ekle" listesi yeni Sayfayı gösteriyor mu? Not: `<görünüyor / görünmüyor>`.
 - [ ] Facebook onay ekranında ne göründüğü not edilir. Meta belgesinin cevaplamadığı iki soru burada açılır:
   - (a) İlk onayda tek Sayfa seçildiyse ya da Sayfa sonradan açıldıysa, saklı giriş yeni Sayfayı görüyor mu (yani ilk "Instagram hesabı ekle" denemesi listeyi gösterdi mi)? Not: `<…>`.
   - (b) Onay ekranında hangi Sayfalar ve hesaplar önceden işaretli geldi; yalnız yeni Sayfa işaretlenseydi eski Sayfanın düşeceğine dair ekranda bir ipucu var mı? Not: `<…>`.
@@ -46,14 +46,15 @@ Not: `<YYYYMMDD>` tarihli günlük: `~/Documents/OrderDeck/Logs/log-<YYYYMMDD>.t
   - [ ] Kartta görünen `[İptal]` düğmesine basılır: `Güncelleme iptal edildi; bağlantı değişmedi.` yazar ve akış bırakılır.
   - [ ] Hemen ardından "Facebook izinlerini güncelle"ye yeniden basılır: yeni tarayıcı akışı açılabiliyor (bekleyen onay var uyarısı çıkmıyor).
 - [ ] İzin güncellemesi sürerken bağlantı kaldırılırsa, kaldırılıp yeniden kurulursa ya da başka bir izin güncellemesi önce kaydederse akış hiçbir şey yazmadan şu metinle biter: `Güncelleme başarısız: Onay beklenirken Facebook bağlantısı kaldırıldı. Bağlantı değişmedi.` Bu metin pilotta görülürse ne yapıldığı not edilir; bağlantı geri gelmemiş olmalıdır.
-- [ ] Kart `Sayfalar okunamadı`, `yetki alınamadı`, `Hesap kaldırılamadı` ya da `Güncelleme başarısız` metni gösterirse sebep günlükten okunur ("Günlük süzgeci" bölümü).
+- [ ] Kart `Sayfalar okunamadı`, `yetki alınamadı`, `Hesap eklenemedi`, `Hesap kaldırılamadı` ya da `Güncelleme başarısız` metni gösterirse sebep günlükten okunur ("Günlük süzgeci" bölümü). `Hesap eklenemedi, yeniden dene.` bağlantı dosyası yazılamadığında çıkar (kilitli dosya, dolu disk); yeniden denemek yeter, Facebook'ta yönetici rolüne bakmak gerekmez.
+- [ ] "Kaldır"dan sonra kartın durum satırı tazeleme bitene dek `Kontrol ediliyor...` der, sonra güncel durumu yazar.
 
 ## 3. İkinci hesapta kısa deneme yayını
 
 Mezat dışı, 10 ile 15 dakika, ilk gerçek iki hesaplı mezattan ÖNCE yapılır. Gerekçe: ikinci hesap yeni ya da az gösterimliyse Instagram'ın istek sınırı düşük olabilir; bunu ilk kez müşterili bir mezatta öğrenmek pahalıdır.
 
 - [ ] İkinci hesapta yayın açılır. Yorumlar sohbete hesap etiketiyle geliyor mu? Not: `<…>`.
-- [ ] Gelmiyorsa sohbet panelinin başındaki şeritte hangi durumun göründüğü aynen not edilir (ör. `bağlantı yenilenmeli`, `canlı yayın bulunamadı`, `yanıt yok (N sn)`). Bu, ikinci Sayfanın token'ıyla canlı yayın okumanın Meta'da nasıl davrandığını söyler.
+- [ ] Gelmiyorsa sohbet panelinin başındaki şeritte hangi durumun göründüğü aynen not edilir (ör. `bağlantı yenilenmeli`, `canlı yayın bulunamadı`, `yanıt yok (N sn)`, `hesap bilgisi okunamadı`). Bu, ikinci Sayfanın token'ıyla canlı yayın okumanın Meta'da nasıl davrandığını söyler. `hesap bilgisi okunamadı` görülürse sebep günlükteki `[InstagramAccountResolver]` Warning satırından okunur ("Günlük süzgeci" bölümü); HTTP durumu ve Graph kodu not edilir.
 - [ ] Yeni hesabın kota yüzdesi ne hızla yükseliyor? Günlükteki `usage` satırlarından birkaç dakika arayla `call_count`, `total_cputime`, `total_time` not edilir (okuma kuralları 5. bölümde).
 - [ ] Yüzdeler bu tempoda bir saat dolmadan %100'e varacak gibiyse: gerçek mezattan önce DUR. Aksi hâlde ikinci hesap gerçek mezatta dakikalarca susar. Çözüm o hesabın yoklama aralığını yükseltmektir; bu ayrı, küçük bir değişikliktir ve bu sürümde yoktur.
 
@@ -75,7 +76,7 @@ Günlükteki kota satırının biçimi (hesap başına dakikada en çok bir sat�
 ```
 
 - Başlıkta birden çok işletme kovası varsa kovalar aynı satırda `; ` ile ayrılır.
-- `regain` erişimin geri gelmesine kalan dakikadır; başlık bu alanı taşımıyorsa `0` yazılır.
+- `regain` erişimin geri gelmesine kalan dakikadır; başlık bu alanı taşımıyorsa da `0` yazılır, yani `regain 0 min` "alan yok" ile "0 dakika"yı ayırt etmez (Meta alanı olağan durumda gönderir).
 - Yanıtta başlık yoksa satırın sonu `X-Business-Use-Case-Usage header absent` olur.
 - Başlık var ama okunamıyorsa `X-Business-Use-Case-Usage header unreadable` olur.
 - Geçici hatalı turda (ağ hatası, 5xx) kota satırı yazılmaz.
@@ -114,7 +115,7 @@ Burak yayın için tek bilgisayar kullanıyor (17.11.2026); ikinci hesap yalnız
 Günlük dosyası: `~/Documents/OrderDeck/Logs/log-<YYYYMMDD>.txt` (günlük dosya, gün başına bir tane).
 
 ```bash
-grep -iE "InstagramChatHostedService|InstagramMergeGate|Facebook OAuth|Instagram account (listing|add|removal) failed|Facebook permission update failed" ~/Documents/OrderDeck/Logs/log-<YYYYMMDD>.txt
+grep -iE "InstagramChatHostedService|InstagramMergeGate|InstagramAccountResolver|Facebook OAuth|Instagram account (listing|add|removal) failed|Facebook permission update failed" ~/Documents/OrderDeck/Logs/log-<YYYYMMDD>.txt
 ```
 
 Hangi satır hangi önekle gelir:
@@ -124,6 +125,11 @@ Hangi satır hangi önekle gelir:
   - Kota satırı: `[InstagramChatHostedService] usage …` (biçimi 5. bölümde).
   - Diğerleri: `starting poller for IG @<hesap>`, aynı Instagram hesabına çıkan ikinci Sayfa için `page <PageId> skipped: …` (Warning), kalıcı hatada `… retrying in 5 min` (Warning).
 - `[InstagramMergeGate]`: kapı özeti (biçimi 6. bölümde); yalnız iki ve üzeri Sayfa bağlıyken.
+- `[InstagramAccountResolver]`: Sayfanın Instagram hesabını çözen adım (tek hesapta da yazılır). Şerit `hesap bilgisi okunamadı` derse sebebe bakılacak yer burasıdır.
+  - Warning, Graph hata döndü: `[InstagramAccountResolver] <HTTP durumu> for page <PageId>: Graph code <kod>, subcode <alt kod>`. Alt kod yoksa yalnız `Graph code <kod>`; yanıt Graph hatası değilse (ör. HTML sayfası) `no Graph error code` yazar.
+  - Warning, istek düştü (ağ, zaman aşımı): `[InstagramAccountResolver] resolve failed for page <PageId>: <hata tipi>`.
+  - Information: `page <PageId> → IG @<hesap> (<Instagram kimliği>)` (çözüldü) ve `page <PageId> has no linked Instagram professional account` (Sayfada hesap yok).
+  - Ayarlar kartının kendi okuması bu satırları yazmaz; satırlar yayın sırasındaki hesap döngüsünden gelir.
 - `Facebook OAuth …`: bağlantı servisinin satırları.
   - `Facebook OAuth connected for Page <PageId> (<Sayfa adı>)` ve `Facebook OAuth disconnected (local tokens cleared)`.
   - `Facebook OAuth extra Page added: <PageId> (<Sayfa adı>)` ve `Facebook OAuth extra Page removed: <PageId> (<Sayfa adı>)`.
@@ -132,7 +138,7 @@ Hangi satır hangi önekle gelir:
   - Warning: `Facebook OAuth reauthorize kept the stored token for Page <PageId>: a new one could not be derived (<hata tipi>, HTTP <durum>, Graph code <kod>, subcode <alt kod>)`. O Sayfanın eski token'ı yerinde kaldı; HTTP durumu ya da kodlar bilinmiyorsa `null` yazar.
 - Öneksiz satırlar (Warning, kaynak `SettingsViewModel`; istisna ekli, token ve Sayfa adı yok): Ayarlar kartındaki hata metni sebebi söylemediğinde sebep buradan okunur.
   - `Instagram account listing failed`: kartta `Sayfalar okunamadı`.
-  - `Instagram account add failed for Page <PageId>`: kartta `yetki alınamadı` ya da `Sayfalar okunamadı`.
+  - `Instagram account add failed for Page <PageId>`: kartta `yetki alınamadı`, `Hesap eklenemedi, yeniden dene.` ya da `Sayfalar okunamadı`.
   - `Instagram account removal failed for Page <PageId>`: kartta `Hesap kaldırılamadı, yeniden dene.`
   - `Facebook permission update failed`: kartta `Güncelleme başarısız: …`.
 
@@ -147,7 +153,7 @@ Eski sürüme dönülürse: uygulama ilk bağlanan (birincil) Sayfayla bugünkü
 
 ## Teslim özeti
 
-Yoklama temposu, gecikme ve Instagram'a giden istek yükü tek hesaplı kurulumda aynı kalır. Aşağıdaki yedi davranış ve dört küçük yan fark ise tek hesaplı kurulumda da değişir. Bu tasarımcının kararıdır; Burak'ın itiraz ettiği madde yalnız iki ve üzeri Sayfa bağlıyken çalışacak biçime çekilir. 5. madde bunun dışındadır: ikinci hesap o düğmelerle eklendiği için koşula bağlanamaz.
+Yoklama temposu, gecikme ve Instagram'a giden istek yükü tek hesaplı kurulumda aynı kalır. Aşağıdaki yedi davranış ve beş küçük yan fark ise tek hesaplı kurulumda da değişir. Bu tasarımcının kararıdır; Burak'ın itiraz ettiği madde yalnız iki ve üzeri Sayfa bağlıyken çalışacak biçime çekilir. 5. madde bunun dışındadır: ikinci hesap o düğmelerle eklendiği için koşula bağlanamaz.
 
 1. Yayın ortasında "Bağlantıyı Kaldır" ya da hesap kaldırma, o hesabın yoklamasını en geç 2 saniyede durdurur; bugün eski token'la oturum sonuna kadar sürüyor.
 2. Kalıcı hata ve hesap çözümleme sonrası 5 dakikalık beklemeler, Sayfa token'ı yenilenince (ör. "Facebook izinlerini güncelle" sonrası) beklenmeden kesilir.
@@ -163,12 +169,17 @@ Küçük yan farklar:
 - (b) Oturum bitince 5 dakikalık beklemeler iptal olur ve yeni oturum hesabı hemen yeniden dener; bugün bekleme oturumdan bağımsız sürüyor.
 - (c) Ayarlar'da hesabı okuyan çağrı düşerse satır "hesap yok" yerine `Durum okunamadı` der.
 - (d) Sayfa token'ı değiştiğinde hesap bir kez yeniden çözülür (Instagram'a tek ek istek).
+- (e) "Facebook'a Bağlan"ın üç hata metni değişti: bekleyen bir onay varken ikinci deneme artık `Bağlantı başarısız: Bekleyen bir Facebook onayı var. Tarayıcıdaki onayı tamamla ya da birkaç dakika sonra yeniden dene.` der (eskiden anlaşılmaz bir dinleyici hatası); Facebook'un hata yanıtı metne token'ı gizlenmiş olarak girer; boş yanıt metni artık adres taşımaz.
 
 Plandan sonra eklenen sağlamlaştırmalar (hepsi kodda ve testli):
 
 - Kalıcı hata beklemesi token değişince kesilirse şerit satırındaki yeniden deneme saati "şimdi"ye çekilir; yeni deneme cevap alamazsa `yanıt yok` en geç 45 saniyede görünür (eski saatte beklemez).
 - "Facebook izinlerini güncelle" sürerken bağlantı kaldırılır, kaldırılıp yeniden kurulur ya da başka bir izin güncellemesi önce kaydederse akış hiçbir şey yazmaz ve `Güncelleme başarısız: Onay beklenirken Facebook bağlantısı kaldırıldı. Bağlantı değişmedi.` metniyle biter; kaldırılmış bağlantı dirilmez.
-- Ayarlar açılır açılmaz "Instagram hesabı ekle"ye basılırsa komut ilk izin kontrolünün bitmesini bekler.
+- Ayarlar açılır açılmaz "Instagram hesabı ekle"ye basılırsa komut ilk izin kontrolünün bitmesini bekler. Ekleme sürerken "Instagram hesabı ekle" ve "Facebook izinlerini güncelle" pasiftir: iki akış aynı anda yürümez.
+- Eklemede bağlantı dosyası yazılamazsa (kilitli dosya, dolu disk) kart `Hesap eklenemedi, yeniden dene.` der ("yetki alınamadı" değil: Facebook'ta yönetici rolüne bakmak gerekmez, yeniden denemek yeter). Facebook'tan HTML gibi okunamayan bir yanıt gelirse (ör. otel / kafe ağının giriş sayfası) `Sayfalar okunamadı, internetini kontrol edip yeniden dene.` çıkar.
+- Ayarlar kartının durum satırı: `Sayfalar okunuyor...` ve tarayıcı bekleme metni geçicidir; kalkınca satır o anki gerçek duruma döner, arada biten bir kontrol bekleme talimatını silmez. "Facebook izinlerini güncelle" bitince bekleme metni ve `[İptal]` hemen kalkar, kart arkadan tazelenir. "Kaldır"dan sonra satır tazeleme bitene dek `Kontrol ediliyor...` der.
+- Aynı Instagram hesabına iki Sayfa bağlıysa ve hesabı okuyan Sayfa yayın sırasında kaldırılırsa öteki Sayfa hesabı 5 dakika beklemeden, birkaç saniyede devralır.
+- Şerit `hesap bilgisi okunamadı` derse sebep artık günlüğe Warning olarak düşer (`[InstagramAccountResolver]`); Facebook'un ham yanıtı günlüğe hiç yazılmaz.
 - Ayarlar kartındaki hata metni sebebi söylemediğinde sebep günlüğe Warning olarak düşer ("Günlük süzgeci" bölümü); izin güncellemede token'ı türetilemeyen Sayfa ve izin yönlendirmesine dönen Sayfa listesi de günlüğe yazılır.
 
 Tekrar süzgeci: süzgece dokunulmadı. Aynı izleyici aynı metni 2 saniye içinde iki hesaba da yazarsa sohbete tek satır düşer (tek yayında aynı satırı iki kez yazana bugün uygulanan kural); etiket o satırda öteki hesabı gösterebilir. İki satır da görünsün istenirse süzgecin anahtarına hesap eklenir; bu ayrı ve küçük bir iştir.
