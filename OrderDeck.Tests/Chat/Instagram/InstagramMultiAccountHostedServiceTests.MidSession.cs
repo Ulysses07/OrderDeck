@@ -315,6 +315,50 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         Got(gap).Should().BeFalse(); // filigran taze: yeni poller'ın ilk çekimi yutuldu
     }
 
+    /// <summary>
+    /// Zaman damgası İLK okunduğunda okuyanı test bırakana dek tutar (sistem saati; üst sınır
+    /// <see cref="TestPatience.Upper"/>). Servis damgayı ilk kez, hesabın sonuç veren ilk turunun sonunda, kota satırını
+    /// yazarken okur: o turun poller'ı böylece "sonucunu bildirdi ama henüz bitmedi" anında durur.
+    /// </summary>
+    private sealed class HeldFirstStamp : TimeProvider
+    {
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _reads;
+
+        public override long GetTimestamp()
+        {
+            if (Interlocked.Increment(ref _reads) == 1) _released.Task.Wait(TestPatience.Upper);
+            return base.GetTimestamp();
+        }
+
+        public void Release() => _released.SetResult();
+    }
+
+    /// <summary>
+    /// Kapı, kalıcı hatayla kendi bitmekte olan poller'ı devretmez: o poller'ı kapı durdurmamıştır. Döngü kalıcı hatanın
+    /// 5 dakikalık beklemesine girer, kapıyı sonraki kurulum kullanır. Devredilseydi hesap beklemeden yeniden kurulur,
+    /// aynı hatayı bir kez daha alırdı.
+    /// </summary>
+    [Fact]
+    public async Task Kapi_takilirken_kalici_hatayla_bitmekte_olan_poller_devredilmez_beklemesi_gecerlidir()
+    {
+        var (a, feedA) = await OneAsync();
+        feedA.Intercept = _ => FakeGraph.Error(190);
+        var time = new HeldFirstStamp(); // A'nın poller'ı kalıcı hata turunu bildirdikten sonra, bitmeden tutulur
+        StartSession();
+        await StartServiceAsync(_health, time, Fast with { IdleAfterFatal = Long });
+        await Until(() => State(a) == Faulted); // tur izleyiciye işlendi; poller henüz bitmedi
+        var (_, feedB) = await AddPageAsync();
+        await feedB.PrimedAsync(); // eklenen hesap yoklanıyor: kapı ondan önce kuruldu ve A'nın döngüsüne takıldı
+
+        time.Release(); // poller kalıcı hatayla biter
+
+        await Until(() => Health(a)?.RetryAt is not null); // kalıcı hata beklemesine girdi
+        await FlowAsync(feedB);
+        await FlowAsync(feedB); // eklenen hesap iki tur daha attı
+        PollerStarts(a).Should().Be(1); // devredilmedi: beklemeden yeniden kurulmadı
+    }
+
     // ── İzleme turu ──────────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
