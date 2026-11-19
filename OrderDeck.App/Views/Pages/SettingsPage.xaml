@@ -2,6 +2,7 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="clr-namespace:OrderDeck.App.Controls"
+             xmlns:ig="clr-namespace:OrderDeck.App.Services.Instagram"
              xmlns:sync="clr-namespace:OrderDeck.App.Services.Sync">
     <!-- Ayarlar (eski AyarlarDialog penceresi, 561 satır).
 
@@ -314,7 +315,128 @@
                                        Foreground="{StaticResource OD.Brush.Amber}"
                                        Visibility="{Binding InstagramNeedsReconnect,
                                                     Converter={StaticResource BoolToVisibleConverter}}"
-                                       Text="Instagram yorumları için Facebook bağlantını yenilemen gerekiyor — yukarıdaki 'Bağlantıyı Kaldır' + 'Facebook'a Bağlan' adımını uygula."/>
+                                       Text="{x:Static ig:InstagramSettingsTexts.PermissionsMissingWarning}"/>
+
+                            <!-- Bağlı Sayfalar ve Instagram hesapları (çoklu hesap, spec
+                                 2026-11-16 §8.6.1). Satırlar yalnız iki ve üzeri Sayfada
+                                 çizilir: tek Sayfada durum satırı aynı bilgiyi verir ve
+                                 kart çoklu hesaptan önceki gibi görünür. -->
+                            <ItemsControl ItemsSource="{Binding InstagramPages}"
+                                          Visibility="{Binding ShowInstagramPageRows,
+                                                       Converter={StaticResource BoolToVisibleConverter}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <!-- Zemin saydam ama DOLU: birincil satırın ipucu yalnız
+                                             yazının üstünde değil, satırın boş yerinde de çıksın
+                                             ("Kaldır"ın durmadığı sağ uç dahil). -->
+                                        <DockPanel Background="Transparent">
+                                            <DockPanel.Style>
+                                                <Style TargetType="DockPanel">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsPrimary}" Value="True">
+                                                            <Setter Property="ToolTip"
+                                                                    Value="{x:Static ig:InstagramSettingsTexts.PrimaryRowTooltip}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </DockPanel.Style>
+                                            <!-- Komut sayfanın ViewModel'inde, satırın DataContext'i
+                                                 ise satırın kendisi: listenin DataContext'i üzerinden
+                                                 bağlanıyor. Birincil satırda düğme yok (CanRemove). -->
+                                            <Button DockPanel.Dock="Right"
+                                                    Content="{x:Static ig:InstagramSettingsTexts.RemoveButton}"
+                                                    Style="{StaticResource OD.Button.Ghost}"
+                                                    Padding="{StaticResource OD.Pad.2}"
+                                                    FontSize="{StaticResource OD.Font.F1}"
+                                                    Command="{Binding DataContext.RemoveInstagramAccountCommand,
+                                                              RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Visibility="{Binding CanRemove,
+                                                                 Converter={StaticResource BoolToVisibleConverter}}"/>
+                                            <!-- Dar pencerede metinler alt satıra iner, kırpılmaz. Dolgu
+                                                 düğmeninkiyle aynı: düğmeli ve düğmesiz satır aynı
+                                                 yükseklikte. -->
+                                            <WrapPanel VerticalAlignment="Center"
+                                                       Margin="{StaticResource OD.Pad.2}">
+                                                <TextBlock Text="{Binding InstagramText}"
+                                                           Margin="{StaticResource OD.Pad.Right4}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock"
+                                                               BasedOn="{StaticResource OD.Text.Label}">
+                                                            <Setter Property="Foreground"
+                                                                    Value="{StaticResource OD.Brush.Text}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{StaticResource OD.Brush.Amber}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding PageName,
+                                                                  StringFormat={x:Static ig:InstagramSettingsTexts.PageNameFormat}}"
+                                                           Style="{StaticResource OD.Text.Label}" Margin="0"/>
+                                                <TextBlock Text="{x:Static ig:InstagramSettingsTexts.PrimaryRowSuffix}"
+                                                           Style="{StaticResource OD.Text.Label}" Margin="0"
+                                                           Visibility="{Binding IsPrimary,
+                                                                        Converter={StaticResource BoolToVisibleConverter}}"/>
+                                            </WrapPanel>
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- Hesap işlemleri. Facebook bağlı değilken ya da bir bağlantı
+                                 işlemi sürerken pasif (CanManageInstagram). "İptal" yalnız
+                                 izin güncellemesinin tarayıcı onayı beklenirken görünür. -->
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="{x:Static ig:InstagramSettingsTexts.AddAccountButton}"
+                                        Style="{StaticResource OD.Button.Secondary}"
+                                        Command="{Binding AddInstagramAccountCommand}"
+                                        IsEnabled="{Binding CanManageInstagram}"
+                                        Margin="{StaticResource OD.Pad.X2}"/>
+                                <Button Content="{x:Static ig:InstagramSettingsTexts.ReauthorizeButton}"
+                                        Style="{StaticResource OD.Button.Secondary}"
+                                        Command="{Binding ReauthorizeFacebookCommand}"
+                                        IsEnabled="{Binding CanManageInstagram}"
+                                        ToolTip="{x:Static ig:InstagramSettingsTexts.ReauthorizeTooltip}"
+                                        Margin="{StaticResource OD.Pad.X2}"/>
+                                <Button Content="{x:Static ig:InstagramSettingsTexts.CancelReauthorizeButton}"
+                                        Style="{StaticResource OD.Button.Ghost}"
+                                        Command="{Binding CancelReauthorizeCommand}"
+                                        Visibility="{Binding IsReauthorizePending,
+                                                     Converter={StaticResource BoolToVisibleConverter}}"/>
+                            </StackPanel>
+
+                            <!-- Kart işlemlerinin sonucu ("… kaldırıldı."): sayfanın altındaki
+                                 ShippingNotice şeridinin kart içi eşi. Açılır pencere yok,
+                                 "Tamam" kapatır; sonuç yokken yer kaplamaz. -->
+                            <Border CornerRadius="{StaticResource OD.Radius.Md}"
+                                    Background="{StaticResource OD.Brush.AmberTint}"
+                                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                                    BorderThickness="1"
+                                    Margin="{StaticResource OD.Pad.Top3}"
+                                    Visibility="{Binding InstagramNotice,
+                                                 Converter={StaticResource NullToCollapsedConverter}}">
+                                <DockPanel LastChildFill="True" Margin="{StaticResource OD.Pad.4}">
+                                    <Button DockPanel.Dock="Right"
+                                            Content="{x:Static ig:InstagramSettingsTexts.DismissNoticeButton}"
+                                            Command="{Binding DismissInstagramNoticeCommand}"
+                                            Style="{StaticResource OD.Button.Ghost}"
+                                            Foreground="{StaticResource OD.Brush.Amber}"
+                                            Margin="{StaticResource OD.Pad.2}"/>
+                                    <TextBlock Text="{Binding InstagramNotice}"
+                                               Foreground="{StaticResource OD.Brush.Amber}"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                </DockPanel>
+                            </Border>
+
+                            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                       Text="{x:Static ig:InstagramSettingsTexts.TwoAccountsCaption}"
+                                       Visibility="{Binding ShowInstagramPageRows,
+                                                    Converter={StaticResource BoolToVisibleConverter}}"/>
                             <TextBlock Style="{StaticResource OD.Text.Hint}">
                                 Yorumlar doğrudan Instagram'ın resmi API'sinden okunur, tarayıcı sekmesi gerekmez;
                                 karşılığında Instagram'a bağlı bir Facebook Sayfası şart. Instagram canlı yayında

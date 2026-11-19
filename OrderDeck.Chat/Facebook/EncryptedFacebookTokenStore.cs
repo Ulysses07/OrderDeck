@@ -39,7 +39,37 @@ public sealed class EncryptedFacebookTokenStore
         var plaintext = Encoding.UTF8.GetBytes(json);
         var cipher = ProtectedData.Protect(plaintext, optionalEntropy: null,
             DataProtectionScope.CurrentUser);
-        File.WriteAllBytes(_path, cipher);
+
+        // Atomik ve kalıcı yazım. NEDEN: hedefe doğrudan yazarken yazma yarıda
+        // kesilirse geriye yarım blob kalır; LoadAsync onu çözemez, dosyayı siler
+        // ve bütün Sayfaların bağlantısı kopar. Geçiciye yazıp yerine taşıyınca
+        // hedef ya tamamen eski ya tamamen yenidir. Güvence süreç çökmesini,
+        // yazım hatasını ve güç kesintisini kapsar. Sonuncusu diske indirme
+        // sayesindedir: baytlar işletim sistemi önbelleğinde bırakılıp taşınsaydı,
+        // kesintiden sonra hedef ad yeni ama içeriği boş bir dosyayı
+        // gösterebilirdi (emsal: OrderDeck.Core'daki SettingsStore.WriteThrough).
+        // Geçici dosya AYNI klasörde: bölümler arası taşıma atomik değildir. Adı
+        // sabit: yarım kalan deneme birikmez, sonraki yazım üstüne yazar;
+        // ClearAsync aynı adı siler.
+        var temp = _path + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(
+                       temp, FileMode.Create, FileAccess.Write, FileShare.None,
+                       bufferSize: 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(cipher, 0, cipher.Length);
+                stream.Flush(flushToDisk: true);
+            }
+            // Akış taşımadan önce kapanır: paylaşımsız açık dosya taşınamaz.
+            File.Move(temp, _path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(temp); }
+            catch { /* best effort */ }
+            throw;
+        }
         return Task.CompletedTask;
     }
 
@@ -73,6 +103,15 @@ public sealed class EncryptedFacebookTokenStore
 
     public Task ClearAsync(CancellationToken ct = default)
     {
+        // SaveAsync'in geçici dosyası da silinir. NEDEN: süreç geçiciyi yazıp
+        // yerine taşıyamadan ölürse şifreli demet orada kalır; yalnız ana dosya
+        // silinseydi "Bağlantıyı Kaldır"dan sonra diskte token artığı kalırdı.
+        // Önce artık, sonra ana dosya: araya kesinti girerse bağlantı görünür
+        // kalır ve yeniden kaldırılır, gizli bir artık kalmaz. Dosya yoksa
+        // File.Delete sessizce geçer; silinemezse ana dosyanın silinmesi bundan
+        // etkilenmez.
+        try { File.Delete(_path + ".tmp"); }
+        catch { /* best effort */ }
         TryDelete();
         return Task.CompletedTask;
     }

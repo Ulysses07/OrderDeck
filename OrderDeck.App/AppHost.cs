@@ -300,6 +300,9 @@ public sealed class AppHost : IDisposable
         // servisini paylaşıyor (IG erişimi Sayfa token'ı üzerinden gidiyor;
         // ayrı bir IG oturumu yok). Artık varsayılan yol: uzantıda Instagram
         // kalmadı, deneme sürümü dahil tek IG kaynağı bu servis.
+        // Hesap sağlığı izleyicisi tekil: servis yazar, kabuk (MainShellViewModel'in isteğe bağlı parametresi)
+        // AYNI örneği okur.
+        services.AddSingleton<OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor>();
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService(
                 sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
@@ -307,7 +310,8 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<ILoggerFactory>(),
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
                 sessions: sp.GetRequiredService<StreamSessionService>(),
-                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
+                health: sp.GetRequiredService<OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor>()));
 
         // Overlay
         services.AddSingleton(sp => new OverlayHost(

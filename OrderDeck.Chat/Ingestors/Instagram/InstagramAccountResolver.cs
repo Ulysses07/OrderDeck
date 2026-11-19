@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +11,23 @@ namespace OrderDeck.Chat.Ingestors.Instagram;
 
 /// <summary>Bir Sayfa'ya bağlı Instagram professional hesabı.</summary>
 public readonly record struct InstagramAccount(string IgUserId, string? Username);
+
+/// <summary>
+/// <see cref="InstagramAccountResolver.ResolveDetailedAsync"/> sonucunun durumu.
+/// "Sayfada hesap yok" ile "çağrı düştü" ayrı tutulur: ilki kurulumun hâlidir
+/// (yalnız Facebook kullanan Sayfa), ikincisi geçici olabilir.
+/// </summary>
+public enum InstagramResolveStatus
+{
+    /// <summary>Sayfaya bağlı hesap bulundu.</summary>
+    Found,
+
+    /// <summary>Çağrı başarılı, ama Sayfaya bağlı Instagram professional hesabı yok.</summary>
+    NotLinked,
+
+    /// <summary>Çağrı düştü: 2xx dışı yanıt, ağ hatası ya da ayrıştırılamayan gövde.</summary>
+    Failed,
+}
 
 /// <summary>
 /// <c>GET /{page-id}?fields=instagram_business_account{id,username}</c> ile
@@ -42,10 +60,22 @@ public sealed class InstagramAccountResolver
 
     /// <summary>Bağlı IG hesabını döner; yoksa veya çağrı başarısızsa null.</summary>
     public async Task<InstagramAccount?> ResolveAsync(
+        string pageId, string pageAccessToken, CancellationToken ct) =>
+        (await ResolveDetailedAsync(pageId, pageAccessToken, ct).ConfigureAwait(false)).Account;
+
+    /// <summary>
+    /// <see cref="ResolveAsync"/> ile aynı çağrı ve aynı önbellek; ek olarak null'ın
+    /// sebebini söyler: Sayfada hesap yok (<see cref="InstagramResolveStatus.NotLinked"/>)
+    /// ya da çağrı düştü (<see cref="InstagramResolveStatus.Failed"/>). <c>Account</c>
+    /// yalnız <see cref="InstagramResolveStatus.Found"/>'da doludur ve yalnız o
+    /// önbelleklenir; öbür ikisi her çağrıda yeniden sorulur. Çağıranın iptali
+    /// <see cref="InstagramResolveStatus.Failed"/> sayılmaz, yükselir.
+    /// </summary>
+    public async Task<(InstagramAccount? Account, InstagramResolveStatus Status)> ResolveDetailedAsync(
         string pageId, string pageAccessToken, CancellationToken ct)
     {
         if (_cached is not null && string.Equals(_cachedPageId, pageId, StringComparison.Ordinal))
-            return _cached;
+            return (_cached, InstagramResolveStatus.Found);
 
         var url = $"{GraphBase}/{Uri.EscapeDataString(pageId)}" +
                   $"?fields={Uri.EscapeDataString("instagram_business_account{id,username}")}" +
@@ -58,10 +88,11 @@ public sealed class InstagramAccountResolver
 
             if (!resp.IsSuccessStatusCode)
             {
-                _log.LogDebug(
-                    "[InstagramAccountResolver] {Status} for page {PageId}: {Body}",
-                    (int)resp.StatusCode, pageId, Truncate(body));
-                return null;
+                // Ham gövde yazılmaz: Graph ayrıştıramadığı token'ı iletide geri yazabilir.
+                _log.LogWarning(
+                    "[InstagramAccountResolver] {Status} for page {PageId}: {GraphCode}",
+                    (int)resp.StatusCode, pageId, GraphCodeText(body));
+                return (null, InstagramResolveStatus.Failed);
             }
 
             using var doc = JsonDocument.Parse(body);
@@ -72,11 +103,11 @@ public sealed class InstagramAccountResolver
                 _log.LogInformation(
                     "[InstagramAccountResolver] page {PageId} has no linked Instagram professional account",
                     pageId);
-                return null;
+                return (null, InstagramResolveStatus.NotLinked);
             }
 
             var igUserId = idEl.GetString();
-            if (string.IsNullOrEmpty(igUserId)) return null;
+            if (string.IsNullOrEmpty(igUserId)) return (null, InstagramResolveStatus.NotLinked);
 
             var username = acc.TryGetProperty("username", out var u) ? u.GetString() : null;
             var account = new InstagramAccount(igUserId, username);
@@ -87,7 +118,7 @@ public sealed class InstagramAccountResolver
             _log.LogInformation(
                 "[InstagramAccountResolver] page {PageId} → IG @{Username} ({IgUserId})",
                 pageId, username ?? "?", igUserId);
-            return account;
+            return (account, InstagramResolveStatus.Found);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -95,17 +126,55 @@ public sealed class InstagramAccountResolver
         }
         catch (Exception ex)
         {
-            _log.LogDebug(ex, "[InstagramAccountResolver] resolve failed for page {PageId}", pageId);
-            return null;
+            // Yalnız tip: istisna iletisi (ve istisnanın kendisi) yazılmaz, adres ya da token taşıyabilir.
+            _log.LogWarning(
+                "[InstagramAccountResolver] resolve failed for page {PageId}: {ExceptionType}",
+                pageId, ex.GetType().Name);
+            return (null, InstagramResolveStatus.Failed);
         }
     }
 
-    /// <summary>Facebook bağlantısı değişince (disconnect/yeniden bağlan) çağrılır.</summary>
+    /// <summary>
+    /// Graph hata gövdesinin günlüğe yazılabilen özeti: <c>Graph code N, subcode M</c> (alt kod yoksa
+    /// yalnız kod); gövde Graph hatası değilse ya da okunamıyorsa <c>no Graph error code</c>. İleti ve
+    /// gövdenin başka hiçbir parçası taşınmaz. Poller'ın geçici hata satırı da bunu kullanır.
+    /// </summary>
+    internal static string GraphCodeText(string? body)
+    {
+        int? code = null, subcode = null;
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var err)
+                    && err.ValueKind == JsonValueKind.Object)
+                {
+                    if (err.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number
+                        && c.TryGetInt32(out var ci)) code = ci;
+                    if (err.TryGetProperty("error_subcode", out var s) && s.ValueKind == JsonValueKind.Number
+                        && s.TryGetInt32(out var si)) subcode = si;
+                }
+            }
+            catch (JsonException)
+            {
+                // HTML hata sayfası vb.: kod yok.
+            }
+        }
+
+        if (code is null) return "no Graph error code";
+        return subcode is null
+            ? string.Create(CultureInfo.InvariantCulture, $"Graph code {code}")
+            : string.Create(CultureInfo.InvariantCulture, $"Graph code {code}, subcode {subcode}");
+    }
+
+    /// <summary>Sayfanın saklı token'ı değişince hesap döngüsü çağırır
+    /// (<c>InstagramAccountLoop.ForgetAccountIfTokenChanged</c>): yeni token'la hesap bir kez
+    /// yeniden çözülür.</summary>
     public void Invalidate()
     {
         _cachedPageId = null;
         _cached = null;
     }
-
-    private static string Truncate(string s) => s.Length <= 200 ? s : s.Substring(0, 200);
 }

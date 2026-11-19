@@ -5,6 +5,7 @@
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
@@ -46,8 +47,60 @@
                 </Grid>
             </Border>
 
+            <!-- ── Instagram sağlık şeridi: hesap başına nokta + durum metni ─
+                 ShellBanners'a değil buraya: sohbet paneli dar kipte de
+                 görünür ve sağlık durumu dakikalarca sürebilir. Uyarı işareti
+                 simge değil renkli noktadır (kenar çubuğu deseni). -->
+            <Border Grid.Row="1" Padding="{StaticResource OD.Pad.3}"
+                    BorderBrush="{StaticResource OD.Brush.Border}"
+                    BorderThickness="0,0,0,1"
+                    Visibility="{Binding ShowInstagramStatus,
+                                 Converter={StaticResource BoolToVisibleConverter}}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Left" Text="Instagram"
+                               Style="{StaticResource OD.Text.Micro}"
+                               VerticalAlignment="Center"/>
+                    <ItemsControl ItemsSource="{Binding InstagramAccounts}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal"
+                                            ToolTip="{Binding Tooltip}"
+                                            Margin="{StaticResource OD.Pad.Left4}">
+                                    <Ellipse Width="8" Height="8"
+                                             VerticalAlignment="Center"
+                                             Margin="{StaticResource OD.Pad.2}">
+                                        <Ellipse.Style>
+                                            <Style TargetType="Ellipse">
+                                                <Setter Property="Fill" Value="{StaticResource OD.Brush.TextMute}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Severity}" Value="Live">
+                                                        <Setter Property="Fill" Value="{StaticResource OD.Brush.Success}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Severity}" Value="Warning">
+                                                        <Setter Property="Fill" Value="{StaticResource OD.Brush.Amber}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Ellipse.Style>
+                                    </Ellipse>
+                                    <TextBlock Text="{Binding Text}"
+                                               FontSize="{StaticResource OD.Font.F1}"
+                                               Foreground="{StaticResource OD.Brush.TextDim}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
+            </Border>
+
             <!-- ── Liste ────────────────────────────────────────────────── -->
-            <ListBox Grid.Row="1"
+            <ListBox Grid.Row="2"
                      x:Name="ChatList"
                      Style="{StaticResource OD.ListBox}"
                      ItemsSource="{Binding ChatView}"
@@ -115,9 +168,30 @@
                                        FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                        VerticalAlignment="Center"
                                        ToolTip="{Binding Username}"/>
-                            <TextBlock Grid.Column="2" Text="{Binding Text}"
-                                       TextWrapping="Wrap" VerticalAlignment="Center"
-                                       Foreground="{StaticResource OD.Brush.Text}"/>
+                            <!-- Mesaj + Instagram hesap etiketi. Etiket sağa yaslı ve mesajdan
+                                 ÖNCE yazılı: DockPanel çocuklarını sırayla yerleştirir, etiket
+                                 yerini alır, mesaj (son çocuk) kalanı doldurur. Böylece kodun
+                                 başladığı x konumu etiketli ve etiketsiz satırda aynıdır.
+                                 AccountTag'i yalnız Instagram birleştirme kapısı doldurur (iki
+                                 ve üzeri Sayfa bağlıyken); null iken etiket boşluğuyla birlikte
+                                 yer kaplamaz, satır eskisi gibidir. Uzun ad sondan kırpılır;
+                                 tam adı ipucu verir. -->
+                            <DockPanel Grid.Column="2">
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding AccountTag}"
+                                           ToolTip="{Binding AccountTooltip}"
+                                           FontSize="{StaticResource OD.Font.F0}"
+                                           Foreground="{StaticResource OD.Brush.TextMute}"
+                                           MaxWidth="{StaticResource OD.Layout.ChatAccountTagMaxWidth}"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
+                                           Margin="{StaticResource OD.Pad.Left4}"
+                                           Visibility="{Binding AccountTag,
+                                                        Converter={StaticResource NullToCollapsedConverter}}"/>
+                                <TextBlock Text="{Binding Text}"
+                                           TextWrapping="Wrap" VerticalAlignment="Center"
+                                           Foreground="{StaticResource OD.Brush.Text}"/>
+                            </DockPanel>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>

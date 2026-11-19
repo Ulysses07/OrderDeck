@@ -79,6 +79,9 @@ internal static class MainShellTestHarness
         FakeDialogService Dialogs,
         string? LicenseKey) : IDisposable
     {
+        /// <summary>Kabuğun dinlediği sohbet veri yolu: buna basılan mesaj kabuğa ulaşır.</summary>
+        public IChatBus Bus { get; init; } = null!;
+
         public void Dispose()
         {
             Vm.Dispose();
@@ -103,6 +106,9 @@ internal static class MainShellTestHarness
     /// kurulur; null = kabuk yalnız yerel düzenleyiciyi kullanır (bugünkü yol).</param>
     /// <param name="remoteSessions">Uzak yayın çipleri ve band (W2-09), harness'in veritabanıyla kurulur; null =
     /// yok.</param>
+    /// <param name="instagramHealth">Instagram hesaplarının sağlık izleyicisi (sohbet şeridi, üst nokta, kenar
+    /// çubuğu); null = yok, üç yüzey bugünkü gibi.</param>
+    /// <param name="viewers">İzleyici sayacı (kenar çubuğunun bağlantı satırları); null = yok.</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
         ILabelPrinter? printerOverride = null,
@@ -118,7 +124,9 @@ internal static class MainShellTestHarness
         Func<InMemorySqlite, OrderDeck.App.Services.Sync.SessionOrderSyncService>? orderSync = null,
         Func<InMemorySqlite, OrderDeck.App.Services.Sync.SalesChangesPullService>? salesPull = null,
         Func<InMemorySqlite, LabelService, OrderDeck.App.Services.Sales.ILabelEditor>? labelEditor = null,
-        Func<InMemorySqlite, RemoteSessionsViewModel>? remoteSessions = null)
+        Func<InMemorySqlite, RemoteSessionsViewModel>? remoteSessions = null,
+        OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor? instagramHealth = null,
+        OrderDeck.Core.Chat.ViewerCountTracker? viewers = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -183,9 +191,10 @@ internal static class MainShellTestHarness
             customerPull: customerPull, printedNavigator: printedNavigator,
             paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo),
             orderSync: orderSync?.Invoke(db), salesPull: salesPull?.Invoke(db),
-            labelEditor: editor, remoteSessions: remoteSessions?.Invoke(db));
+            labelEditor: editor, remoteSessions: remoteSessions?.Invoke(db),
+            viewers: viewers, instagramHealth: instagramHealth);
 
-        return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
+        return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey) { Bus = bus };
     }
 
     public static ChatMessageViewModel ChatVm(string username, string text,
