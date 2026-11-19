@@ -3,7 +3,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using FluentAssertions;
+using OrderDeck.App.Services.Instagram;
 using OrderDeck.App.ViewModels;
 using OrderDeck.App.Views.Shell;
 using OrderDeck.Core.Chat;
@@ -23,6 +25,8 @@ public class ChatPanelLayoutTests
         public string ChatSearchText { get; set; } = "";
         public string ActiveCode { get; set; } = "";
         public bool OnlyActiveCode { get; set; }
+        public ObservableCollection<InstagramAccountStatusViewModel> InstagramAccounts { get; } = new();
+        public bool ShowInstagramStatus { get; set; }
     }
 
     private static void OnSta(Action body) => ThemeTestHost.RunOnSta(body).Should().BeNull();
@@ -164,5 +168,42 @@ public class ChatPanelLayoutTests
         tag.Text.Should().HaveLength(16);
         NaturalWidth(tag).Should().BeLessThanOrEqualTo(limit);
         tag.ActualWidth.Should().BeGreaterThanOrEqualTo(NaturalWidth(tag) - 0.5, "en geniş 16 karakter de kırpılmadan sığar");
+    });
+
+    // ── Instagram sağlık şeridi (spec 2026-11-16 §8.6.3) ──
+
+    /// <summary>Üretilmiş Sayfa kimliği, etiket ve metinle, ipucu dolu bir şerit satırı.</summary>
+    private static InstagramAccountStatusViewModel Status(InstagramStatusSeverity severity)
+    {
+        var label = "@" + Guid.NewGuid().ToString("N")[..12];
+        var state = $"durum {Guid.NewGuid():N}";
+        return new InstagramAccountStatusViewModel(
+            Guid.NewGuid().ToString("N"), label, state, $"{label} {state}", severity, $"ipucu {Guid.NewGuid():N}");
+    }
+
+    private static FrameworkElement Strip(ChatPanel panel) => Descendants(panel).OfType<FrameworkElement>().Single(e =>     // şeridin kökü
+        BindingOperations.GetBinding(e, UIElement.VisibilityProperty)?.Path.Path == nameof(MainShellViewModel.ShowInstagramStatus));
+
+    [Fact]                                                                  // Review Focus 3
+    public void Saglik_seridi_gercek_satirlari_cizer_gizliyken_yer_kaplamaz() => OnSta(() =>
+    {
+        var rows = new[] { Status(InstagramStatusSeverity.Live), Status(InstagramStatusSeverity.Warning), Status(InstagramStatusSeverity.Neutral) };
+        Strip(Layout(new ChatStub { InstagramAccounts = { rows[0], rows[1], rows[2] } })).ActualHeight.Should().Be(0);
+
+        var panel = Layout(new ChatStub { ShowInstagramStatus = true, InstagramAccounts = { rows[0], rows[1], rows[2] } });
+        var strip = Strip(panel);
+        var items = Descendants(strip).OfType<ItemsControl>().Single();
+        BindingOperations.GetBinding(items, ItemsControl.ItemsSourceProperty)!.Path.Path.Should().Be(nameof(MainShellViewModel.InstagramAccounts));
+        foreach (var (row, brush) in rows.Zip(new[] { "OD.Brush.Success", "OD.Brush.Amber", "OD.Brush.TextMute" }))
+        {
+            var host = Descendants(items).OfType<ContentPresenter>().Single(p => ReferenceEquals(p.Content, row));
+            Descendants(host).OfType<TextBlock>().Single().Text.Should().Be(row.Text);
+            Descendants(host).OfType<Ellipse>().Single().Fill.Should().BeSameAs(panel.FindResource(brush));
+            Descendants(host).OfType<FrameworkElement>().Should().Contain(e => Equals(e.ToolTip, row.Tooltip));
+        }
+        var list = (ListBox)panel.FindName("ChatList");
+        list.ActualHeight.Should().BeGreaterThan(0);
+        strip.TransformToAncestor(panel).Transform(new Point(0, strip.ActualHeight)).Y.Should().BeLessThanOrEqualTo(
+            list.TransformToAncestor(panel).Transform(new Point(0, 0)).Y, "şerit başlık ile liste arasında");
     });
 }
