@@ -200,7 +200,8 @@ public class IntakeFormModel : PageModel
         public bool SmsConsent { get; set; }
 
         /// <summary>
-        /// "Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum." — ZORUNLU.
+        /// "Yukarıdaki bilgilendirmeyi okudum." — ZORUNLU (kvkk-2026-10-21'e kadar
+        /// "Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum.").
         /// Açık rıza değil, aydınlatmanın yapıldığının beyanı (sahip kararı
         /// 2026-10-13). WhatsApp/SMS izinlerinden farkı tam bu: onlar
         /// isteğe bağlı rıza, bu her kayıtta şart. Doğrulaması
@@ -248,10 +249,12 @@ public class IntakeFormModel : PageModel
             : null;
 
     private const string KvkkKey = "Input.KvkkAcknowledged";
+    // Mesajlar onay etiketiyle ("Yukarıdaki bilgilendirmeyi okudum") aynı kelimeleri kullanır; istemci kapısındaki
+    // (IntakeForm.cshtml betiği) metin de aynı.
     private const string KvkkRequiredMessage =
-        "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
+        "Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.";
     private const string KvkkOutdatedMessage =
-        "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
+        "Yukarıdaki bilgilendirme güncellendi; yeniden okuyup onayla.";
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
     {

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ROUTE_MAP, BRAND, CONTACT_EMAIL, LEGAL_NAME, type Locale } from '@/lib/i18n';
+import { ROUTE_MAP, BRAND, CONTACT_EMAIL, LEGAL_NAME_SHORT, type Locale } from '@/lib/i18n';
 import { tr } from '@/messages/tr';
 import { en } from '@/messages/en';
 import { Logo } from './Logo';
@@ -22,7 +22,7 @@ export function Footer({ locale }: { locale: Locale }) {
             {m.footer.tagline}
           </p>
           <p className="mt-4 text-xs text-[var(--color-text-mute)]">
-            {LEGAL_NAME} ·{' '}
+            {LEGAL_NAME_SHORT} ·{' '}
             <a
               href={`mailto:${CONTACT_EMAIL}`}
               className="hover:text-[var(--color-accent)] transition-colors"
@@ -59,7 +59,7 @@ export function Footer({ locale }: { locale: Locale }) {
       <div className="border-t border-[var(--color-border)] py-5">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-5 text-xs text-[var(--color-text-mute)]">
           <span>
-            © {year} {LEGAL_NAME}. {m.footer.rights}
+            © {year} {LEGAL_NAME_SHORT} {m.footer.rights}
           </span>
           <span className="font-mono opacity-70">v0.1</span>
         </div>
