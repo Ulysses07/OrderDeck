@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Pages;
 using OrderDeck.App.ViewModels;
@@ -43,7 +44,9 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
 
     /// <param name="oauth">Null: OAuth servisi yapılandırılmamış kurulum.</param>
     /// <param name="httpFactory">Verilmezse kitin sahte Graph'ına bağlı fabrika.</param>
-    private SettingsViewModel CreateVm(FacebookOAuthService? oauth, IHttpClientFactory? httpFactory = null)
+    /// <param name="log">Verilmezse ViewModel'in varsayılanı (günlük yazılmaz).</param>
+    private SettingsViewModel CreateVm(
+        FacebookOAuthService? oauth, IHttpClientFactory? httpFactory = null, ILogger<SettingsViewModel>? log = null)
     {
         var store = new SettingsStore(_path);
         var shortcutsTab = new ShortcutsTabViewModel(new ShortcutRegistry(store), null!);   // bağlayıcı yalnız kısayol kaydında çağrılır
@@ -53,7 +56,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         return new SettingsViewModel(_kit.Settings, store, shortcutsTab,
             new IntakeFormSettingsViewModel(api),
             new ShopperAppSettingsViewModel(api, NullLogger<ShopperAppSettingsViewModel>.Instance),
-            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory);
+            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory, log: log);
     }
 
     private async Task SeedAsync(int extraPages = 0) => _pages = await _kit.SeedAsync(extraPages);
@@ -374,6 +377,88 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         _kit.Graph.Requests.Select(Kind).Should().Equal("izin", "sayfa-0", "sayfa-1", "izin", "sayfa-0", "sayfa-1");
     }
 
+    /// <summary>Graph isteklerinin türü: izin sondası ya da tohumlanan Sayfalardan birinin çözümlemesi.</summary>
+    private string RequestKind(Uri u) => IsPermissions(u) ? "izin"
+        : IsResolve(u, _pages[0].Page.PageId) ? "sayfa-0"
+        : _pages.Count > 1 && IsResolve(u, _pages[1].Page.PageId) ? "sayfa-1" : "başka";
+
+    /// <summary>
+    /// Ayarlar'ı açar; kurucunun tazelemesi bağlı Sayfaları okumuş ve İLK izin sondasında tutulurken
+    /// <paramref name="change"/> bağlantıyı aynı servis üstünden değiştirir; sonra tazeleme bırakılır ve sonucunu
+    /// karta yazana dek (durum satırı ilk değerinden ayrılana dek) beklenir. İkinci bir tazeleme İSTENMEZ: o, bayat
+    /// sonucu kendiliğinden düzeltip hatayı gizlerdi.
+    /// </summary>
+    private async Task<SettingsViewModel> ChangeDuringHeldRefreshAsync(Func<FacebookOAuthService, Task> change)
+    {
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var held = 0;
+        _kit.Graph.Map(IsPermissions, _ =>
+        {
+            if (Interlocked.Exchange(ref held, 1) == 0)                 // yalnız İLK izin sondası tutulur
+            {
+                reached.SetResult();
+                release.Wait(TestPatience.Upper);
+            }
+            return Permissions("granted");
+        });
+
+        var service = _kit.CreateService();
+        SettingsViewModel vm;
+        try
+        {
+            vm = CreateVm(service);                                     // kurucunun tazelemesi izin sondasında tutuluyor
+            vm.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(SettingsViewModel.InstagramAccountStatus)
+                    && vm.InstagramAccountStatus != "Kontrol ediliyor...")
+                    finished.TrySetResult();
+            };
+            await reached.Task.WaitAsync(TestPatience.Upper);
+            await change(service).WaitAsync(TestPatience.Upper);
+        }
+        finally
+        {
+            release.Set();
+        }
+        await finished.Task.WaitAsync(TestPatience.Upper);
+        return vm;
+    }
+
+    /// <summary>
+    /// Süren tazeleme, o sırada kaldırılan ek Sayfanın eski hâlini karta yazmaz: sonuç yazılmadan önce bağlı Sayfalar
+    /// yeniden okunur, liste değiştiyse sonuç atılır ve okuma güncel listeyle yinelenir. NEDEN: aynı servisi kullanan
+    /// başka bir çağıran bağlantıyı değiştirdiğinde arkadan tazeleme gelmez; kart kaldırılmış satırla kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task Suren_tazeleme_sirasinda_kaldirilan_ek_Sayfa_karta_geri_yazilmaz()
+    {
+        await SeedAsync(extraPages: 1);
+
+        var vm = await ChangeDuringHeldRefreshAsync(async service =>
+            (await service.RemoveExtraPageAsync(_pages[1].Page.PageId)).Should().BeTrue());
+
+        vm.InstagramPages.Select(r => r.PageId).Should().Equal(_pages[0].Page.PageId);
+        vm.ShowInstagramPageRows.Should().BeFalse();
+        vm.InstagramAccountStatus.Should().Be($"Bağlı Instagram hesabı: @{_pages[0].IgUsername}");
+        // ilk turun sonucu atıldı; ikinci tur güncel listeyle koştu
+        _kit.Graph.Requests.Select(RequestKind).Should().Equal("izin", "sayfa-0", "sayfa-1", "izin", "sayfa-0");
+    }
+
+    /// <summary>Süren tazeleme sırasında bağlantı kaldırılırsa kart "bağlı değil" görünür; boş listede Graph'a gidilmez.</summary>
+    [Fact]
+    public async Task Suren_tazeleme_sirasinda_baglanti_kaldirilirsa_kart_bagli_degil_gorunur()
+    {
+        await SeedAsync(extraPages: 1);
+
+        var vm = await ChangeDuringHeldRefreshAsync(service => service.DisconnectAsync());
+
+        (vm.InstagramPages.Count, vm.InstagramAccountStatus, vm.InstagramNeedsReconnect)
+            .Should().Be((0, "Önce Facebook'a bağlan.", false));
+        _kit.Graph.Requests.Select(RequestKind).Should().Equal("izin", "sayfa-0", "sayfa-1");
+    }
+
     [Fact]
     public async Task Baglaninca_kart_hemen_tazelenir()
     {
@@ -417,6 +502,43 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         vm.InstagramNotice.Should().Be($"@{_pages[1].IgUsername} kaldırıldı.");
         vm.InstagramPages.Should().Equal(rows[0]);
         (await _service.GetConnectedPagesAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Düşen "Kaldır"ın sebebi (erişim reddi, dolu disk, kilitli dosya) günlüğe Warning olarak düşer: operatör sabit
+    /// metni görür, destek sebebi günlükten okur. Satır yalnız Sayfa kimliğini taşır; başarılı "Kaldır" satır yazmaz.
+    /// </summary>
+    [Fact]
+    public async Task Kaldir_yazimi_duserse_sebep_gunluge_uyari_olarak_duser()
+    {
+        await SeedAsync(extraPages: 1);
+        var log = new CapturingLogger<SettingsViewModel>();
+        _service = _kit.CreateService();
+        var vm = CreateVm(_service, log: log);
+        await vm.RefreshInstagramStatusAsync();                         // sıra: kurucunun tazelemesi de bitti
+        var removed = _pages[1].Page;
+        File.SetAttributes(_kit.TokenFilePath, FileAttributes.ReadOnly);        // hedef salt okunur: deponun yazımı düşer
+        try
+        {
+            await vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]);
+        }
+        finally
+        {
+            File.SetAttributes(_kit.TokenFilePath, FileAttributes.Normal);
+        }
+
+        vm.InstagramNotice.Should().Be("Hesap kaldırılamadı, yeniden dene.");
+        var warning = log.Warnings.Should().ContainSingle().Which;
+        (warning.Level, warning.Message).Should().Be((LogLevel.Warning, $"Instagram account removal failed for Page {removed.PageId}"));
+        warning.Exception.Should().NotBeNull("sebep istisnadadır");
+        var bundle = (await _kit.Store.LoadAsync())!;
+        var secrets = new[] { removed.PageName, bundle.UserAccessToken }
+            .Concat((await _service.GetConnectedPagesAsync()).Select(p => p.PageAccessToken));
+        foreach (var secret in secrets) warning.Full.Should().NotContain(secret);
+
+        await vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]);   // engel kalktı
+        vm.InstagramNotice.Should().Be($"@{_pages[1].IgUsername} kaldırıldı.");
+        log.Warnings.Should().ContainSingle("başarılı Kaldır günlük yazmaz");
     }
 
     /// <summary>Servisin dönüş değeri akışı değiştirmez: Sayfa başka yoldan çoktan kaldırıldıysa (servis false döner)
