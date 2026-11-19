@@ -4,8 +4,8 @@ namespace OrderDeck.App.Services.Instagram;
 /// Ayarlar'daki Instagram kartının çoklu hesapla gelen, operatöre görünen metinleri (çoklu hesap tasarımı §8.6.1):
 /// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'in durum satırına, hesap satırlarına ve sonuç satırına
 /// yazdıkları, "Instagram hesabı ekle" çekmecesinin gösterdikleri ve XAML'in <c>x:Static</c> ile okuduğu yeni sabit
-/// metinler. Kartın çoklu hesaptan ÖNCEKİ sabit metinleri
-/// (başlık, izin uyarısı, ipucu paragrafı) <c>SettingsPage.xaml</c>'de, durum satırının ilk değeri ve genel hata
+/// metinler; izin uyarısı da yeni düğmeye yönlendiği için buradadır. Kartın çoklu hesaptan ÖNCEKİ sabit metinleri
+/// (başlık, ipucu paragrafı) <c>SettingsPage.xaml</c>'de, durum satırının ilk değeri ve genel hata
 /// metni <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'de kalır. Metinlerde yalnız hesap ve Sayfa adı ile
 /// sayı geçer.
 /// </summary>
@@ -122,6 +122,65 @@ public static class InstagramSettingsTexts
 
     /// <summary>Çekmecede Instagram hesabı olmayan (pasif) Sayfanın seçeneği (ayraç U+2014).</summary>
     public static string OptionWithoutAccount(string pageName) => $"{pageName} — Instagram hesabı bağlı değil";
+
+    // ---- "Facebook izinlerini güncelle" -------------------------------------
+
+    /// <summary>Karttaki düğme; eksik Sayfa onay çekmecesinin başlığı da budur.</summary>
+    public const string ReauthorizeButton = "Facebook izinlerini güncelle";
+
+    /// <summary>Düğmenin ipucu: yayın sırasında basmayı yasaklamaz, bedelini söyler.</summary>
+    public const string ReauthorizeTooltip =
+        "Yayın sırasında yalnız kopan bir hesabı düzeltmek için bas: çalışan Instagram ve Facebook yorumlarında kısa bir kesinti olabilir.";
+
+    /// <summary>Tarayıcı onayı beklenirken düğmenin yanında görünen iptal düğmesi.</summary>
+    public const string CancelReauthorizeButton = "İptal";
+
+    /// <summary>Instagram izni eksikken kartta çıkan uyarı: kullanıcıyı izin güncelleme düğmesine yönlendirir.</summary>
+    public const string PermissionsMissingWarning =
+        "Instagram yorumları için Facebook izinlerini güncellemen gerekiyor: aşağıdaki \"Facebook izinlerini güncelle\"ye bas.";
+
+    /// <summary>Tarayıcı onayı beklenirken durum satırı.</summary>
+    public const string WaitingForBrowser =
+        "Tarayıcıdan onay bekleniyor... Açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretli bırak; " +
+        "yalnız yenisini işaretlersen eski hesabın bağlantısı düşer.";
+
+    /// <summary>Eksik Sayfa onayı, kaydetmeden önce.</summary>
+    /// <param name="pageNames">Yeni girişte görünmeyen bağlı Sayfaların adları, bağlı sırasıyla.</param>
+    /// <param name="includesPrimary">Eksiklerden biri birincil Sayfa: Facebook yorumları da kesilebilir.</param>
+    public static string MissingPagesQuestion(IReadOnlyList<string> pageNames, bool includesPrimary) =>
+        $"{QuotedNames(pageNames)} bu girişte paylaşılmadı. Kaydedersen bu " +
+        $"{(pageNames.Count == 1 ? "Sayfanın" : "Sayfaların")} yorumları kesilebilir" +
+        (includesPrimary ? " (Facebook yorumları dahil)" : "") +
+        ". Vazgeçersen OrderDeck'te hiçbir şey değişmez; \"Facebook izinlerini güncelle\"ye yeniden basıp tüm " +
+        "Sayfalarını işaretle. Yine de kaydedilsin mi?";
+
+    /// <summary>İzin güncellemesi kaydedildi.</summary>
+    /// <param name="refreshedPages">Yeni token'ı yazılan Sayfa sayısı (birincil dahil).</param>
+    /// <param name="missingPageNames">Yeni girişte görünmeyen (onayla kaydedilen) Sayfaların adları; yoksa boş.</param>
+    public static string PermissionsUpdated(int refreshedPages, IReadOnlyList<string> missingPageNames) =>
+        $"Facebook izinleri güncellendi: {refreshedPages} Sayfa yenilendi." +
+        (missingPageNames.Count == 0 ? "" : $" {QuotedNames(missingPageNames)} bu girişte yoktu; yorumları kesilebilir.");
+
+    /// <summary>"İptal"e basıldı ya da eksik Sayfa onayında vazgeçildi.</summary>
+    public const string ReauthorizeCanceled = "Güncelleme iptal edildi; bağlantı değişmedi.";
+
+    /// <summary>Tarayıcı onayı süresinde tamamlanmadı.</summary>
+    public const string ReauthorizeTimedOut =
+        "Facebook onayı 5 dakika içinde tamamlanmadı; bağlantı değişmedi. Yeniden dene.";
+
+    /// <summary>Graph hatası; ham gövde yazılmaz.</summary>
+    /// <param name="code">Graph hata kodu; okunamadıysa null.</param>
+    /// <param name="httpStatus">HTTP durumu; kod okunamadığında yazılır.</param>
+    public static string ReauthorizeGraphFailed(int? code, int? httpStatus) =>
+        $"Güncelleme başarısız: Facebook hatası ({(code is { } value ? $"kod {value}" : $"HTTP {httpStatus}")}). Bağlantı değişmedi.";
+
+    /// <summary>Diğer hatalar.</summary>
+    /// <param name="reason">Kısa sebep: istisna iletisi, sondaki nokta ve boşluk kırpılmış.</param>
+    public static string ReauthorizeFailed(string reason) => $"Güncelleme başarısız: {reason}. Bağlantı değişmedi.";
+
+    /// <summary>Sayfa adları tırnak içinde, <c>", "</c> ile birleşik.</summary>
+    private static string QuotedNames(IReadOnlyList<string> pageNames) =>
+        string.Join(", ", pageNames.Select(name => $"\"{name}\""));
 
     // ---- Altyazı ------------------------------------------------------------
 

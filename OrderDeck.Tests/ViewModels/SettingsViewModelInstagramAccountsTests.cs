@@ -70,9 +70,10 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
     /// bekler. Tazelemeler sıraya girdiği için kurucunun başlattığı tazeleme de bitmiş olur. Çekmece sahtesi kararını
     /// bu ViewModel üstünden verir.</summary>
     /// <param name="log">Verilmezse ViewModel'in varsayılanı (günlük yazılmaz).</param>
-    private async Task<SettingsViewModel> OpenAsync(ILogger<SettingsViewModel>? log = null)
+    /// <param name="callbackTimeout">Tarayıcı onayının süresi; verilmezse servisin kendi süresi.</param>
+    private async Task<SettingsViewModel> OpenAsync(ILogger<SettingsViewModel>? log = null, TimeSpan? callbackTimeout = null)
     {
-        _service = _kit.CreateService();
+        _service = _kit.CreateService(callbackTimeout: callbackTimeout);
         var vm = CreateVm(_service, log: log);
         _drawers.Vm = vm;
         await vm.RefreshFacebookConnectionStatusAsync();
@@ -838,4 +839,195 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         });
         log.Entries.Should().BeEmpty();
     }
+
+    // ── "Facebook izinlerini güncelle" ve "İptal" ──
+
+    private const string WaitingText = "Tarayıcıdan onay bekleniyor... Açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretli bırak; yalnız yenisini işaretlersen eski hesabın bağlantısı düşer.";
+    private const string CanceledText = "Güncelleme iptal edildi; bağlantı değişmedi.";
+
+    /// <summary>Komutu başlatır ve servis tarayıcıyı açana dek bekler; dönen görev komutun kendisidir. Komut
+    /// tarayıcı açılmadan biterse (ör. erken bir hata) 30 sn beklemeden düşer ve sonuç satırını söyler.</summary>
+    private async Task<Task> BeginReauthorizeAsync(SettingsViewModel vm)
+    {
+        var run = vm.ReauthorizeFacebookCommand.ExecuteAsync(null);
+        var opened = _kit.Browser.WaitUntilOpenedAsync();
+        await Task.WhenAny(run, opened);
+        run.IsCompleted.Should().BeFalse("komut tarayıcı açılmadan bitti: {0}", vm.InstagramNotice);
+        await opened;
+        return run;
+    }
+
+    /// <summary><see cref="BeginReauthorizeAsync"/> + <paramref name="finish"/> + komutun bitmesini bekler
+    /// (üst sınır <see cref="TestPatience.Upper"/>).</summary>
+    private async Task ReauthorizeAsync(SettingsViewModel vm, Action<FakeFacebookOAuthBrowser> finish)
+    {
+        var run = await BeginReauthorizeAsync(vm);
+        finish(_kit.Browser);
+        await run.WaitAsync(TestPatience.Upper);
+    }
+
+    /// <summary><c>/me/accounts</c> yanıtı: yalnız verilen Sayfalar, Instagram hesaplarıyla.</summary>
+    private static HttpResponseMessage AccountsOf(params SeededPage[] pages)
+    {
+        var data = new System.Text.Json.Nodes.JsonArray(pages.Select(p => (System.Text.Json.Nodes.JsonNode?)new System.Text.Json.Nodes.JsonObject
+        {
+            ["id"] = p.Page.PageId,
+            ["name"] = p.Page.PageName,
+            ["instagram_business_account"] = new System.Text.Json.Nodes.JsonObject { ["id"] = p.IgUserId, ["username"] = p.IgUsername },
+        }).ToArray());
+        return FakeGraph.Json(new System.Text.Json.Nodes.JsonObject { ["data"] = data }.ToJsonString());
+    }
+
+    /// <summary>Post'u çağıranın iş parçacığında, işaret koyarak koşturan bağlam.</summary>
+    private sealed class MarkingContext : SynchronizationContext
+    {
+        [ThreadStatic] public static bool InPost;
+        public override void Post(SendOrPostCallback d, object? state) { var was = InPost; InPost = true; try { d(state); } finally { InPost = was; } }
+    }
+
+    [Fact]
+    public async Task Izin_guncelle_beklerken_dugmeleri_kapatir_bitince_sonucu_yazar_karti_tazeler()
+    {
+        await SeedAsync(extraPages: 1);
+        var vm = await OpenAsync();
+        var run = await BeginReauthorizeAsync(vm);
+        vm.InstagramAccountStatus.Should().Be(WaitingText);
+        (vm.IsReauthorizePending, vm.IsFacebookBusy, vm.CanManageInstagram).Should().Be((true, true, false));
+        var reopened = CreateVm(_service);                                  // R18: Ayarlar kapatılıp açıldı; yeni ViewModel, aynı servis
+        await reopened.ReauthorizeFacebookCommand.ExecuteAsync(null).WaitAsync(TestPatience.Upper);
+        reopened.InstagramNotice.Should().Be("Güncelleme başarısız: Bekleyen bir Facebook onayı var. Tarayıcıdaki onayı tamamla ya da birkaç dakika sonra yeniden dene. Bağlantı değişmedi.");
+        _kit.Browser.Complete(); await run.WaitAsync(TestPatience.Upper);
+        vm.InstagramNotice.Should().Be("Facebook izinleri güncellendi: 2 Sayfa yenilendi.");
+        vm.InstagramAccountStatus.Should().Be("2 Instagram hesabı bağlı");
+        (vm.IsReauthorizePending, vm.IsFacebookBusy, vm.CanManageInstagram).Should().Be((false, false, true));
+    }
+
+    [Theory, InlineData("0"), InlineData("1"), InlineData("02")]           // eksik Sayfaların sıra numaraları: birincil (0) eksikse parantez yazılır; iki eksik çoğuldur (karar)
+    public async Task Eksik_Sayfa_kabul_edilince_soru_ve_sonuc_Sayfayi_adiyla_soyler(string missing)
+    {
+        await SeedAsync(extraPages: 2);
+        var gone = missing.Select(c => _pages[c - '0']).ToArray();
+        var names = string.Join(", ", gone.Select(p => $"\"{p.Page.PageName}\""));          // "A" ya da "A", "B"
+        _kit.Graph.Map(IsAccounts, _ => AccountsOf(_pages.Except(gone).ToArray()));
+        var vm = await OpenAsync();
+        string? question = null;
+        _drawers.Decide = v => { question = v.ActiveReauthorizeQuestion; return true; };
+        await ReauthorizeAsync(vm, b => b.Complete());
+        question.Should().Be($"{names} bu girişte paylaşılmadı. Kaydedersen bu {(gone.Length == 1 ? "Sayfanın" : "Sayfaların")} yorumları kesilebilir"
+            + (missing.Contains('0') ? " (Facebook yorumları dahil)" : "")
+            + ". Vazgeçersen OrderDeck'te hiçbir şey değişmez; \"Facebook izinlerini güncelle\"ye yeniden basıp tüm Sayfalarını işaretle. Yine de kaydedilsin mi?");
+        vm.InstagramNotice.Should().Be($"Facebook izinleri güncellendi: {3 - gone.Length} Sayfa yenilendi. {names} bu girişte yoktu; yorumları kesilebilir.");
+        _drawers.Titles.Should().Equal("Facebook izinlerini güncelle");
+        vm.ActiveReauthorizeQuestion.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Eksik_Sayfa_onayi_yakalanan_baglamda_sorulur_reddedilince_hicbir_sey_degismez()
+    {
+        await SeedAsync(extraPages: 1);
+        _kit.Graph.Map(IsAccounts, _ => AccountsOf(_pages[0]));
+        var viaContext = false;
+        _drawers.Decide = _ => { viaContext = MarkingContext.InPost; return false; };          // Vazgeç
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new MarkingContext());
+        SettingsViewModel vm;
+        try { vm = CreateVm(_service = _kit.CreateService()); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        await vm.RefreshInstagramStatusAsync();
+        var before = await _service.GetUserAccessTokenAsync();
+        await ReauthorizeAsync(vm, b => b.Complete());
+        viaContext.Should().BeTrue("confirmMissing OAuth servisinin iş parçacığından gelir; çekmece arayüz bağlamında açılmalı");
+        vm.InstagramNotice.Should().Be(CanceledText);
+        (await _kit.CreateService().GetUserAccessTokenAsync()).Should().Be(before, "diske hiçbir şey yazılmadı");
+        vm.InstagramPages.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Iptal_zaman_asimi_ve_diger_hatalar_ayri_metinlere_duser()
+    {
+        await SeedAsync();
+        var vm = await OpenAsync(); var status = vm.InstagramAccountStatus;
+        await ReauthorizeAsync(vm, _ => vm.CancelReauthorizeCommand.Execute(null));            // [İptal]
+        vm.InstagramNotice.Should().Be(CanceledText);
+        (vm.IsReauthorizePending, vm.IsFacebookBusy, vm.InstagramAccountStatus).Should().Be((false, false, status));
+        await ReauthorizeAsync(vm, b => b.CompleteWithError("access_denied"));                 // Facebook ekranındaki "İptal": başarısız
+        vm.InstagramNotice.Should().StartWith("Güncelleme başarısız: ").And.Contain("access_denied").And.EndWith(". Bağlantı değişmedi.");
+        _kit.Graph.Map(IsAccounts, _ => FakeGraph.Error(200));                                 // Graph hatası: ham gövde yazılmaz
+        await ReauthorizeAsync(vm, b => b.Complete());
+        vm.InstagramNotice.Should().Be("Güncelleme başarısız: Facebook hatası (kod 200). Bağlantı değişmedi.");
+        _kit.Graph.Map(IsAccounts, _ => throw new TaskCanceledException());                    // ağ zaman aşımı: kullanıcı iptal etmedi, "iptal edildi" DEĞİL
+        await ReauthorizeAsync(vm, b => b.Complete());
+        vm.InstagramNotice.Should().StartWith("Güncelleme başarısız: ").And.EndWith(". Bağlantı değişmedi.");
+        var slow = await OpenAsync(callbackTimeout: TimeSpan.FromMilliseconds(50));            // zaman aşımı
+        await slow.ReauthorizeFacebookCommand.ExecuteAsync(null).WaitAsync(TestPatience.Upper);
+        slow.InstagramNotice.Should().Be("Facebook onayı 5 dakika içinde tamamlanmadı; bağlantı değişmedi. Yeniden dene.");
+    }
+
+    [Fact]                                                                  // Review Focus 1
+    public async Task Beklerken_baglanti_kaldirilirsa_guncelleme_basarisiz_olur_baglanti_dirilmez()
+    {
+        await SeedAsync(extraPages: 1);
+        var vm = await OpenAsync();
+        var run = await BeginReauthorizeAsync(vm);
+        await vm.DisconnectFacebookCommand.ExecuteAsync(null).WaitAsync(TestPatience.Upper);
+        (vm.IsFacebookBusy, vm.IsFacebookIdle).Should().Be((false, false), "akış beklerken \"Facebook'a Bağlan\" pasif kalır (TK17)");
+        _kit.Browser.Complete();
+        await run.WaitAsync(TestPatience.Upper);
+        vm.InstagramNotice.Should().StartWith("Güncelleme başarısız: ").And.EndWith(". Bağlantı değişmedi.");
+        (await _kit.CreateService().IsConnectedAsync()).Should().BeFalse("kaldırılmış bağlantı dirilmez");
+        (vm.InstagramPages.Count, vm.InstagramAccountStatus, vm.IsFacebookIdle).Should().Be((0, "Önce Facebook'a bağlan.", true), "bekleme metni artık durmuyor: eski metin geri konmaz; akış bitti, \"Facebook'a Bağlan\" açılır");
+    }
+
+    [Fact]
+    public async Task Basarili_guncellemeden_sonra_izin_uyarisi_kalkar_ekleme_listelemeye_gecer()
+    {
+        await SeedAsync();
+        var granted = false;
+        _kit.Graph.Map(IsPermissions, _ => FakeGraph.Json(granted
+            ? """{"data":[{"permission":"instagram_basic","status":"granted"},{"permission":"instagram_manage_comments","status":"granted"}]}"""
+            : """{"data":[]}"""));
+        var vm = await OpenAsync();
+        vm.InstagramNeedsReconnect.Should().BeTrue();
+        await ReauthorizeAsync(vm, b => { granted = true; b.Complete(); });
+        vm.InstagramNeedsReconnect.Should().BeFalse();
+        var listings = _kit.Graph.Requests.Count(IsAccounts);
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        _kit.Graph.Requests.Count(IsAccounts).Should().Be(listings + 1, "0. adım kalktı: listeleme yapılır");
+    }
+
+    [Fact]                                                                  // bağlanınca kart da tazelenir; tarayıcı dikişiyle
+    public async Task Baglan_tamamlaninca_Instagram_karti_da_tazelenir()
+    {
+        var candidate = AddCandidate();                                     // depo boş: Graph tek Sayfa listeler, Sayfa seçici açılmaz
+        var vm = await OpenAsync();
+        var run = vm.ConnectFacebookCommand.ExecuteAsync(null);
+        await _kit.Browser.WaitUntilOpenedAsync();
+        _kit.Browser.Complete();
+        await run.WaitAsync(TestPatience.Upper);
+        (vm.InstagramAccountStatus, vm.CanManageInstagram).Should().Be(($"Bağlı Instagram hesabı: @{candidate.IgUsername}", true));
+    }
+
+    [Fact]                                                                  // Review Focus 3
+    public void Kart_beklerken_Iptali_gosterir_uc_dugmeyi_kapatir_bitince_Iptal_gizlenir() => OnSta(() =>
+    {
+        Button Named(DependencyObject root, string content) => Descendants(root).OfType<Button>().Single(b => Equals(b.Content, content));
+        var waiting = CreateVm(oauth: null);
+        waiting.IsFacebookConnected = waiting.IsFacebookBusy = waiting.IsReauthorizePending = waiting.InstagramNeedsReconnect = true;
+        var page = RenderFacebookTab(waiting);
+        var cancel = Descendants(page).OfType<Button>().Single(b => ReferenceEquals(b.Command, waiting.CancelReauthorizeCommand));
+        cancel.Content.Should().Be("İptal");
+        Shown(cancel).Should().BeTrue();
+        new[] { "Facebook'a Bağlan", "Facebook izinlerini güncelle", "Instagram hesabı ekle" }
+            .Select(name => Named(page, name).IsEnabled).Should().OnlyContain(enabled => !enabled);
+        var reauthorize = Named(page, "Facebook izinlerini güncelle");
+        reauthorize.Command.Should().BeSameAs(waiting.ReauthorizeFacebookCommand);
+        reauthorize.ToolTip.Should().Be("Yayın sırasında yalnız kopan bir hesabı düzeltmek için bas: çalışan Instagram ve Facebook yorumlarında kısa bir kesinti olabilir.");
+        ShownTexts(page).Select(t => t.Text).Should().Contain("Instagram yorumları için Facebook izinlerini güncellemen gerekiyor: aşağıdaki \"Facebook izinlerini güncelle\"ye bas.");
+
+        var idle = CreateVm(oauth: null);
+        idle.IsFacebookConnected = true;
+        var after = RenderFacebookTab(idle);
+        Shown(Descendants(after).OfType<Button>().Single(b => ReferenceEquals(b.Command, idle.CancelReauthorizeCommand))).Should().BeFalse();
+        Named(after, "Facebook izinlerini güncelle").IsEnabled.Should().BeTrue();
+    });
 }

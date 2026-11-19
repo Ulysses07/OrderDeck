@@ -104,7 +104,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _facebookConnectionStatus = "Bağlı değil";
     [ObservableProperty] private bool _isFacebookConnected;
     [ObservableProperty] private bool _isFacebookBusy;
-    public bool IsFacebookIdle => !IsFacebookBusy && !IsFacebookConnected;
+    public bool IsFacebookIdle => !IsFacebookBusy && !IsFacebookConnected && !IsReauthorizePending;
+
+    /// <summary>"Facebook izinlerini güncelle"nin tarayıcı akışı sürüyor: "İptal" görünür. "Facebook'a Bağlan" da
+    /// akış bitene dek pasif kalır (aynı anda tek tarayıcı akışı): beklerken "Bağlantıyı Kaldır" basılıp
+    /// <see cref="IsFacebookBusy"/> inse de.</summary>
+    [ObservableProperty] private bool _isReauthorizePending;
+
+    partial void OnIsReauthorizePendingChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
 
     /// <summary>Instagram hesapları yönetilebilir: Facebook bağlı ve o an bir bağlantı işlemi sürmüyor.</summary>
     public bool CanManageInstagram => IsFacebookConnected && !IsFacebookBusy;
@@ -206,6 +213,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private decimal? _shownFee;
     private int? _shownVersion;
 
+    /// <summary>Kurucunun çağrıldığı bağlam (uygulamada arayüz iş parçacığı). OAuth servisinin kendi iş parçacığından
+    /// gelen eksik Sayfa onayı çekmeceyi bunun üzerinden açar; null ise doğrudan.</summary>
+    private readonly System.Threading.SynchronizationContext? _uiContext;
+
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
         ShopperAppSettingsViewModel shopperApp,
@@ -220,6 +231,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Services.Sync.LicenseShippingSettingsWriter? shippingWriter = null,
         ILogger<SettingsViewModel>? log = null)
     {
+        _uiContext = System.Threading.SynchronizationContext.Current;
         _log = log ?? NullLogger<SettingsViewModel>.Instance;
         _shipping = shipping;
         _shippingWriter = shippingWriter;
@@ -709,6 +721,132 @@ public sealed partial class SettingsViewModel : ViewModelBase
         TimeoutException => true,
         _ => false,
     };
+
+    /// <summary>Eksik Sayfa onay çekmecesi açıkken sorunun metni; kapalıyken null. Testler soruyu bunun üzerinden
+    /// okur.</summary>
+    public string? ActiveReauthorizeQuestion { get; private set; }
+
+    /// <summary>Süren "Facebook izinlerini güncelle" akışının iptal kaynağı; akış yokken null. "İptal" bunu tetikler.</summary>
+    private System.Threading.CancellationTokenSource? _reauthorizeCts;
+
+    /// <summary>
+    /// "Facebook izinlerini güncelle" (§8.6.1): bağlantıyı kaldırmadan tarayıcı onayıyla izinleri ve token'ları
+    /// yeniler; ek hesaplar korunur, birincil değişmez. Yeni girişte görünmeyen bağlı Sayfa varsa kaydetmeden önce
+    /// çekmecede onay sorulur. Beklerken durum satırı ne yapılacağını söyler, kartın düğmeleri ve "Facebook'a Bağlan"
+    /// pasiftir, "İptal" görünür. Sonuç kart içi satıra yazılır; başarıdan sonra kart tazelenir (izin uyarısı ve
+    /// eklemenin 0. adımı kalkar). Hiçbir hata yolunda diskteki bağlantı değişmez.
+    /// </summary>
+    [RelayCommand]
+    private async System.Threading.Tasks.Task ReauthorizeFacebook()
+    {
+        if (_facebookOAuth is null) return;
+
+        var previousStatus = InstagramAccountStatus;
+        var cts = new System.Threading.CancellationTokenSource();
+        _reauthorizeCts = cts;
+        var declined = false;
+        IsFacebookBusy = true;
+        IsReauthorizePending = true;
+        InstagramAccountStatus = InstagramSettingsTexts.WaitingForBrowser;
+        try
+        {
+            // Birincil, akış başlarken bağlı listenin ilk girdisidir: eksiklerden biri oysa soruya Facebook yorumları
+            // da girer.
+            var primaryId = (await _facebookOAuth.GetConnectedPagesAsync().ConfigureAwait(true))
+                .FirstOrDefault()?.PageId;
+            var result = await _facebookOAuth.ReauthorizeAsync(async (missing, _) =>
+            {
+                var confirmed = await ConfirmMissingPagesAsync(missing, primaryId).ConfigureAwait(false);
+                if (!confirmed) declined = true;
+                return confirmed;
+            }, cts.Token).ConfigureAwait(true);
+
+            InstagramNotice = InstagramSettingsTexts.PermissionsUpdated(
+                result.RefreshedPages, result.MissingPages.Select(page => page.PageName).ToList());
+            await RefreshInstagramStatusAsync().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested || declined)
+        {
+            // Yalnız kullanıcının iptali: "İptal" ya da onayda "Vazgeç". Belirteç iptal edilmemişken gelen
+            // TaskCanceledException (HttpClient zaman aşımı) aşağıdaki genel dala düşer.
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeCanceled;
+        }
+        catch (TimeoutException)
+        {
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeTimedOut;
+        }
+        catch (FacebookGraphException ex)
+        {
+            // Ham Graph gövdesi operatöre yazılmaz; sebep günlüğe düşer.
+            _log.LogWarning(ex, "Facebook permission update failed");
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeGraphFailed(ex.Code, (int?)ex.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            // Facebook ekranındaki "İptal" (access_denied), bekleyen başka bir onay, beklerken değişen bağlantı ve ağ
+            // hataları buraya düşer.
+            _log.LogWarning(ex, "Facebook permission update failed");
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeFailed(ex.Message.TrimEnd('.', ' '));
+        }
+        finally
+        {
+            IsFacebookBusy = false;
+            IsReauthorizePending = false;
+            if (ReferenceEquals(_reauthorizeCts, cts)) _reauthorizeCts = null;
+            cts.Dispose();
+            // O arada bir tazeleme yeni metin yazdıysa ona dokunulmaz.
+            if (InstagramAccountStatus == InstagramSettingsTexts.WaitingForBrowser) InstagramAccountStatus = previousStatus;
+        }
+    }
+
+    /// <summary>"İptal": süren izin güncellemesinin beklemesini keser; akış yoksa etkisizdir.</summary>
+    [RelayCommand]
+    private void CancelReauthorize()
+    {
+        try
+        {
+            _reauthorizeCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Akış tam o anda bitti: iptal edilecek bir şey kalmadı.
+        }
+    }
+
+    /// <summary>
+    /// Eksik Sayfa onayı: çekmeceyi kurucunun yakaladığı bağlamda açar (OAuth servisi bunu kendi iş parçacığından
+    /// çağırır) ve yanıtı döner. Çekmece servisi yoksa onay verilmemiş sayılır.
+    /// </summary>
+    private System.Threading.Tasks.Task<bool> ConfirmMissingPagesAsync(
+        IReadOnlyList<FacebookLinkedPage> missing, string? primaryId)
+    {
+        if (_drawers is not { } drawers) return System.Threading.Tasks.Task.FromResult(false);
+
+        var question = InstagramSettingsTexts.MissingPagesQuestion(
+            missing.Select(page => page.PageName).ToList(),
+            includesPrimary: missing.Any(page => string.Equals(page.PageId, primaryId, StringComparison.Ordinal)));
+        if (_uiContext is null) return AskMissingPagesAsync(drawers, question);
+
+        var answer = new System.Threading.Tasks.TaskCompletionSource<System.Threading.Tasks.Task<bool>>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        _uiContext.Post(_ => answer.SetResult(AskMissingPagesAsync(drawers, question)), null);
+        return answer.Task.Unwrap();
+    }
+
+    private async System.Threading.Tasks.Task<bool> AskMissingPagesAsync(
+        Services.Drawers.IDrawerService drawers, string question)
+    {
+        ActiveReauthorizeQuestion = question;
+        try
+        {
+            return await drawers.ShowAsync(InstagramSettingsTexts.ReauthorizeButton,
+                d => Views.Drawers.MessageDrawer.ForConfirm(d, question)).ConfigureAwait(true);
+        }
+        finally
+        {
+            ActiveReauthorizeQuestion = null;
+        }
+    }
 
     [RelayCommand]
     private async System.Threading.Tasks.Task ConnectFacebook()

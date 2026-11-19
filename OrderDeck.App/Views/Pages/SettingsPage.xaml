@@ -315,7 +315,7 @@
                                        Foreground="{StaticResource OD.Brush.Amber}"
                                        Visibility="{Binding InstagramNeedsReconnect,
                                                     Converter={StaticResource BoolToVisibleConverter}}"
-                                       Text="Instagram yorumları için Facebook bağlantını yenilemen gerekiyor — yukarıdaki 'Bağlantıyı Kaldır' + 'Facebook'a Bağlan' adımını uygula."/>
+                                       Text="{x:Static ig:InstagramSettingsTexts.PermissionsMissingWarning}"/>
 
                             <!-- Bağlı Sayfalar ve Instagram hesapları (çoklu hesap, spec
                                  2026-11-16 §8.6.1). Satırlar yalnız iki ve üzeri Sayfada
@@ -388,13 +388,25 @@
                             </ItemsControl>
 
                             <!-- Hesap işlemleri. Facebook bağlı değilken ya da bir bağlantı
-                                 işlemi sürerken pasif (CanManageInstagram). -->
+                                 işlemi sürerken pasif (CanManageInstagram). "İptal" yalnız
+                                 izin güncellemesinin tarayıcı onayı beklenirken görünür. -->
                             <StackPanel Orientation="Horizontal">
                                 <Button Content="{x:Static ig:InstagramSettingsTexts.AddAccountButton}"
                                         Style="{StaticResource OD.Button.Secondary}"
                                         Command="{Binding AddInstagramAccountCommand}"
                                         IsEnabled="{Binding CanManageInstagram}"
                                         Margin="{StaticResource OD.Pad.X2}"/>
+                                <Button Content="{x:Static ig:InstagramSettingsTexts.ReauthorizeButton}"
+                                        Style="{StaticResource OD.Button.Secondary}"
+                                        Command="{Binding ReauthorizeFacebookCommand}"
+                                        IsEnabled="{Binding CanManageInstagram}"
+                                        ToolTip="{x:Static ig:InstagramSettingsTexts.ReauthorizeTooltip}"
+                                        Margin="{StaticResource OD.Pad.X2}"/>
+                                <Button Content="{x:Static ig:InstagramSettingsTexts.CancelReauthorizeButton}"
+                                        Style="{StaticResource OD.Button.Ghost}"
+                                        Command="{Binding CancelReauthorizeCommand}"
+                                        Visibility="{Binding IsReauthorizePending,
+                                                     Converter={StaticResource BoolToVisibleConverter}}"/>
                             </StackPanel>
 
                             <!-- Kart işlemlerinin sonucu ("… kaldırıldı."): sayfanın altındaki
