@@ -49,9 +49,10 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
     /// <param name="httpFactory">Verilmezse kitin sahte Graph'ına bağlı fabrika.</param>
     /// <param name="log">Verilmezse ViewModel'in varsayılanı (günlük yazılmaz).</param>
     /// <param name="drawers">Verilmezse sınıfın çekmece sahtesi (<see cref="_drawers"/>).</param>
+    /// <param name="withoutDrawers">True: çekmece servisi hiç verilmez (<paramref name="drawers"/> yok sayılır).</param>
     private SettingsViewModel CreateVm(
         FacebookOAuthService? oauth, IHttpClientFactory? httpFactory = null, ILogger<SettingsViewModel>? log = null,
-        IDrawerService? drawers = null)
+        IDrawerService? drawers = null, bool withoutDrawers = false)
     {
         var store = new SettingsStore(_path);
         var shortcutsTab = new ShortcutsTabViewModel(new ShortcutRegistry(store), null!);   // bağlayıcı yalnız kısayol kaydında çağrılır
@@ -61,7 +62,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         return new SettingsViewModel(_kit.Settings, store, shortcutsTab,
             new IntakeFormSettingsViewModel(api),
             new ShopperAppSettingsViewModel(api, NullLogger<ShopperAppSettingsViewModel>.Instance),
-            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory, drawers: drawers ?? _drawers, log: log);
+            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory, drawers: withoutDrawers ? null : drawers ?? _drawers, log: log);
     }
 
     private async Task SeedAsync(int extraPages = 0) => _pages = await _kit.SeedAsync(extraPages);
@@ -1030,4 +1031,85 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         Shown(Descendants(after).OfType<Button>().Single(b => ReferenceEquals(b.Command, idle.CancelReauthorizeCommand))).Should().BeFalse();
         Named(after, "Facebook izinlerini güncelle").IsEnabled.Should().BeTrue();
     });
+
+    // ── Ek sabitlemeler: izin güncellemesinin günlük kuralı ve hata metinleri ──
+
+    /// <summary>
+    /// Sebebi tam göstermeyen "Güncelleme başarısız" metnine düşen hata (Graph hatası, genel hata) günlüğe Warning
+    /// olarak düşer: destek sebebi günlükten okur. İstisna eklidir; token yoktur. Kullanıcının iptali ("İptal",
+    /// onayda "Vazgeç") ve onay zaman aşımı günlüğe yazılmaz: metin sebebi tam söyler.
+    /// </summary>
+    [Fact]
+    public async Task Basarisiz_guncelleme_sebebi_gunluge_uyari_olarak_duser_iptal_ve_zaman_asimi_yazilmaz()
+    {
+        await SeedAsync(extraPages: 1);
+        var log = new CapturingLogger<SettingsViewModel>();
+        var vm = await OpenAsync(log);
+        var oldUserToken = (await _kit.Store.LoadAsync())!.UserAccessToken;
+
+        await ReauthorizeAsync(vm, _ => vm.CancelReauthorizeCommand.Execute(null));            // [İptal]
+        _kit.Graph.Map(IsAccounts, _ => AccountsOf(_pages[0]));                                 // ek Sayfa eksik; Decide varsayılanı: Vazgeç
+        await ReauthorizeAsync(vm, b => b.Complete());
+        (vm.InstagramNotice, log.Entries.Count).Should().Be((CanceledText, 0), "kullanıcının iptali günlüğe yazılmaz");
+
+        _kit.Graph.Map(IsAccounts, _ => FakeGraph.Error(200));                                 // Graph hatası
+        await ReauthorizeAsync(vm, b => b.Complete());
+        await ReauthorizeAsync(vm, b => b.CompleteWithError("access_denied"));                 // genel hata
+        log.Warnings.Should().HaveCount(2);
+        var secrets = new[] { oldUserToken, _kit.Broker.LastIssuedToken! }
+            .Concat((await _service.GetConnectedPagesAsync()).Select(p => p.PageAccessToken));
+        foreach (var warning in log.Warnings)
+        {
+            (warning.Level, warning.Message).Should().Be((LogLevel.Warning, "Facebook permission update failed"));
+            warning.Exception.Should().NotBeNull("sebep istisnadadır");
+            foreach (var secret in secrets) warning.Full.Should().NotContain(secret);
+            warning.Full.Should().NotContain("access_token=");
+        }
+        log.Warnings[0].Exception.Should().Contain(nameof(FacebookGraphException));
+        log.Warnings[1].Exception.Should().Contain("access_denied");
+
+        var slowLog = new CapturingLogger<SettingsViewModel>();
+        var slow = await OpenAsync(slowLog, TimeSpan.FromMilliseconds(50));                    // zaman aşımı
+        await slow.ReauthorizeFacebookCommand.ExecuteAsync(null).WaitAsync(TestPatience.Upper);
+        (slow.InstagramNotice, slowLog.Entries.Count)
+            .Should().Be(("Facebook onayı 5 dakika içinde tamamlanmadı; bağlantı değişmedi. Yeniden dene.", 0));
+    }
+
+    /// <summary>Graph kodu okunamayan hatada (JSON olmayan gövde) metin HTTP durumunu yazar; ham gövde yazılmaz.</summary>
+    [Fact]
+    public async Task Graph_kodu_okunamazsa_metin_HTTP_durumunu_yazar()
+    {
+        await SeedAsync();
+        var body = $"<html>{Guid.NewGuid():N}</html>";
+        _kit.Graph.Map(IsAccounts, _ => new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent(body) });
+        var vm = await OpenAsync();
+        await ReauthorizeAsync(vm, b => b.Complete());
+        vm.InstagramNotice.Should().Be("Güncelleme başarısız: Facebook hatası (HTTP 502). Bağlantı değişmedi.");
+    }
+
+    /// <summary>Akış yokken "İptal" etkisizdir; bayrak "Facebook'a Bağlan"ın etkinliğini bildirir. Onay çekmecesi
+    /// verilmemişse eksik Sayfa onaylanmamış sayılır: hiçbir şey kaydedilmez.</summary>
+    [Fact]
+    public async Task Akis_yokken_Iptal_etkisiz_cekmece_yoksa_eksik_Sayfa_onaylanmaz()
+    {
+        await SeedAsync(extraPages: 1);
+        _service = _kit.CreateService();
+        var vm = CreateVm(_service);
+        await vm.RefreshInstagramStatusAsync();
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        vm.CancelReauthorizeCommand.Execute(null);
+        raised.Should().BeEmpty("akış yokken İptal etkisizdir");
+        vm.IsReauthorizePending = true;
+        raised.Should().Contain(nameof(SettingsViewModel.IsFacebookIdle));
+        vm.IsReauthorizePending = false;
+
+        var noDrawers = CreateVm(_service, withoutDrawers: true);
+        await noDrawers.RefreshInstagramStatusAsync();
+        _kit.Graph.Map(IsAccounts, _ => AccountsOf(_pages[0]));
+        var before = await _service.GetUserAccessTokenAsync();
+        await ReauthorizeAsync(noDrawers, b => b.Complete());
+        noDrawers.InstagramNotice.Should().Be(CanceledText);
+        (await _kit.CreateService().GetUserAccessTokenAsync()).Should().Be(before, "diske hiçbir şey yazılmadı");
+    }
 }
