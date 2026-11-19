@@ -179,6 +179,7 @@ internal sealed class InstagramAccountLoop
                     // Filigran her kurulumda tazedir (yeni poller'ın ilk çekimi yutulur); tek
                     // istisna kapıya devirdir. Devredilen filigran yalnız bu turda geçerlidir: tur
                     // poller'ı kuramadan beklemeye düşerse bırakılır, sonraki kurulum yine tazedir.
+                    var handingOver = carried is not null;
                     var watermark = carried ?? new InstagramCommentWatermark();
                     carried = null;
 
@@ -191,8 +192,11 @@ internal sealed class InstagramAccountLoop
                     Track(() => health.Report(_pageId, InstagramAccountState.Starting));
 
                     // 2) Çözümleme. "Hesap yok" ile "çağrı düştü" ayrı durumlardır; ikisi de
-                    // uzun bekler. Token değiştiyse önbellekteki hesap önce unutulur.
-                    ForgetAccountIfTokenChanged(page.PageAccessToken);
+                    // uzun bekler. Token değiştiyse önbellekteki hesap önce unutulur; devir turu
+                    // hariç: hesap önbellekten gelir (ağ isteği yok, tek geçici hata sağlam hesabı
+                    // susturamaz), poller Sayfanın güncel token'ıyla kurulur. Token kaydı bu turda
+                    // güncellenmez: "bir kez yeniden çöz" sonraki olağan kurulumda uygulanır.
+                    if (!handingOver) ForgetAccountIfTokenChanged(page.PageAccessToken);
                     var (resolved, status) = await _resolver
                         .ResolveDetailedAsync(_pageId, page.PageAccessToken, ct).ConfigureAwait(false);
                     if (resolved is not { } account)
@@ -216,8 +220,10 @@ internal sealed class InstagramAccountLoop
                             "{IgUserId} is already polled through page {OwnerPageId}",
                             _pageId, account.IgUserId, owner);
                         ReportWaiting(InstagramAccountState.Skipped);
-                        // Düz bekleme, token'a bakmaz: Sayfa token yüzünden atlanmadı.
-                        await IdleAsync(timings.IdleAfterFatal, ct).ConfigureAwait(false);
+                        // Token'a bakmaz (Sayfa token yüzünden atlanmadı), sahipliğe bakar: sahip
+                        // bırakınca tur hemen baştan başlar ve sahipliği almayı yeniden dener.
+                        await WaitWhileOwnedByAsync(account.IgUserId, owner, timings.IdleAfterFatal, ct)
+                            .ConfigureAwait(false);
                         continue;
                     }
 
@@ -417,7 +423,8 @@ internal sealed class InstagramAccountLoop
     }
 
     /// <summary>
-    /// Çözümleyici önbelleğini boşaltan TEK yer; her çözümlemeden önce çağrılır. Bu turun token'ı
+    /// Çözümleyici önbelleğini boşaltan TEK yer; kapıya devir turu dışında her çözümlemeden önce
+    /// çağrılır (devir turu hesabı önbellekten alır, kayda dokunmaz). Bu turun token'ı
     /// çözümleyiciye en son verilenden farklıysa önbellekteki hesap unutulur: yeni token'la ilk iş
     /// hesabın bir kez yeniden çözülmesidir (tek Graph isteği). İzin güncellemede Instagram
     /// hesabının işareti kaldırıldıysa bu böylece poller'ın hatasında değil çözümlemede, "hesap
@@ -474,6 +481,34 @@ internal sealed class InstagramAccountLoop
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Atlanan Sayfanın beklemesi: hesabı <paramref name="owner"/> yokladıkça beklenir. Sahiplik kaydı silinirse
+    /// (sahip Sayfanın döngüsü bitti: Sayfa oturum içinde kaldırıldı) ya da sahibi değişirse bekleme kesilir; tur
+    /// baştan başlar ve sahipliği almayı yeniden dener. Token'a bakılmaz: Sayfa token yüzünden atlanmadı.
+    ///
+    /// <para>Adım kalıbı <see cref="WaitUnlessTokenChangedAsync"/> ile aynıdır: bekleme
+    /// <see cref="InstagramChatTimings.WatchInterval"/> adımlarına bölünür, her adımdan önce sahiplik kaydı okunur
+    /// (bellek okuması), kalan süre adımlar toplanarak sayılır.</para>
+    /// </summary>
+    /// <param name="igUserId">Atlanan Sayfanın çözülen Instagram hesabı.</param>
+    /// <param name="owner">Hesabı yoklayan Sayfa (PageId).</param>
+    /// <param name="wait">Sahip yerinde kalırsa beklenecek toplam süre.</param>
+    /// <param name="ct">Oturum belirteci; beklemeyi iptal eder.</param>
+    private async Task WaitWhileOwnedByAsync(string igUserId, string owner, TimeSpan wait, CancellationToken ct)
+    {
+        var interval = _services.Timings.WatchInterval;
+        for (var remaining = wait; remaining > TimeSpan.Zero;)
+        {
+            if (!_owners.TryGetValue(igUserId, out var current)
+                || !string.Equals(current, owner, StringComparison.Ordinal))
+                return;
+
+            var step = remaining < interval ? remaining : interval;
+            await IdleAsync(step, ct).ConfigureAwait(false);
+            remaining -= step;
+        }
     }
 
     /// <summary>Uzun beklemenin biteceği an: şimdi + <see cref="InstagramChatTimings.IdleAfterFatal"/>.</summary>

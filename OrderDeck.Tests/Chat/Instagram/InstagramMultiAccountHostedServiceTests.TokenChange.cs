@@ -254,6 +254,50 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
     }
 
     /// <summary>
+    /// Tekten çoka devir, token o oturumda değişmiş olsa da ağa çıkmaz (pilotun olağan yolu: önce "Facebook
+    /// izinlerini güncelle", sonra "Instagram hesabı ekle"). Devir turu hesabı önbellekten alır, poller'ı Sayfanın
+    /// güncel token'ı ve devredilen filigranla kurar. Devir turu önbelleği boşaltsaydı tek bir geçici çözümleme
+    /// hatası sağlam hesabı <c>ResolveFailed</c>'a düşürür, 5 dakika susturur ve devir anındaki yorumları
+    /// kaybettirirdi (§8.3.3: devir yorum kaybetmez, beklemesizdir). Token değişiminin "bir kez yeniden çöz" kuralı
+    /// kaybolmaz: devirden sonraki ilk olağan kurulumda uygulanır.
+    /// </summary>
+    [Fact]
+    public async Task Token_degismisken_tekten_coka_devir_aga_cikmaz_hesap_susmaz()
+    {
+        var (a, feedA) = await OneAsync();
+        var session = await RunAsync(Fast with { IdleAfterFatal = Long }); // ResolveFailed'ın beklemesi Long sürer
+        await Until(() => State(a) == Live);
+        await _kit.ReauthorizeAllAsync(_oauth); // token değişti; sağlıklı poller eski token'la sürer
+        var fresh = await StoredTokenAsync(a);
+        var resolves = ResolveRequests(a);
+        var down = 1;
+        _kit.Graph.Map( // bundan sonra A'nın çözümleme isteği geçici hata alır
+            u => IsResolve(u, a) && Volatile.Read(ref down) == 1,
+            _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError));
+        // Eski poller yorumu göremesin: devre dek her istek geçici hata alır (filigran ilerlemez).
+        feedA.Intercept = _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError);
+        var during = feedA.Add();
+
+        await AddPageAsync();
+
+        await Until(() => PollerStarts(a) == 2);
+        feedA.Intercept = null;
+        await Until(() => Got(during)); // susmadı, devredilen filigranla ilk çekim yutulmadı
+        Message(during).SourceAccount.Should().Be("@" + a.IgUsername); // yeni (kulvarlı) poller'dan
+        ResolveRequests(a).Should().Be(resolves); // devir ağa çıkmadı: hesap önbellekten
+        feedA.ServedFor(fresh).Should().BeGreaterThan(0); // yeni poller Sayfanın güncel token'ıyla
+        Lines(AccountPrefix).Should().NotContain(l => l.Contains($"(page {a.Page.PageId})") && l.Contains("-> ResolveFailed"));
+
+        Volatile.Write(ref down, 0);
+        EndSession(session);
+        await Until(() => State(a) == Stopped);
+        StartSession();
+
+        await Until(() => PollerStarts(a) == 3); // devirden sonraki ilk olağan kurulum
+        ResolveRequests(a).Should().Be(resolves + 1); // token değişimi: hesap bir kez yeniden çözüldü
+    }
+
+    /// <summary>
     /// Token'a yalnız iki bekleme bakar (hesap çözülemedi, kalıcı hata). Hesabını başka bir Sayfa yokladığı için
     /// atlanan Sayfanın beklemesi düzdür: Sayfa token yüzünden atlanmadı. Her yeniden bakış bir uyarı satırı yazar.
     /// </summary>

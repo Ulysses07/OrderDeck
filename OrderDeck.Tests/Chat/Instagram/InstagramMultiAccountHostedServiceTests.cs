@@ -770,6 +770,35 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
         feedA.Tokens.Should().Equal(b.Page.PageAccessToken, a.Page.PageAccessToken); // önce sahibi, o kaldırılınca kalan Sayfa
     }
 
+    /// <summary>
+    /// Yukarıdakinin oturum içi ikizi. Atlanan Sayfanın beklemesi sahiplik kaydına bakar: sahip Sayfa oturum içinde
+    /// kaldırılıp sahipliği bırakınca bekleme kesilir ve hesabı kalan Sayfa hemen yoklar. Bakmasaydı hesap 5 dakikaya
+    /// kadar okunmaz, atlanan Sayfa şeride girmediği için sustuğu da görünmezdi.
+    /// </summary>
+    [Fact]
+    public async Task Sahibi_oturum_icinde_kaldirilan_hesabi_atlanan_sayfa_beklemeden_devralir()
+    {
+        var (a, b, feedA, _) = await TwoAsync();
+        _kit.Graph.AddPage(b.Page.PageId, b.Page.PageName, a.IgUserId, a.IgUsername); // iki Sayfa aynı hesaba çözülür
+        // Hesabı B sahiplensin (tek başına kaldırılabilen Sayfa ektir): A'nın çözümleme isteği B canlı olana dek tutulur.
+        var ownedByB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _kit.Graph.Map(u => IsResolve(u, a), _ =>
+        {
+            ownedByB.Task.Wait(TestPatience.Upper);
+            var account = new JsonObject { ["id"] = a.IgUserId, ["username"] = a.IgUsername };
+            return FakeGraph.Json(new JsonObject { ["instagram_business_account"] = account }.ToJsonString());
+        });
+        await RunAsync(Fast with { IdleAfterFatal = Long }); // kesilmeyen bekleme Long sürer
+        await Until(() => State(b) == Live);
+        ownedByB.SetResult();
+        await Until(() => State(a) == Skipped);
+
+        (await _oauth.RemoveExtraPageAsync(b.Page.PageId)).Should().BeTrue();
+
+        await Until(() => State(a) == Live); // bekleme kesildi: hesabı kalan Sayfa devraldı
+        feedA.Tokens.Should().Equal(b.Page.PageAccessToken, a.Page.PageAccessToken); // önce sahibi, o kaldırılınca kalan Sayfa
+    }
+
     [Fact]
     public async Task Poller_yeniden_kurulunca_ayni_kulvar_kullanilir_ve_ilk_cekim_yine_yutulur()
     {
