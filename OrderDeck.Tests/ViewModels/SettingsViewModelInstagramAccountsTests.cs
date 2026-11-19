@@ -58,8 +58,8 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
 
     private async Task SeedAsync(int extraPages = 0) => _pages = await _kit.SeedAsync(extraPages);
 
-    /// <summary>Ayarlar'ı tohumlanmış bağlantıyla açar ve iki durum okumasını bekler. Tazelemeler sıraya girdiği için
-    /// kurucunun başlattığı tazeleme de bitmiş olur.</summary>
+    /// <summary>Ayarlar'ı o ana dek tohumlanan bağlantıyla (tohumlanmadıysa bağlantısız) açar ve iki durum okumasını
+    /// bekler. Tazelemeler sıraya girdiği için kurucunun başlattığı tazeleme de bitmiş olur.</summary>
     private async Task<SettingsViewModel> OpenAsync()
     {
         _service = _kit.CreateService();
