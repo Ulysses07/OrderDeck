@@ -78,7 +78,7 @@ public class ChatPanelLayoutTests
         Descendants(panel).OfType<TextBlock>().Single(t => ReferenceEquals(t.DataContext, row)
             && BindingOperations.GetBinding(t, TextBlock.TextProperty)?.Path.Path == path);
 
-    [Fact]                                                             // Review Focus 3
+    [Fact]                                                             // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Etiketli_satirda_etiket_ve_ipucu_gorunur_etiketsiz_satir_bugunku_gibi() => OnSta(() =>
     {
         var (tagged, plain) = (Row("@" + Guid.NewGuid().ToString("N")[..12]), Row(null));
@@ -94,7 +94,7 @@ public class ChatPanelLayoutTests
         MessageX(tagged).Should().Be(MessageX(plain), "etiket sağda: kodun başladığı x konumu kaymaz");
     });
 
-    [Fact]                                                             // Review Focus 5
+    [Fact]                                                             // ortak önekli adlarda ayırt edici ek görünür kalmalı: "@" dahil 16 karakter kırpılmaz
     public void Son_karakteri_farkli_16_karakterlik_iki_etiket_kirpilmaz_uzun_etikette_ipucu_tam_adi_verir() => OnSta(() =>
     {
         var stem = "@" + Guid.NewGuid().ToString("N")[..14];                    // 15 karakter
@@ -184,7 +184,7 @@ public class ChatPanelLayoutTests
     private static FrameworkElement Strip(ChatPanel panel) => Descendants(panel).OfType<FrameworkElement>().Single(e =>     // şeridin kökü
         BindingOperations.GetBinding(e, UIElement.VisibilityProperty)?.Path.Path == nameof(MainShellViewModel.ShowInstagramStatus));
 
-    [Fact]                                                                  // Review Focus 3
+    [Fact]                                                                  // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Saglik_seridi_gercek_satirlari_cizer_gizliyken_yer_kaplamaz() => OnSta(() =>
     {
         var rows = new[] { Status(InstagramStatusSeverity.Live), Status(InstagramStatusSeverity.Warning), Status(InstagramStatusSeverity.Neutral) };

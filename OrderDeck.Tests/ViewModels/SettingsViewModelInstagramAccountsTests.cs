@@ -215,7 +215,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         vm.InstagramPages.Should().HaveCount(2);
     }
 
-    [Fact]                                                              // Review Focus 3
+    [Fact]                                                              // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Kart_satirlari_yalniz_iki_Sayfada_cizer_Kaldir_yalniz_ek_satirda() => OnSta(() =>
     {
         var primary = new InstagramPageRow(FacebookOAuthTestKit.NewId(), $"Sayfa {Guid.NewGuid():N}", $"@hesap-{Guid.NewGuid():N}", true, false, false);
@@ -706,7 +706,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         (_drawers.Titles.Count, vm.InstagramNotice).Should().Be((0, ReconnectText));
     }
 
-    [Theory]                                                            // karar eki: sınır, yetki ve geçici hata metinleri
+    [Theory]                                                            // sınır, yetki ve geçici hata metinleri
     [InlineData("sinir"), InlineData("yetki"), InlineData("listeleme-5xx"), InlineData("listeleme-ag"), InlineData("ekleme-5xx"), InlineData("ekleme-kota")]
     public async Task Ekleme_hatalari_kendi_metnine_duser_hicbir_sey_eklenmez_durum_metni_geri_konur(string fault)
     {
@@ -753,7 +753,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         picker.Selected.Should().Be(picker.Options[1]);
     }
 
-    [Fact]                                                                  // Review Focus 3
+    [Fact]                                                                  // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Cekmece_secenekleri_cizer_hesapsiz_Sayfa_pasif_secim_yokken_Ekle_kapatmaz() => OnSta(() =>
     {
         var picker = new InstagramAccountPickerViewModel(new[] { NewAddable(false), NewAddable(true) });
@@ -775,7 +775,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         (closed.IsCompletedSuccessfully && closed.Result).Should().BeTrue();
     });
 
-    [Fact]                                                                  // Review Focus 3
+    [Fact]                                                                  // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Kartta_Instagram_hesabi_ekle_dugmesi_bagli_degilken_pasif() => OnSta(() =>
     {
         Button Add(SettingsViewModel vm) => Descendants(RenderFacebookTab(vm)).OfType<Button>().Single(b => Equals(b.Content, "Instagram hesabı ekle"));
@@ -996,7 +996,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         (vm.IsReauthorizePending, vm.IsFacebookBusy, vm.CanManageInstagram).Should().Be((false, false, true));
     }
 
-    [Theory, InlineData("0"), InlineData("1"), InlineData("02")]           // eksik Sayfaların sıra numaraları: birincil (0) eksikse parantez yazılır; iki eksik çoğuldur (karar)
+    [Theory, InlineData("0"), InlineData("1"), InlineData("02")]           // eksik Sayfaların sıra numaraları: birincil (0) eksikse parantez yazılır; iki eksik çoğuldur
     public async Task Eksik_Sayfa_kabul_edilince_soru_ve_sonuc_Sayfayi_adiyla_soyler(string missing)
     {
         await SeedAsync(extraPages: 2);
@@ -1057,7 +1057,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         slow.InstagramNotice.Should().Be("Facebook onayı 5 dakika içinde tamamlanmadı; bağlantı değişmedi. Yeniden dene.");
     }
 
-    [Fact]                                                                  // Review Focus 1
+    [Fact]                                                                  // onay beklenirken kaldırılan bağlantı geri çağrı gelince dirilmez
     public async Task Beklerken_baglanti_kaldirilirsa_guncelleme_basarisiz_olur_baglanti_dirilmez()
     {
         await SeedAsync(extraPages: 1);
@@ -1101,7 +1101,7 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         (vm.InstagramAccountStatus, vm.CanManageInstagram).Should().Be(($"Bağlı Instagram hesabı: @{candidate.IgUsername}", true));
     }
 
-    [Fact]                                                                  // Review Focus 3
+    [Fact]                                                                  // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Kart_beklerken_Iptali_gosterir_uc_dugmeyi_kapatir_bitince_Iptal_gizlenir() => OnSta(() =>
     {
         Button Named(DependencyObject root, string content) => Descendants(root).OfType<Button>().Single(b => Equals(b.Content, content));

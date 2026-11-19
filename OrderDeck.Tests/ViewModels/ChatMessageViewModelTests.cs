@@ -28,7 +28,7 @@ public class ChatMessageViewModelTests
         (Vm(tag).AccountTag, Vm(pageName).AccountTag).Should().Be((tag, pageName));
     }
 
-    [Fact]                                                             // Review Focus 4: UTC de geliştirme makinesinin +03:00'ü de olmayan sabit ofset
+    [Fact]                                                             // UTC de geliştirme makinesinin +03:00'ü de olmayan sabit ofset: çevrilmeyen saat iki ortamda da düşer
     public void Ipucu_Meta_saatini_verilen_ofsette_yazar()
     {
         var tag = NewTag();

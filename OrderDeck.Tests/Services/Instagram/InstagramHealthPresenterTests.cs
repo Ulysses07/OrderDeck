@@ -18,7 +18,7 @@ namespace OrderDeck.Tests.Services.Instagram;
 /// </summary>
 public sealed class InstagramHealthPresenterTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 11, 17, 21, 14, 7, TimeSpan.FromHours(3));   // Review Focus 4: +03:00; girdilerin saatleri UTC
+    private static readonly DateTimeOffset Now = new(2026, 11, 17, 21, 14, 7, TimeSpan.FromHours(3));   // +03:00; girdilerin saatleri UTC: metindeki saat now'ın ofsetine çevrilmeli
     private const string Fatal = "Instagram bağlantını yenilemen gerekiyor.";
     private const string Reauth = "Ayarlar > Facebook > \"Facebook izinlerini güncelle\".";
     private const string NoAnswer = "Instagram'dan yanıt alınamıyor, yeniden deneniyor. Yorumlar gecikiyor olabilir.";
@@ -73,7 +73,7 @@ public sealed class InstagramHealthPresenterTests
         var unnamed = H(State.Starting, sinceAgo: 5, named: false);
         Row(unnamed).Should().Be(new InstagramAccountStatusViewModel(unnamed.PageId, unnamed.PageName, "bağlanıyor", $"{unnamed.PageName} bağlanıyor", Severity.Neutral, null));
     }
-    [Fact] public void Saat_metni_now_ofsetine_cevrilir()                    // Review Focus 4: makinenin saat dilimi değil, now'ın ofseti; ek de o duvar saatinden
+    [Fact] public void Saat_metni_now_ofsetine_cevrilir()                    // makinenin saat dilimi değil, now'ın ofseti; ek de o duvar saatinden
     {
         var now = new DateTimeOffset(2026, 11, 17, 9, 0, 0, TimeSpan.FromHours(5.5)); var at = now.AddSeconds(-30).ToUniversalTime();
         var limited = H(State.RateLimited, wasLive: true) with { Since = at, LastContactAt = at, RetryAt = now.AddMinutes(10).ToUniversalTime() };

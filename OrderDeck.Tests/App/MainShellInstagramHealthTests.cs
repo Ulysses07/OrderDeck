@@ -181,7 +181,7 @@ public class MainShellInstagramHealthTests
         h.Vm.ShowInstagramStatus.Should().BeFalse();
     }
 
-    [Fact]                                                              // Review Focus 3
+    [Fact]                                                              // XAML bağ yolu gerçek ViewModel ile çizilerek sınanır (yanlış yol hata vermez, alan boş kalır)
     public void Kenar_cubugunda_sayi_sutunu_ShowViewerCount_ile_gorunur() => ThemeTestHost.RunOnSta(() =>
     {
         var youtube = new PlatformConnectionViewModel("youtube") { IsConnected = true, ShowViewerCount = true, ViewerCount = 1240 };

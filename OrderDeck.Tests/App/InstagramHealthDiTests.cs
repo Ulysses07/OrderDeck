@@ -15,7 +15,7 @@ namespace OrderDeck.Tests.App;
 /// </summary>
 public sealed class InstagramHealthDiTests
 {
-    [Fact]                                                              // Review Focus 2
+    [Fact]                                                              // eksik kayıtta isteğe bağlı parametre sessizce null düşer: kabuk ve hosted service AYNI örneği almalı
     public void Izleyici_tekil_hosted_service_ayni_ornegi_tutar_kabuk_istege_bagli_parametreyle_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();
