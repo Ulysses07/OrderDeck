@@ -131,6 +131,45 @@ public class MainShellInstagramHealthTests
         h.Vm.ChatHealthTooltip.Should().StartWith($"Instagram @{username}: yanıt yok (18 sn).\nChat takibi açık").And.EndWith("henüz mesaj yok");
     }
 
+    /// <summary>
+    /// Satırlardan biri değişince koleksiyon baştan kurulmaz: yalnız o öğe değiştirilir, değişmeyen satırın örneği
+    /// yerinde kalır (onun açık ipucu nabızda kapanmaz). İki hesap: biri canlı (her nabızdan önce yanıt verir, satırı
+    /// aynı kalır), biri yanıtsız (sessizlik saniyesi her nabızda artar).
+    /// </summary>
+    [Fact]
+    public void Yalniz_degisen_serit_satiri_yenilenir_oteki_satirin_ornegi_ayni_kalir()
+    {
+        var (live, silent) = (FacebookOAuthTestKit.NewId(), FacebookOAuthTestKit.NewId());
+        var monitor = new InstagramHealthMonitor(_time);
+        monitor.Configure(new[]
+        {
+            new FacebookLinkedPage(live, FacebookOAuthTestKit.NewToken(), $"sayfa-{Guid.NewGuid():N}"),
+            new FacebookLinkedPage(silent, FacebookOAuthTestKit.NewToken(), $"sayfa-{Guid.NewGuid():N}"),
+        });
+        foreach (var pageId in new[] { live, silent })
+        {
+            monitor.Report(pageId, InstagramAccountState.Starting);
+            monitor.SetAccount(pageId, $"hesap-{Guid.NewGuid():N}");
+            monitor.ObserverFor(pageId).RoundCompleted(InstagramPollKind.Ok, null, TimeSpan.Zero, null);
+        }
+        _time.Advance(TimeSpan.FromSeconds(11));                        // ikinci hesap yanıtsız
+        monitor.ObserverFor(live).RoundCompleted(InstagramPollKind.Ok, null, TimeSpan.Zero, null);
+        using var h = Build(monitor);
+        var before = h.Vm.InstagramAccounts.ToArray();
+        before.Select(r => r.Text).Should().HaveCount(2).And.Contain(t => t.EndsWith("yanıt yok (11 sn)", StringComparison.Ordinal));
+
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        h.Vm.InstagramAccounts.CollectionChanged += (_, e) => actions.Add(e.Action);
+        _time.Advance(TimeSpan.FromSeconds(2));
+        monitor.ObserverFor(live).RoundCompleted(InstagramPollKind.Ok, null, TimeSpan.Zero, null);
+        h.Vm.UpdateChatHealth();
+
+        actions.Should().Equal(System.Collections.Specialized.NotifyCollectionChangedAction.Replace);
+        h.Vm.InstagramAccounts.Should().HaveCount(2);
+        h.Vm.InstagramAccounts[0].Should().BeSameAs(before[0], "değişmeyen canlı satırın örneği aynı kalır");
+        h.Vm.InstagramAccounts[1].Text.Should().EndWith("yanıt yok (13 sn)");
+    }
+
     [Fact]
     public void Oturum_yokken_Instagram_kurali_uygulanmaz()
     {

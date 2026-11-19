@@ -30,7 +30,9 @@ public sealed partial class MainShellViewModel
 
     /// <summary>
     /// İzleyiciyi değerlendirir, sonucu saklar ve şeride yazar. Satırlar öncekiyle sırayla eşitse koleksiyona
-    /// dokunulmaz: değişmeyen satırda açık ipucu her nabızda kapanmasın.
+    /// dokunulmaz; değilse koleksiyon baştan kurulmaz: aynı sıradaki satır eşitse yerinde kalır, farklıysa yalnız o
+    /// öğe değiştirilir, fazlalık sondan silinir, eksik sona eklenir. Değişmeyen satırda açık ipucu her nabızda
+    /// kapanmasın (canlı satırın ipucu her nabızda değişse de).
     /// </summary>
     private void EvaluateInstagramHealth(bool sessionActive)
     {
@@ -40,8 +42,13 @@ public sealed partial class MainShellViewModel
         _instagramView = view;
         if (!InstagramAccounts.SequenceEqual(view.Rows))
         {
-            InstagramAccounts.Clear();
-            foreach (var row in view.Rows) InstagramAccounts.Add(row);
+            var rows = view.Rows;
+            for (var i = 0; i < rows.Count && i < InstagramAccounts.Count; i++)
+            {
+                if (!Equals(InstagramAccounts[i], rows[i])) InstagramAccounts[i] = rows[i];
+            }
+            while (InstagramAccounts.Count > rows.Count) InstagramAccounts.RemoveAt(InstagramAccounts.Count - 1);
+            for (var i = InstagramAccounts.Count; i < rows.Count; i++) InstagramAccounts.Add(rows[i]);
         }
         ShowInstagramStatus = view.ShowStrip;
     }
