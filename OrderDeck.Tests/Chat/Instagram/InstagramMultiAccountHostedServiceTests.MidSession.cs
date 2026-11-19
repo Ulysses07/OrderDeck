@@ -93,11 +93,17 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         await RunAsync(Fast with { IdleAfterPollerExit = Long });
         await feedA.PrimedAsync();
         await feedA.NextAsync(); // eski poller az önce yanıt aldı; sıradaki isteğine ~1 sn var
+        // Eski poller yorumu göremesin: devre dek her istek geçici hata alır (filigran ilerlemez). Yük altında eski
+        // poller'ın sıradaki isteği devirden önce gelirse yorumu kendisi basardı ve test filigran aktarımını sınamazdı.
+        feedA.Intercept = _ => FakeGraph.Error(1, HttpStatusCode.InternalServerError);
         var during = feedA.Add(); // ilk kez yeni poller'ın ilk çekiminde görünür
 
         var (b, _) = await AddPageAsync();
 
-        await Until(() => PollerStarts(a) == 2 && Got(during)); // Long beklenmedi; devredilen filigranla ilk çekim yutulmadı
+        await Until(() => PollerStarts(a) == 2); // Long beklenmedi: devir beklemesiz
+        feedA.Intercept = null;
+        await Until(() => Got(during)); // devredilen filigranla ilk çekim yutulmadı
+        Message(during).SourceAccount.Should().Be("@" + a.IgUsername); // yeni (kulvarlı) poller'dan; eski poller etiketsiz basar
         Message(await FlowAsync(feedA)).SourceAccount.Should().Be("@" + a.IgUsername); // artık kulvardan
         _received.Count(m => m.ExternalId == during.Id).Should().Be(1);
         await Until(() => State(b) == Live); // 1 → 2'de de Configure çağrıldı: yeni Sayfanın girdisi var ve canlı
