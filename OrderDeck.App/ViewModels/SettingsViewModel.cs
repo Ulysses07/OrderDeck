@@ -113,8 +113,15 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     partial void OnIsReauthorizePendingChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
 
-    /// <summary>Instagram hesapları yönetilebilir: Facebook bağlı ve o an bir bağlantı işlemi sürmüyor.</summary>
-    public bool CanManageInstagram => IsFacebookConnected && !IsFacebookBusy;
+    /// <summary>"Instagram hesabı ekle" sürüyor (listeleme, çekmece, ekleme ve son tazeleme): kartın iki düğmesi
+    /// pasiftir, iki akış aynı anda yürümez. "Kaldır" ve Facebook kartı etkilenmez.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanManageInstagram))]
+    private bool _isInstagramAddBusy;
+
+    /// <summary>Instagram hesapları yönetilebilir: Facebook bağlı ve o an ne bir bağlantı işlemi ne bir ekleme
+    /// sürüyor.</summary>
+    public bool CanManageInstagram => IsFacebookConnected && !IsFacebookBusy && !IsInstagramAddBusy;
 
     partial void OnIsFacebookBusyChanged(bool value)
     {
@@ -132,7 +139,15 @@ public sealed partial class SettingsViewModel : ViewModelBase
     // bağlı Facebook Sayfa'sı üzerinden gidiyor. Bu yüzden burada yalnız durum
     // var, "Bağlan" butonu yok. Kip seçimi de yok: kazıyıcı uzantıdan
     // kaldırıldığı için resmi API tek yol.
-    [ObservableProperty] private string _instagramAccountStatus = "Kontrol ediliyor...";
+    [ObservableProperty] private string _instagramAccountStatus = InstagramSettingsTexts.Checking;
+
+    /// <summary>Kartın son GERÇEK durum metni (tazeleme ya da "Kaldır" yazar, <see cref="SetInstagramStatus"/>).
+    /// Bekleme metni görünürken durum satırına yansımaz; bekleme kalkınca satır buna döner.</summary>
+    private string _instagramStatus = InstagramSettingsTexts.Checking;
+
+    /// <summary>Durum satırında o an gösterilen geçici bekleme metni ("Sayfalar okunuyor...", tarayıcı bekleme
+    /// metni); yoksa null. Onu gösteren akış kaldırır (<see cref="HideInstagramWaiting"/>).</summary>
+    private string? _instagramWaitingText;
 
     /// <summary>Bağlı Facebook oturumunda IG izinleri yoksa true — kullanıcı
     /// IG izinleri yapılandırmaya eklenmeden önce bağlanmış demektir ve
@@ -497,9 +512,33 @@ public sealed partial class SettingsViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
-            InstagramAccountStatus = $"Durum okunamadı: {ex.Message}";
+            SetInstagramStatus($"Durum okunamadı: {ex.Message}");
             InstagramNeedsReconnect = false;
         }
+    }
+
+    /// <summary>Kartın gerçek durum metnini yazar; durum satırına ancak o an bekleme metni gösterilmiyorsa yansır.
+    /// Tazelemenin bütün yazıcıları ve "Kaldır" buradan geçer: bekleme sırasında biten tazeleme talimatı silmez.</summary>
+    private void SetInstagramStatus(string text)
+    {
+        _instagramStatus = text;
+        if (_instagramWaitingText is null) InstagramAccountStatus = text;
+    }
+
+    /// <summary>Durum satırında geçici bekleme metnini gösterir; gerçek durum metni değişmez.</summary>
+    private void ShowInstagramWaiting(string text)
+    {
+        _instagramWaitingText = text;
+        InstagramAccountStatus = text;
+    }
+
+    /// <summary>Gösterilen bekleme metni <paramref name="text"/> ise kaldırır ve durum satırını O ANKİ gerçek metne
+    /// döndürür (akış başlarkenki metne değil); değilse hiçbir şey yapmaz. Eşgüçlüdür.</summary>
+    private void HideInstagramWaiting(string text)
+    {
+        if (_instagramWaitingText != text) return;
+        _instagramWaitingText = null;
+        InstagramAccountStatus = _instagramStatus;
     }
 
     /// <summary>İki listedeki Sayfa kimlikleri aynı sırada ve aynı mı (sıralı, <see cref="StringComparison.Ordinal"/>).</summary>
@@ -522,7 +561,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private void ShowInstagramNotConnected()
     {
         InstagramPages.Clear();
-        InstagramAccountStatus = InstagramSettingsTexts.NotConnected;
+        SetInstagramStatus(InstagramSettingsTexts.NotConnected);
         InstagramNeedsReconnect = false;
     }
 
@@ -559,7 +598,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         InstagramPages.Clear();
         foreach (var row in rows) InstagramPages.Add(row);
 
-        InstagramAccountStatus = multiplePages
+        SetInstagramStatus(multiplePages
             ? InstagramSettingsTexts.ConnectedAccountCount(
                 resolved.Count(r => r.Status == InstagramResolveStatus.Found))
             : resolved[0].Status switch
@@ -567,12 +606,13 @@ public sealed partial class SettingsViewModel : ViewModelBase
                 InstagramResolveStatus.Found => InstagramSettingsTexts.SinglePageConnected(rows[0].InstagramText),
                 InstagramResolveStatus.NotLinked => InstagramSettingsTexts.SinglePageNotLinked,
                 _ => InstagramSettingsTexts.SinglePageUnreadable,
-            };
+            });
     }
 
     /// <summary>
     /// "Kaldır": bir EK Sayfanın bağlantısını kaldırır. Yazımın ardından satır HEMEN kalkar (tazelemenin Graph
-    /// istekleri beklenmez) ve sonuç satırı hesabı adıyla söyler; sonra kart tazelenir. Yazım düşerse bağlantı
+    /// istekleri beklenmez), durum "Kontrol ediliyor..." olur ve sonuç satırı hesabı adıyla söyler; sonra kart
+    /// tazelenir. Yazım düşerse bağlantı
     /// değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler, sebep günlüğe Warning olarak düşer. Birincil
     /// satırda hiçbir şey yapmaz: birincil ancak "Bağlantıyı Kaldır" ile, bütün bağlantıyla birlikte kalkar.
     /// </summary>
@@ -596,6 +636,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
         }
 
         InstagramPages.Remove(row);
+        // Durum satırı tazeleme sonucu yazana dek eski sayıyı söylemez.
+        SetInstagramStatus(InstagramSettingsTexts.Checking);
         // Hesabı çözülememiş satırın metni bir ad değil, durumdur ("@" ile başlamaz): sonuç Sayfayı adıyla söyler.
         InstagramNotice = InstagramSettingsTexts.AccountRemoved(
             row.InstagramText.StartsWith('@') ? row.InstagramText : row.PageName);
@@ -613,13 +655,28 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// "Instagram hesabı ekle" (§8.6.1): saklı Facebook girişiyle, tarayıcı açmadan ve sunucu takası olmadan (TK5)
     /// Sayfaları listeler, çekmecede seçileni ek hesap olarak bağlar ve kartı tazeler. İzin eksikse ya da oturum
     /// yenilenmeliyse listeleme yapmadan "Facebook izinlerini güncelle"ye yönlendirir. Sonuç kart içi satıra yazılır.
-    /// Akış arayüz iş parçacığında kalır.
+    /// Akış arayüz iş parçacığında kalır; baştan sona <see cref="IsInstagramAddBusy"/> kuruludur.
     /// </summary>
     [RelayCommand]
     private async System.Threading.Tasks.Task AddInstagramAccount()
     {
         if (_facebookOAuth is null) return;
 
+        // Bayrak süren tazelemeyi beklemeden ÖNCE kurulur: bekleme sırasında da iki düğme pasiftir.
+        IsInstagramAddBusy = true;
+        try
+        {
+            await AddInstagramAccountCoreAsync(_facebookOAuth).ConfigureAwait(true);
+        }
+        finally
+        {
+            IsInstagramAddBusy = false;
+        }
+    }
+
+    /// <summary><see cref="AddInstagramAccount"/>'un gövdesi; yalnız oradan, bayrak kuruluyken çağrılır.</summary>
+    private async System.Threading.Tasks.Task AddInstagramAccountCoreAsync(FacebookOAuthService facebookOAuth)
+    {
         // 0. adımdan önce süren tazeleme (ör. Ayarlar açılırken başlayan ilk izin sondası) beklenir: düğme Facebook
         // durumuyla hemen etkinleşir, izin bayrağı ise sonda bitince yazılır. Sıra alınıp hemen bırakılır; listeleme
         // ve çekmece sıranın dışındadır. Süren tazeleme yoksa bekleme hemen döner. Beklerken durum satırı değişmez.
@@ -634,22 +691,21 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return;
         }
 
-        var previousStatus = InstagramAccountStatus;
-        InstagramAccountStatus = InstagramSettingsTexts.ReadingPages;
+        ShowInstagramWaiting(InstagramSettingsTexts.ReadingPages);
         FacebookPageListing listing;
         try
         {
-            listing = await _facebookOAuth.ListAddablePagesAsync().ConfigureAwait(true);
+            listing = await facebookOAuth.ListAddablePagesAsync().ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             // Sabit metin sebebi söylemez: sebep (Graph kodu, HTTP durumu, ağ hatası) günlüğe düşer.
             _log.LogWarning(ex, "Instagram account listing failed");
-            RestoreInstagramStatus(previousStatus);
+            HideInstagramWaiting(InstagramSettingsTexts.ReadingPages);
             InstagramNotice = InstagramSettingsTexts.PagesUnreadable;
             return;
         }
-        RestoreInstagramStatus(previousStatus);
+        HideInstagramWaiting(InstagramSettingsTexts.ReadingPages);
 
         if (listing.NeedsReauthorize)
         {
@@ -682,7 +738,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         var page = listing.Pages.First(p => string.Equals(p.PageId, chosen.PageId, StringComparison.Ordinal));
         try
         {
-            await _facebookOAuth.AddExtraPageAsync(chosen.PageId, chosen.PageName).ConfigureAwait(true);
+            await facebookOAuth.AddExtraPageAsync(chosen.PageId, chosen.PageName).ConfigureAwait(true);
         }
         catch (FacebookPageLimitException)
         {
@@ -703,13 +759,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
         InstagramNotice = InstagramSettingsTexts.AccountAdded(
             InstagramSettingsTexts.AccountLabel(page.IgUserId!, page.IgUsername));
         await RefreshInstagramStatusAsync().ConfigureAwait(true);
-    }
-
-    /// <summary>Durum satırı hâlâ "Sayfalar okunuyor..." ise önceki metni geri koyar; o arada bir tazeleme yeni metin
-    /// yazdıysa ona dokunmaz.</summary>
-    private void RestoreInstagramStatus(string previous)
-    {
-        if (InstagramAccountStatus == InstagramSettingsTexts.ReadingPages) InstagramAccountStatus = previous;
     }
 
     /// <summary>
@@ -746,13 +795,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     {
         if (_facebookOAuth is null) return;
 
-        var previousStatus = InstagramAccountStatus;
         var cts = new System.Threading.CancellationTokenSource();
         _reauthorizeCts = cts;
         var declined = false;
         IsFacebookBusy = true;
         IsReauthorizePending = true;
-        InstagramAccountStatus = InstagramSettingsTexts.WaitingForBrowser;
+        ShowInstagramWaiting(InstagramSettingsTexts.WaitingForBrowser);
         try
         {
             // Birincil, akış başlarken bağlı listenin ilk girdisidir: eksiklerden biri oysa soruya Facebook yorumları
@@ -768,6 +816,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
             InstagramNotice = InstagramSettingsTexts.PermissionsUpdated(
                 result.RefreshedPages, result.MissingPages.Select(page => page.PageName).ToList());
+            // Tarayıcı beklemesi bitti: tazeleme (1 + N Graph isteği) sürerken "İptal" ve bekleme metni görünmez.
+            // Bağlantı işlemi (IsFacebookBusy) tazeleme bitene dek sürer.
+            IsReauthorizePending = false;
+            HideInstagramWaiting(InstagramSettingsTexts.WaitingForBrowser);
             await RefreshInstagramStatusAsync().ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested || declined)
@@ -799,8 +851,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
             IsReauthorizePending = false;
             if (ReferenceEquals(_reauthorizeCts, cts)) _reauthorizeCts = null;
             cts.Dispose();
-            // O arada bir tazeleme yeni metin yazdıysa ona dokunulmaz.
-            if (InstagramAccountStatus == InstagramSettingsTexts.WaitingForBrowser) InstagramAccountStatus = previousStatus;
+            // Durum satırı o anki gerçek duruma döner (beklerken biten tazelemenin yazdığına); başarı dalında çoktan
+            // döndüyse etkisizdir.
+            HideInstagramWaiting(InstagramSettingsTexts.WaitingForBrowser);
         }
     }
 

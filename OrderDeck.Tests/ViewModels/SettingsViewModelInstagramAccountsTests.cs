@@ -1205,4 +1205,146 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         noDrawers.InstagramNotice.Should().Be(CanceledText);
         (await _kit.CreateService().GetUserAccessTokenAsync()).Should().Be(before, "diske hiçbir şey yazılmadı");
     }
+
+    // ── Ek sabitlemeler: durum satırında gerçek durum ile bekleme metni ayrı; ekleme sürerken iki düğme pasif ──
+
+    /// <summary>Bundan sonraki İLK izin sondasını tutar: sonda gelince <c>Reached</c> tamamlanır, yanıt
+    /// <c>Release</c> kurulana dek dönmez. Sonraki sondalar beklemeden izin verir.</summary>
+    private (Task Reached, ManualResetEventSlim Release) HoldNextPermissionProbe()
+    {
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new ManualResetEventSlim();
+        var held = 0;
+        _kit.Graph.Map(IsPermissions, _ =>
+        {
+            if (Interlocked.Exchange(ref held, 1) == 0)                 // yalnız İLK izin sondası tutulur
+            {
+                reached.SetResult();
+                release.Wait(TestPatience.Upper);
+            }
+            return Permissions("granted");
+        });
+        return (reached.Task, release);
+    }
+
+    /// <summary>Başarıdan sonraki tazeleme 1 + N Graph isteğidir: o sürede kart hem "güncellendi" hem "onay
+    /// bekleniyor" demez, etkisiz "İptal" görünmez. Bağlantı işlemi ise tazeleme bitene dek sürer.</summary>
+    [Fact]
+    public async Task Izin_guncellemesi_basarinca_kart_tazelenirken_bekleme_metni_ve_Iptal_kalkar()
+    {
+        await SeedAsync();
+        var vm = await OpenAsync();
+        var run = await BeginReauthorizeAsync(vm);
+        var hold = HoldNextPermissionProbe();
+        using var release = hold.Release;
+        try
+        {
+            _kit.Browser.Complete();
+            await hold.Reached.WaitAsync(TestPatience.Upper);           // başarıdan sonraki tazeleme izin sondasında
+            (vm.IsReauthorizePending, vm.IsFacebookBusy).Should().Be((false, true));
+            vm.InstagramAccountStatus.Should().NotBe(WaitingText);
+            vm.InstagramNotice.Should().Be("Facebook izinleri güncellendi: 1 Sayfa yenilendi.");
+        }
+        finally
+        {
+            release.Set();
+        }
+        await run.WaitAsync(TestPatience.Upper);
+        vm.IsFacebookBusy.Should().BeFalse();
+        vm.InstagramAccountStatus.Should().Be($"Bağlı Instagram hesabı: @{_pages[0].IgUsername}");
+    }
+
+    /// <summary>Ekleme listeleme, çekmece, ekleme ve son tazeleme boyunca sürer: o sürede "Instagram hesabı ekle" ve
+    /// "Facebook izinlerini güncelle" pasiftir (iki akış aynı anda yürümez); Facebook kartı etkilenmez. Akış nasıl
+    /// biterse bitsin düğmeler açılır.</summary>
+    [Theory, InlineData("ekle"), InlineData("vazgec"), InlineData("hata")]
+    public async Task Ekleme_surerken_iki_dugme_de_pasiftir(string end)
+    {
+        await SeedAsync();
+        var candidate = new SeededPage(
+            new FacebookLinkedPage(FacebookOAuthTestKit.NewId(), FacebookOAuthTestKit.NewToken(), $"sayfa-{Guid.NewGuid():N}"),
+            FacebookOAuthTestKit.NewId(), $"hesap-{Guid.NewGuid():N}");
+        _kit.Graph.AddPage(candidate.Page.PageId, candidate.Page.PageName, candidate.IgUserId, candidate.IgUsername);
+        var vm = await OpenAsync();
+        if (end == "ekle") _drawers.Decide = v => Pick(v, candidate.Page.PageId);
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var held = 0;
+        _kit.Graph.Map(IsAccounts, _ =>
+        {
+            if (Interlocked.Exchange(ref held, 1) == 0)                 // yalnız İLK listeleme tutulur
+            {
+                reached.SetResult();
+                release.Wait(TestPatience.Upper);
+            }
+            return end == "hata" ? FakeGraph.Error(2, HttpStatusCode.ServiceUnavailable) : AccountsOf(_pages[0], candidate);
+        });
+
+        Task run;
+        try
+        {
+            run = vm.AddInstagramAccountCommand.ExecuteAsync(null);
+            await reached.Task.WaitAsync(TestPatience.Upper);
+            (vm.IsInstagramAddBusy, vm.CanManageInstagram, vm.IsFacebookBusy).Should().Be((true, false, false));
+        }
+        finally
+        {
+            release.Set();
+        }
+        await run.WaitAsync(TestPatience.Upper);
+
+        (vm.IsInstagramAddBusy, vm.CanManageInstagram).Should().Be((false, true));
+        raised.Count(n => n == nameof(SettingsViewModel.CanManageInstagram)).Should().BeGreaterThanOrEqualTo(2, "pasifleşme ve açılma bildirilir");
+        vm.InstagramNotice.Should().Be(end switch
+        {
+            "ekle" => $"@{candidate.IgUsername} eklendi. Yayın açıksa birkaç saniye içinde okunmaya başlar.",
+            "vazgec" => null,
+            _ => "Sayfalar okunamadı, internetini kontrol edip yeniden dene.",
+        });
+    }
+
+    /// <summary>Tarayıcı beklenirken biten tazeleme (burada beklerken basılan "Kaldır"ınki) tarayıcı talimatını durum
+    /// satırından silmez; akış bitince satır akış başlarkenki metne değil güncel duruma döner.</summary>
+    [Fact]
+    public async Task Bekleyen_izin_guncellemesinde_biten_tazeleme_talimati_silmez_iptalde_guncel_durum_yazilir()
+    {
+        await SeedAsync(extraPages: 1);
+        var vm = await OpenAsync();
+        var run = await BeginReauthorizeAsync(vm);
+        vm.InstagramAccountStatus.Should().Be(WaitingText);             // ön koşul: talimat görünür
+
+        await vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]).WaitAsync(TestPatience.Upper);
+        (vm.InstagramAccountStatus, vm.InstagramPages.Count).Should().Be((WaitingText, 1));
+
+        vm.CancelReauthorizeCommand.Execute(null);                      // [İptal]
+        await run.WaitAsync(TestPatience.Upper);
+        vm.InstagramNotice.Should().Be(CanceledText);
+        vm.InstagramAccountStatus.Should().Be($"Bağlı Instagram hesabı: @{_pages[0].IgUsername}");
+    }
+
+    /// <summary>"Kaldır"dan sonra satır hemen kalkar; durum satırı tazeleme sonucu yazana dek eski sayıyı söylemez.</summary>
+    [Fact]
+    public async Task Kaldirdan_sonra_tazeleme_bitene_dek_durum_Kontrol_ediliyor_der()
+    {
+        await SeedAsync(extraPages: 1);
+        var vm = await OpenAsync();
+        var hold = HoldNextPermissionProbe();
+        using var release = hold.Release;
+        Task remove;
+        try
+        {
+            remove = vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]);
+            await hold.Reached.WaitAsync(TestPatience.Upper);           // "Kaldır"ın tazelemesi izin sondasında
+            (vm.InstagramPages.Count, vm.InstagramAccountStatus).Should().Be((1, "Kontrol ediliyor..."));
+        }
+        finally
+        {
+            release.Set();
+        }
+        await remove.WaitAsync(TestPatience.Upper);
+        vm.InstagramAccountStatus.Should().Be($"Bağlı Instagram hesabı: @{_pages[0].IgUsername}");
+    }
 }

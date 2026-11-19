@@ -5,13 +5,17 @@ namespace OrderDeck.App.Services.Instagram;
 /// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'in durum satırına, hesap satırlarına ve sonuç satırına
 /// yazdıkları, "Instagram hesabı ekle" çekmecesinin gösterdikleri ve XAML'in <c>x:Static</c> ile okuduğu yeni sabit
 /// metinler; izin uyarısı da yeni düğmeye yönlendiği için buradadır. Kartın çoklu hesaptan ÖNCEKİ sabit metinleri
-/// (başlık, ipucu paragrafı) <c>SettingsPage.xaml</c>'de, durum satırının ilk değeri ve genel hata metni
-/// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'de kalır. Metinlerde yalnız hesap ve Sayfa adı ile sayı
-/// geçer.
+/// (başlık, ipucu paragrafı) <c>SettingsPage.xaml</c>'de, genel hata metni
+/// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'de kalır; durum satırının ilk değeri de "Kaldır"dan
+/// sonra yazıldığı için buradadır. Metinlerde yalnız hesap ve Sayfa adı ile sayı geçer.
 /// </summary>
 public static class InstagramSettingsTexts
 {
     // ---- Durum satırı (kart başlığının altı) --------------------------------
+
+    /// <summary>Durum henüz okunmadı: kartın ilk değeri; "Kaldır"dan sonra da tazeleme sonucu yazana dek görünür.
+    /// Çoklu hesaptan önceki metin, aynen.</summary>
+    public const string Checking = "Kontrol ediliyor...";
 
     /// <summary>Facebook bağlı değil: gösterilecek hesap yok.</summary>
     public const string NotConnected = "Önce Facebook'a bağlan.";
