@@ -229,4 +229,230 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         Descendants(page).OfType<Button>().Should().Contain(b => Equals(b.Content, "Tamam") && Shown(b)
             && ReferenceEquals(b.Command, vm.DismissInstagramNoticeCommand));
     });
+
+    // ── Ek sabitlemeler: kuralların, yukarıdaki testlerin doğrulamadığı cümleleri ──
+
+    /// <summary>Üretilmiş, hesabı çözülmüş bir satır.</summary>
+    private static InstagramPageRow NewRow(bool primary) => new(
+        FacebookOAuthTestKit.NewId(), $"Sayfa {Guid.NewGuid():N}", $"@hesap-{Guid.NewGuid():N}", primary, !primary, false);
+
+    /// <summary><c>/me/permissions</c> yanıtı: yorum okumak için gereken iki Instagram izni, verilen durumla.</summary>
+    private static HttpResponseMessage Permissions(string status) => FakeGraph.Json(
+        $$"""{"data":[{"permission":"instagram_basic","status":"{{status}}"},{"permission":"instagram_manage_comments","status":"{{status}}"}]}""");
+
+    [Fact]
+    public async Task Servis_yokken_ya_da_bagli_degilken_satirlar_bosalir_durum_once_baglan_der()
+    {
+        var unconfigured = CreateVm(oauth: null);                       // OAuth servisi yok
+        unconfigured.InstagramPages.Add(NewRow(primary: true));
+        await unconfigured.RefreshInstagramStatusAsync();
+        (unconfigured.InstagramPages.Count, unconfigured.InstagramAccountStatus, unconfigured.InstagramNeedsReconnect)
+            .Should().Be((0, "Önce Facebook'a bağlan.", false));
+
+        var vm = await OpenAsync();                                     // servis var, bağlantı tohumlanmadı
+        (vm.InstagramPages.Count, vm.InstagramAccountStatus, vm.InstagramNeedsReconnect, vm.CanManageInstagram)
+            .Should().Be((0, "Önce Facebook'a bağlan.", false, false));
+        _kit.Graph.Requests.Should().BeEmpty("bağlı değilken Graph'a gidilmez");
+    }
+
+    /// <summary>İzin uyarısı çoklu hesapta da çalışır (tek kullanıcı token'ı bütün Sayfaları kapsar) ve bağlantı
+    /// kalkınca söner: bağlı olmayan kurulumda "izinleri güncelle" uyarısının anlamı yoktur.</summary>
+    [Fact]
+    public async Task Izin_eksikse_uyari_iki_Sayfada_da_cikar_baglanti_kaldirilinca_soner()
+    {
+        await SeedAsync(extraPages: 1);
+        _kit.Graph.Map(IsPermissions, _ => Permissions("declined"));
+        var vm = await OpenAsync();
+        vm.InstagramNeedsReconnect.Should().BeTrue();
+        await vm.DisconnectFacebookCommand.ExecuteAsync(null);
+        vm.InstagramNeedsReconnect.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Kullanici_adi_donmeyen_hesabin_etiketi_Instagram_kimligidir()
+    {
+        await SeedAsync();
+        _kit.Graph.AddPage(_pages[0].Page.PageId, _pages[0].Page.PageName, _pages[0].IgUserId);    // Graph kullanıcı adını döndürmüyor
+        var vm = await OpenAsync();
+        (vm.InstagramAccountStatus, vm.InstagramPages.Single().InstagramText)
+            .Should().Be(($"Bağlı Instagram hesabı: @{_pages[0].IgUserId}", $"@{_pages[0].IgUserId}"));
+    }
+
+    /// <summary>Çağrısı düşen Sayfada hesap var mı yok mu bilinmez: satır iki Sayfada da uyarmaz, başlık onu saymaz.</summary>
+    [Theory, InlineData(0), InlineData(1)]
+    public async Task Iki_Sayfada_cozumlemesi_dusen_satir_notrdur_baslikta_sayilmaz(int failing)
+    {
+        await SeedAsync(extraPages: 1);
+        _kit.Graph.Map(u => IsResolve(u, _pages[failing].Page.PageId), _ => FakeGraph.Error(2, HttpStatusCode.InternalServerError));
+        var vm = await OpenAsync();
+        vm.InstagramAccountStatus.Should().Be("1 Instagram hesabı bağlı");
+        RowAt(vm, failing).Should().Be(("Durum okunamadı", false));
+        RowAt(vm, 1 - failing).Should().Be(($"@{_pages[1 - failing].IgUsername}", false));
+    }
+
+    [Fact]
+    public async Task Iki_Sayfada_hic_hesap_cozulmezse_baslik_sifir_der_birincil_dahil_iki_satir_da_uyarir()
+    {
+        await SeedAsync(extraPages: 1);
+        MakeBare(0);
+        MakeBare(1);
+        var vm = await OpenAsync();
+        vm.InstagramAccountStatus.Should().Be("0 Instagram hesabı bağlı");
+        vm.InstagramPages.Select(r => (r.InstagramText, r.IsWarning)).Should().Equal(
+            ("Bu Sayfaya bağlı Instagram profesyonel hesabı yok", true), ("Bu Sayfaya bağlı Instagram profesyonel hesabı yok", true));
+    }
+
+    /// <summary>
+    /// Sıra: ilki sürerken istenen tazeleme, ilki bitmeden Graph'a gitmez. İç içe koşsalardı bağlantı değişmeden önce
+    /// başlamış bir okuma, sonrakinin yazdığı satırların üstüne eski hâli yazabilirdi. Kurucunun tazelemesi izin
+    /// sondasında tutulur; o an bağlantı bellektedir, yani sıraya girmeyen bir tazeleme kendi izin sondasını
+    /// çağrıldığı anda atardı.
+    /// </summary>
+    [Fact]
+    public async Task Tazelemeler_siraya_girer_suren_tazeleme_bitmeden_sonraki_Grapha_gitmez()
+    {
+        await SeedAsync(extraPages: 1);
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var held = 0;
+        _kit.Graph.Map(IsPermissions, _ =>
+        {
+            if (Interlocked.Exchange(ref held, 1) == 0)                 // yalnız İLK izin sondası tutulur
+            {
+                reached.SetResult();
+                release.Wait(TestPatience.Upper);
+            }
+            return Permissions("granted");
+        });
+
+        Task second;
+        try
+        {
+            var vm = CreateVm(_kit.CreateService());                    // kurucunun tazelemesi izin sondasında tutuluyor
+            await reached.Task.WaitAsync(TestPatience.Upper);
+            second = vm.RefreshInstagramStatusAsync();
+            _kit.Graph.Requests.Should().ContainSingle("ikinci tazeleme sırada bekler");
+        }
+        finally
+        {
+            release.Set();
+        }
+        await second.WaitAsync(TestPatience.Upper);
+
+        string Kind(Uri u) => IsPermissions(u) ? "izin"
+            : IsResolve(u, _pages[0].Page.PageId) ? "sayfa-0"
+            : IsResolve(u, _pages[1].Page.PageId) ? "sayfa-1" : "başka";
+        _kit.Graph.Requests.Select(Kind).Should().Equal("izin", "sayfa-0", "sayfa-1", "izin", "sayfa-0", "sayfa-1");
+    }
+
+    [Fact]
+    public async Task Baglaninca_kart_hemen_tazelenir()
+    {
+        var (pageId, igUsername) = (FacebookOAuthTestKit.NewId(), $"hesap-{Guid.NewGuid():N}");
+        _kit.Graph.AddPage(pageId, $"sayfa-{Guid.NewGuid():N}", FacebookOAuthTestKit.NewId(), igUsername);   // kullanıcının tek Sayfası: seçici açılmaz
+        var vm = await OpenAsync();
+        vm.InstagramAccountStatus.Should().Be("Önce Facebook'a bağlan.");   // ön koşul: bağlı değil
+
+        var connect = vm.ConnectFacebookCommand.ExecuteAsync(null);
+        await _kit.Browser.WaitUntilOpenedAsync();
+        _kit.Browser.Complete();
+        await connect.WaitAsync(TestPatience.Upper);
+
+        (vm.InstagramAccountStatus, vm.InstagramPages.Select(r => r.PageId).SingleOrDefault(), vm.CanManageInstagram)
+            .Should().Be(($"Bağlı Instagram hesabı: @{igUsername}", pageId, true));
+    }
+
+    /// <summary>Yazım düşerse bağlantı değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler; engel kalkınca
+    /// aynı satır kaldırılabilir.</summary>
+    [Fact]
+    public async Task Kaldir_yazimi_duserse_satir_kalir_metin_yeniden_denemeyi_soyler_sonraki_deneme_kaldirir()
+    {
+        await SeedAsync(extraPages: 1);
+        var vm = await OpenAsync();
+        var rows = vm.InstagramPages.ToArray();
+        File.SetAttributes(_kit.TokenFilePath, FileAttributes.ReadOnly);        // hedef salt okunur: deponun yazımı düşer
+        try
+        {
+            await vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]);
+        }
+        finally
+        {
+            File.SetAttributes(_kit.TokenFilePath, FileAttributes.Normal);
+        }
+
+        vm.InstagramNotice.Should().Be("Hesap kaldırılamadı, yeniden dene.");
+        vm.InstagramPages.Should().Equal(rows);
+        (await _service.GetConnectedPagesAsync()).Should().HaveCount(2);
+
+        await vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]);
+        vm.InstagramNotice.Should().Be($"@{_pages[1].IgUsername} kaldırıldı.");
+        vm.InstagramPages.Should().Equal(rows[0]);
+        (await _service.GetConnectedPagesAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>Servisin dönüş değeri akışı değiştirmez: Sayfa başka yoldan çoktan kaldırıldıysa (servis false döner)
+    /// satır yine kalkar ve sonuç yazılır. Satırsız çağrı hiçbir şey yapmaz.</summary>
+    [Fact]
+    public async Task Kaldir_Sayfa_coktan_bagli_degilse_de_satiri_kaldirir_satirsiz_cagri_hicbir_sey_yapmaz()
+    {
+        await SeedAsync(extraPages: 1);
+        var vm = await OpenAsync();
+        await vm.RemoveInstagramAccountCommand.ExecuteAsync(null);
+        (vm.InstagramPages.Count, vm.InstagramNotice).Should().Be((2, (string?)null));
+
+        (await _service.RemoveExtraPageAsync(_pages[1].Page.PageId)).Should().BeTrue();     // ön koşul: Sayfa başka yoldan kaldırıldı
+        await vm.RemoveInstagramAccountCommand.ExecuteAsync(vm.InstagramPages[1]);
+        (vm.InstagramPages.Count, vm.InstagramNotice).Should().Be((1, $"@{_pages[1].IgUsername} kaldırıldı."));
+    }
+
+    [Fact]
+    public void Satir_sayisi_ve_baglanti_durumu_degisince_turetilen_ozellikler_bildirilir()
+    {
+        var vm = CreateVm(oauth: null);
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        int Raised(string name) { var count = raised.Count(n => n == name); raised.Clear(); return count; }
+
+        vm.InstagramPages.Add(NewRow(primary: true));
+        (Raised(nameof(vm.ShowInstagramPageRows)), vm.ShowInstagramPageRows).Should().Be((1, false));
+        vm.InstagramPages.Add(NewRow(primary: false));
+        (Raised(nameof(vm.ShowInstagramPageRows)), vm.ShowInstagramPageRows).Should().Be((1, true));
+        vm.InstagramPages.RemoveAt(1);
+        (Raised(nameof(vm.ShowInstagramPageRows)), vm.ShowInstagramPageRows).Should().Be((1, false));
+
+        vm.IsFacebookConnected = true;
+        (Raised(nameof(vm.CanManageInstagram)), vm.CanManageInstagram).Should().Be((1, true));
+        vm.IsFacebookBusy = true;
+        (Raised(nameof(vm.CanManageInstagram)), vm.CanManageInstagram).Should().Be((1, false));
+        vm.IsFacebookBusy = false;
+        (Raised(nameof(vm.CanManageInstagram)), vm.CanManageInstagram).Should().Be((1, true));
+    }
+
+    /// <summary>
+    /// Kartın, çizim testinin bakmadığı görünürlük kuralları: birincil eki ve ipucu yalnız birincil satırda; hesabı
+    /// çözülmüş satır uyarı renginde değil metin renginde; sonuç yokken sonuç satırı, tek Sayfada altyazı yer kaplamaz.
+    /// </summary>
+    [Fact]
+    public void Birincil_eki_ve_ipucu_yalniz_birincil_satirda_notr_satir_metin_renginde_sonucsuz_serit_gizli() => OnSta(() =>
+    {
+        const string Suffix = " · birincil (Facebook yorumları ve moderasyon bu Sayfadan)";
+        const string Caption = "İki hesap bağlıyken yorumlar tek akışta birleşir; her Instagram yorumunun sağında hangi hesaptan geldiği yazar.";
+        var (primary, extra) = (NewRow(primary: true), NewRow(primary: false));
+        var vm = CreateVm(oauth: null);
+        vm.InstagramPages.Add(primary);
+        vm.InstagramPages.Add(extra);
+        var page = RenderFacebookTab(vm);
+
+        ShownTexts(page).Where(t => t.Text == Suffix).Should().ContainSingle().Which.DataContext.Should().BeSameAs(primary);
+        foreach (var row in new[] { primary, extra })
+            ShownTexts(page).Single(t => t.Text == row.InstagramText).Foreground.Should().BeSameAs(page.FindResource("OD.Brush.Text"));
+        Descendants(page).OfType<FrameworkElement>().Where(e => ReferenceEquals(e.DataContext, extra))
+            .Should().NotBeEmpty().And.OnlyContain(e => e.ToolTip == null, "ipucu birincil satıra özgüdür");
+        Descendants(page).OfType<Button>().Where(b => ReferenceEquals(b.Command, vm.DismissInstagramNoticeCommand))
+            .Should().ContainSingle().Which.Should().Match<Button>(b => !Shown(b), "sonuç yokken sonuç satırı yer kaplamaz");
+
+        var single = CreateVm(oauth: null);
+        single.InstagramPages.Add(primary);
+        ShownTexts(RenderFacebookTab(single)).Select(t => t.Text).Should().NotContain(new[] { Caption, Suffix }, "tek Sayfada kart bugünkü gibi");
+    });
 }
