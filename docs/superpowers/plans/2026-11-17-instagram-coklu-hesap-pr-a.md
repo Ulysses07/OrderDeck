@@ -3629,3 +3629,75 @@ Spec bölümü → sahibi görev (yalnız PR-A). Madde düzeyindeki eşleme gör
 - **İkinci Facebook girişi** (ikinci Sayfayı başka bir Facebook kullanıcısı yönetirse; R17) ve **birden çok bilgisayar önlemi** (R19): sahibin 17.11.2026 cevabı tek bilgisayar olduğu için plana girmedi.
 - **Spec §4 "Kapsam dışı":** Facebook canlısını iki Sayfadan açmak; raporda, basılı etikette ya da siparişte hesap kırılımı; Sayfasız yol (Instagram Login); webhook; "!kayıt → DM"; Instagram izleyici sayısı.
 - **Değişmeyenler:** sunucu (`OrderDeck.LicenseServer`), yerel SQLite şeması, overlay, uzantı, panel ve Shopper (spec §10).
+
+## Uygulama sapmaları
+
+Görev metinleri yukarıda yazıldığı gibi kaldı; bu bölüm uygulamanın plandan nerede ayrıldığını söyler. Spec bu sapmalarla eşitlendi (`docs(instagram): tasarım belgesini uygulanan kodla eşitle`); ayrıntı ilgili commit gövdelerindedir.
+
+### a. Plan dışı sağlamlaştırma görevleri
+
+Denetçilerin küçük bulguları kol başına tek bir "b" görevinde toplandı; son iki görev (G18c, G18d) bütün dal incelemesinin bulgularını giderdi. Her biri taze bir uygulayıcıyla yapıldı ve spec / kalite (gerekince eşzamanlılık) denetiminden geçti.
+
+| Görev | Ne yaptı |
+|---|---|
+| G01b | Token deposu geçici dosyayı taşımadan önce diske indirir (güç kesintisinde hedef ad boş dosyayı göstermesin; emsal `SettingsStore.WriteThrough`); `ClearAsync` geçici dosyanın artığını da siler ("Bağlantıyı Kaldır"dan sonra diskte token kalmasın). Spec §8.1 ve TK2 buna göre güncellendi. |
+| G03b | `IsConnectedAsync`'in tembel yüklemesi demeti yalnız alan boşken yayımlar (`Interlocked.CompareExchange`), kilit altında yazılmış taze demeti ezmez; `GetJsonAsync` hata iletisinde isteğin kendi token'ını `***` ile maskeler; Sayfa listesi izin yönlendirmesine dönerken Graph kodunu günlüğe yazar. Sabitleme testleri eklendi; spec §8.2 / §8.8 güncellendi. |
+| G05b | Yeniden onayın kayıt adımı, kullanıcı token'ı arada değiştiyse (bağlantı kaldırılıp yeniden kurulmuş) hiçbir şey yazmaz; token'ı türetilemeyen Sayfanın Warning satırı HTTP durumunu da yazar (JSON olmayan 5xx / 429 gövdesinde Graph kodu okunamaz). İki test sıkılaştırıldı, JSON olmayan gövde testi eklendi. |
+| G06b | Poller'ın kota başlığını `NoBroadcast`, `Fatal` ve `Transient` sonuçlarında ve çok değerli başlıkta da taşıdığı testle sabitlendi; üretim kodu değişmedi. |
+| G08b | Sağlık ipucunda eksi saniye sıfıra kırpılır (`WholeSeconds`; sistem saati geri alınınca "Son yanıt -3 sn önce" yazıyordu); `StopAll` özeti düzeltildi; poller'ın üç seyrek dalında (izin hatası, yayın bitti, `comments` alanı olmayan media) kota başlığı, izleyicide alan korunumu ve sunucunun birkaç kuralı testle sabitlendi. |
+| G09b | Sağlık izleyicisi ve görünüm kuralları testlerindeki iki boşluk kapandı (Ok turunda kullanıcı adının korunumu; duran girdide geçmiş yeniden deneme saatinin "yanıt yok" üretmemesi); birleştirme kapısının testsiz kalan özet ve kilit kuralları sabitlendi. Yalnız test. |
+| G11b | Kalıcı hata beklemesi token değişince atlanır ya da kesilirse girdinin yeniden deneme saati "şimdi"ye çekilir (yoksa satır 5 dakikaya kadar bayat saat gösterir, "yanıt yok" gecikirdi); `Invalidate()` özeti düzeltildi. Beş sabitleme testi: oturum sonu sırası, sahipliğin bırakılması, token kaydı, kota satırının kültürü, süresi dolan beklemede saate dokunulmaması. |
+| G16b | Yeniden onayın kullanıcı token'ı çapası akışın BAŞINDA alınır, 3. ve 5. adımda karşılaştırılır (Sayfalar listelenirken yeniden kurulan bağlantı da ezilmez); "aynı anda iki izin güncellemesinde ilk kaydeden kazanır" belgelendi ve testlendi. Ayarlar kartı: tazeleme sonucu yazmadan önce bağlı Sayfaları yeniden okur, liste değiştiyse sonucu atıp yineler; `SettingsViewModel` kurucusuna isteğe bağlı son parametre `ILogger<SettingsViewModel>? log` eklendi, düşen "Kaldır" sebebi Warning olarak yazar. Üç yorum düzeltildi. |
+| G18b | "Instagram hesabı ekle" 0. adımdan önce süren tazelemeyi (ilk izin sondası) bekler; kota kodu kümesi tek yerde (`InstagramGraphError.IsQuotaError`), `Classify` ve ViewModel onu çağırır; oturum içi izleme testlerinin yüke duyarlı iki penceresi kapatıldı, test özetleri tanığın gösterdiğine indirildi; yorum düzeltmeleri. |
+| G18c | Motor: atlanan Sayfanın beklemesi sahiplik kaydını izler, sahip bırakınca hesabı hemen devralır; tekten çoka devir turunda yeniden çözümleme atlanır (ağ isteği yok); `InstagramAccountResolver` çözümleme hatasında Warning yazar, ham gövde hiçbir düzeyde yazılmaz, poller'ın geçici hata Debug satırı da gövde yerine durum ve kod yazar; `ExtraPagesOf` adı boş ek girdiyi atlar, ek girdinin disk biçimi testle donduruldu; devir testleri sağlamlaştırıldı (yorumun kulvardan geldiği doğrulanır, eski poller "yayın yok" ile susturulur). |
+| G18d | Arayüz: Ayarlar durum satırında gerçek metin ile bekleme metni ayrıldı; `IsInstagramAddBusy` eklendi (ekleme sürerken iki düğme pasif); izin güncellemesinin başarı dalı tazelemeden önce `[İptal]`i ve bekleme metnini kaldırır; "Kaldır"dan sonra durum `Kontrol ediliyor...`; ekleme disk hatası `Hesap eklenemedi, yeniden dene.`, JSON olmayan yanıt geçici hata; sağlık şeridinde yalnız değişen satır yenilenir; test yorumlarındaki plan atıfları kuralın kendisiyle değiştirildi. |
+
+### b. Orkestratörün eklediği bağlayıcı kurallar
+
+Görev metinlerinde yoktu; uygulayıcılara görev dışı not olarak verildi.
+
+1. **Ayarlar ViewModel'inin günlük kuralı (G17, G18):** bir istisnayı, sebebini tam göstermeyen bir operatör metnine çeviren `catch` dalı istisnayı Warning düzeyinde günlüğe yazar. Satırlar öneksizdir (kategori `SettingsViewModel`): `Instagram account listing failed`, `Instagram account add failed for Page {PageId}`, `Instagram account removal failed for Page {PageId}`, `Facebook permission update failed`. İptal, vazgeçme, onay zaman aşımı, 4 hesap sınırı ve `NeedsReauthorize` yazılmaz. Neden: pilotta "Sayfalar okunamadı" / "yetki alınamadı" / "Güncelleme başarısız" çıkarsa sebep günlükten okunabilsin.
+2. **Ayarlar tazeleme kuralı (G16b'den sonra):** süren bir tazeleme, o sırada değişen bağlantının eski hâlini karta yazamaz. G17 ve G18 buna dayanır ve her başarılı değişiklikten sonra tazeleme ister.
+3. **Görev sırası:** görevler iki paralel kolda (iki worktree) yürüdü; her görev yalnız "Bağımlı" satırındaki görevler dalda varken başladı (aşağıda e).
+
+### c. Öne çıkan uygulayıcı sapmaları
+
+Denetçiler hepsini haklı buldu.
+
+- **G10:** `InstagramChatTimings` `[SupportedOSPlatform("windows")]` taşır; üst döngünün oturum gövdesi `RunSessionAsync` yardımcısındadır; hesap adı kuralı `IsNullOrWhiteSpace`; sahiplik döngü çıkarken değere göre toplu bırakılır.
+- **G11:** önbellek boşaltma özel bir yöntemdedir (`ForgetAccountIfTokenChanged`); bekleme yardımcısı bool döner (atlandı / kesildi), G11b bunu kalıcı hata dalında kullanır.
+- **G12:** kendi kendine bitmiş hesap döngüsü izleme turunda "çalışan" sayılmaz, Sayfası listedeyse aynı turda yeniden başlatılır; kapıya devir, kalıcı hatayla biten ya da başlatılamayan poller'da uygulanmaz (beklemesi geçerli kalır); devredilen filigran yalnız devri izleyen ilk kurulumda geçerlidir; oturum sonu toplaması döngüleri açıkça iptal edip bekler.
+- **G14:** mesaj `TextBlock`'unun `Grid.Column` özniteliği onu saran `DockPanel`'e taşındı; ek testler (sağa yaslanma, 112 DIP belirteci, ipucu ofseti, kültürden bağımsız saat).
+- **G16:** satır şablonunda `WrapPanel`, saydam zemin, düğmede dolgu / yazı boyu; tazelemenin genel hata metni (`Durum okunamadı: …`) ViewModel'de literal kaldı. Durum satırının ilk değeri de literaldi; G18d onu `InstagramSettingsTexts.Checking` sabitine bağladı.
+- **G17:** ek günlük testleri özellik commit'inde; test yardımcıları genişledi.
+- **G18:** izin uyarısı metni `InstagramSettingsTexts.PermissionsMissingWarning`'e taşındı (`x:Static`); test yardımcısı `BeginReauthorizeAsync`, komut tarayıcı açılmadan biterse hemen düşer.
+- Test sayıları görevlerdeki "beklenen sayı" satırlarından fazladır (ek sabitleme testleri).
+
+### d. Geçersiz kalan ya da daralan plan kararları
+
+- **Durum satırında "önceki metin geri konur"** ("Plan kararları": bekleme metni ve `Sayfalar okunuyor...` için "işlem bitince durum satırı hâlâ o metinse önceki metin geri konur"): GEÇERSİZ. Kalıp üç açık bırakıyordu (bekleme sırasında biten tazeleme tarayıcı talimatını siliyordu; ekleme sürerken başlayan izin güncellemesi eklemenin geçici metnini "önceki metin" diye geri yazabiliyordu; başarılı güncellemeden sonraki tazeleme boyunca bekleme metni ve etkisiz `[İptal]` ekranda kalıyordu). Yerine (G18d): gerçek durum metni ayrı tutulur, tazeleme ve "Kaldır" onu yazar; satıra ancak bekleme metni görünmüyorsa yansır; bekleme metni kalkınca satır o anki gerçek metne döner. Ek olarak `IsInstagramAddBusy` ile iki akış aynı anda yürümez.
+- **Eklemede "5xx, kota ve ağ dışındaki her hata → yetki alınamadı"** ("Plan kararları"): DARALDI. Token türetildikten sonra demet yazımı düşerse (`IOException`, `UnauthorizedAccessException`, `CryptographicException`) metin `Hesap eklenemedi, yeniden dene.` olur; JSON olmayan yanıt (`JsonException`, ör. ağ geçidinin HTML sayfası) ve zaman aşımı geçici hata sayılır (`Sayfalar okunamadı…`). "Yetki alınamadı" geri kalan hatalarda kalır (token türetilemedi; token / izin hataları da, aşağıda "Bilinen sınırlar"). Spec §8.6.1 o metni zaten yalnız token türetilemediğinde istiyordu.
+- **Global Constraints AH4'teki "yedi madde + dört yan fark":** yan farklar beşe çıktı; spec §8.3.2'ye (e) eklendi ("Facebook'a Bağlan"ın üç hata metni: bekleyen onay mesajı, maskelenmiş Graph gövdesi, adressiz boş gövde iletisi).
+
+### e. Yürütme sırası ve son inceleme
+
+Görevler plandaki G01 → G19 sırasıyla değil, iki paralel kolda yürüdü; her görev yalnız "Bağımlı" satırındaki görevler dalda varken başladı (G15 ikinci koldaydı). Plan dosyası uygulama boyunca değişmedi. Son olarak dalın tamamı yedi mercekle incelendi: eşzamanlılık, OAuth / sır hijyeni, spec uyumu (motor), spec uyumu (arayüz), tek hesap regresyonu, test kalitesi, hata yutma. Kritik ya da önemli bulgu çıkmadı; küçük bulgular G18c (motor) ve G18d (arayüz) görevlerinde giderildi.
+
+## Bilinen sınırlar
+
+Kodda doğrulandı; düzelenler yazılmadı. PR gövdesine de girer.
+
+1. Token değişince Sayfa BAŞKA bir Instagram hesabına çözülürse eski hesabın sahiplik kaydı ve kulvar etiketi oturum sonuna dek kalır (kulvar döngüde bir kez açılır; sahiplik döngü bitince bırakılır).
+2. Kota satırı: çok değerli `X-Business-Use-Case-Usage` başlığında satır `header unreadable` yazar (değerler virgülle birleşir, JSON olarak okunamaz). Başlıkta `estimated_time_to_regain_access` alanı yoksa satır `regain 0 min` yazar: "alan yok" ile "0 dakika" günlükte ayırt edilemez (Meta alanı olağan durumda gönderir).
+3. Kota satırının "hesap başına dakikada en çok bir" sınırlayıcısı döngü başınadır: döngü yeniden kurulunca (yeni oturum, Sayfanın yeniden eklenmesi) sıfırlanır.
+4. Çözümleme token kaydı (`resolvedTokens`) Sayfanın son token'ını servis ömrünce süreç belleğinde tutar (diskteki demette olandan fazlası değil).
+5. Dar panelde etiketli sohbet satırında etiket en çok 112 DIP yer kaplar, mesaja kalan genişlik buna göre daralır; uzun yorum daha çok satıra kırılır (spec §8.6.2 / TK11 tasarımının sonucu; pilotta gözle bakılır).
+6. Ayarlar kartının sonuç şeridi kargo şeridinin eşidir: başarı metni de sarı zeminde çıkar (pilotta gözle bakılır; istenirse ayrı küçük iş).
+7. Ayarlar tazelemesi 1 + N sıralı Graph isteğidir (N en çok 4, istek başına 15 sn zaman aşımı); Graph'a ulaşılamazsa bir tazeleme ~75 saniye sürebilir. Tazelemeyi bekleyen komutlar ("Kaldır", "Facebook'a Bağlan", "Bağlantıyı Kaldır", izin güncellemesi, ekleme) o sürede meşgul kalır.
+8. İzleme turunda beklenmeyen bir istisna oturumun bütün hesap döngülerini toplar; üst döngü 30 saniye sonra yeniden kurar (sağlam hesaplar da 30 sn + ilk çekimin yutulmasını yaşar). Tekten çoka devir, hız sınırı ya da "yayın yok" beklemesindeki poller'ı da durdurur: hesap devirde bir istek daha atar.
+9. Kozmetik: oturum iptali döngü başı denetimi ile poller kurulumu arasına düşerse poller başlangıç satırlarını yazar, istek atmaz.
+10. Ekleme akışında token / izin hatası (190 / 200) da "yetki alınamadı" metnine düşer; sebep günlükteki `Instagram account add failed for Page …` Warning satırından okunur.
+11. `HttpIOException` (yanıt gövdesi okunurken kopan bağlantı) `IOException`'dan türediği için ekleme sırasında `Sayfalar okunamadı…` yerine `Hesap eklenemedi, yeniden dene.` metnine düşer; iki metin de yeniden denemeyi söyler.
+12. Eksik Sayfa onay çekmecesi açıkken izin güncellemesi, çekmecede karar verilene dek bitmez (onay işlevi iptal belirtecini izlemez).
+13. Testler: sohbet etiketi ipucunun "ofset mesajın anından alınır" testi yalnız UTC olmayan makinede ayırt eder (CI UTC'dir; üretim kodu doğru). Tekten çoka devir testlerinde eski poller "yayın yok" yanıtıyla susturulduğu için A hesabının sağlık durumu devre dek `BroadcastEnded` görünür; testler buna bakmaz.
+14. Bu PR'ın değiştirmediği, önceden var olan davranış (ayrı iş): ana token dosyası silinemezse `ClearAsync` hatayı yutar; `DisconnectAsync` "kaldırıldı" der ama sonraki açılışta bağlantı geri gelir.
