@@ -387,6 +387,16 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
+                            <!-- Hesap işlemleri. Facebook bağlı değilken ya da bir bağlantı
+                                 işlemi sürerken pasif (CanManageInstagram). -->
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="{x:Static ig:InstagramSettingsTexts.AddAccountButton}"
+                                        Style="{StaticResource OD.Button.Secondary}"
+                                        Command="{Binding AddInstagramAccountCommand}"
+                                        IsEnabled="{Binding CanManageInstagram}"
+                                        Margin="{StaticResource OD.Pad.X2}"/>
+                            </StackPanel>
+
                             <!-- Kart işlemlerinin sonucu ("… kaldırıldı."): sayfanın altındaki
                                  ShippingNotice şeridinin kart içi eşi. Açılır pencere yok,
                                  "Tamam" kapatır; sonuç yokken yer kaplamaz. -->

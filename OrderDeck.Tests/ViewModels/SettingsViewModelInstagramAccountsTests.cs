@@ -2,12 +2,15 @@ using System.Collections.Specialized;
 using System.Net;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.Services.Pages;
 using OrderDeck.App.ViewModels;
+using OrderDeck.App.Views.Drawers;
 using OrderDeck.App.Views.Pages;
 using OrderDeck.Chat.Facebook;
 using OrderDeck.Core.Settings;
@@ -45,8 +48,10 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
     /// <param name="oauth">Null: OAuth servisi yapılandırılmamış kurulum.</param>
     /// <param name="httpFactory">Verilmezse kitin sahte Graph'ına bağlı fabrika.</param>
     /// <param name="log">Verilmezse ViewModel'in varsayılanı (günlük yazılmaz).</param>
+    /// <param name="drawers">Verilmezse sınıfın çekmece sahtesi (<see cref="_drawers"/>).</param>
     private SettingsViewModel CreateVm(
-        FacebookOAuthService? oauth, IHttpClientFactory? httpFactory = null, ILogger<SettingsViewModel>? log = null)
+        FacebookOAuthService? oauth, IHttpClientFactory? httpFactory = null, ILogger<SettingsViewModel>? log = null,
+        IDrawerService? drawers = null)
     {
         var store = new SettingsStore(_path);
         var shortcutsTab = new ShortcutsTabViewModel(new ShortcutRegistry(store), null!);   // bağlayıcı yalnız kısayol kaydında çağrılır
@@ -56,17 +61,20 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         return new SettingsViewModel(_kit.Settings, store, shortcutsTab,
             new IntakeFormSettingsViewModel(api),
             new ShopperAppSettingsViewModel(api, NullLogger<ShopperAppSettingsViewModel>.Instance),
-            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory, log: log);
+            facebookOAuth: oauth, httpFactory: httpFactory ?? _kit.HttpFactory, drawers: drawers ?? _drawers, log: log);
     }
 
     private async Task SeedAsync(int extraPages = 0) => _pages = await _kit.SeedAsync(extraPages);
 
     /// <summary>Ayarlar'ı o ana dek tohumlanan bağlantıyla (tohumlanmadıysa bağlantısız) açar ve iki durum okumasını
-    /// bekler. Tazelemeler sıraya girdiği için kurucunun başlattığı tazeleme de bitmiş olur.</summary>
-    private async Task<SettingsViewModel> OpenAsync()
+    /// bekler. Tazelemeler sıraya girdiği için kurucunun başlattığı tazeleme de bitmiş olur. Çekmece sahtesi kararını
+    /// bu ViewModel üstünden verir.</summary>
+    /// <param name="log">Verilmezse ViewModel'in varsayılanı (günlük yazılmaz).</param>
+    private async Task<SettingsViewModel> OpenAsync(ILogger<SettingsViewModel>? log = null)
     {
         _service = _kit.CreateService();
-        var vm = CreateVm(_service);
+        var vm = CreateVm(_service, log: log);
+        _drawers.Vm = vm;
         await vm.RefreshFacebookConnectionStatusAsync();
         await vm.RefreshInstagramStatusAsync();
         return vm;
@@ -606,4 +614,228 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         single.InstagramPages.Add(primary);
         ShownTexts(RenderFacebookTab(single)).Select(t => t.Text).Should().NotContain(new[] { Caption, Suffix }, "tek Sayfada kart bugünkü gibi");
     });
+
+    // ── "Instagram hesabı ekle" (çekmece) ──
+
+    /// <summary>Çekmece sahtesi: içerik fabrikasını ÇAĞIRMAZ; kararı ViewModel'in tuttuğu seçici üstünden verir.</summary>
+    private sealed class FakeDrawers : IDrawerService
+    {
+        public Func<SettingsViewModel, bool> Decide { get; set; } = _ => false;         // varsayılan: İptal / Vazgeç
+        public SettingsViewModel? Vm { get; set; }
+        public List<string> Titles { get; } = new();
+        public Task<bool> ShowAsync(string title, Func<Drawer, object> buildContent) { Titles.Add(title); return Task.FromResult(Decide(Vm!)); }
+        public bool CloseTop() => false;
+    }
+
+    private readonly FakeDrawers _drawers = new();
+    private const string ReconnectText = "Facebook oturumunun yenilenmesi gerekiyor. \"Facebook izinlerini güncelle\"ye bas.";
+
+    /// <summary>Graph'a bağlı olmayan yeni bir Sayfa tanıtır (değerler üretilir).</summary>
+    private (string PageId, string PageName, string? IgUsername) AddCandidate(bool withInstagram = true)
+    {
+        var (pageId, pageName) = (FacebookOAuthTestKit.NewId(), $"sayfa-{Guid.NewGuid():N}");
+        var igUsername = withInstagram ? $"hesap-{Guid.NewGuid():N}" : null;
+        _kit.Graph.AddPage(pageId, pageName, withInstagram ? FacebookOAuthTestKit.NewId() : null, igUsername);
+        return (pageId, pageName, igUsername);
+    }
+
+    /// <summary>Üretilmiş bir listeleme satırı.</summary>
+    private static FacebookAddablePage NewAddable(bool withInstagram, bool connected = false) => new(
+        FacebookOAuthTestKit.NewId(), $"sayfa-{Guid.NewGuid():N}",
+        withInstagram ? FacebookOAuthTestKit.NewId() : null,
+        withInstagram ? $"hesap-{Guid.NewGuid():N}" : null,
+        connected);
+
+    /// <summary>Çekmecede o Sayfayı seçip "Ekle".</summary>
+    private static bool Pick(SettingsViewModel vm, string pageId)
+    {
+        vm.ActiveInstagramPicker!.Selected = vm.ActiveInstagramPicker.Options.Single(o => o.PageId == pageId);
+        return true;
+    }
+
+    private static bool IsAccounts(Uri u) => u.AbsolutePath.EndsWith("/me/accounts", StringComparison.Ordinal);
+    private static bool IsPageToken(Uri u, string pageId) => u.AbsolutePath.EndsWith("/" + pageId, StringComparison.Ordinal)
+        && u.Query.Contains("fields=access_token", StringComparison.Ordinal);
+
+    [Fact]
+    public async Task Ekle_secilen_hesabi_tarayicisiz_ekler_ve_karti_tazeler()
+    {
+        await SeedAsync();
+        var candidate = AddCandidate();
+        var vm = await OpenAsync();
+        var statuses = new List<string>();
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(vm.InstagramAccountStatus)) statuses.Add(vm.InstagramAccountStatus); };
+        string? statusAtDrawer = null;
+        _drawers.Decide = v => { statusAtDrawer = v.InstagramAccountStatus; return Pick(v, candidate.PageId); };
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        _drawers.Titles.Should().Equal("Instagram hesabı ekle");
+        statuses.Should().Contain("Sayfalar okunuyor...");
+        statusAtDrawer.Should().Be($"Bağlı Instagram hesabı: @{_pages[0].IgUsername}", "çekmeceden önce önceki metin geri konur");
+        vm.InstagramNotice.Should().Be($"@{candidate.IgUsername} eklendi. Yayın açıksa birkaç saniye içinde okunmaya başlar.");
+        vm.InstagramPages.Select(r => r.PageId).Should().Equal(_pages[0].Page.PageId, candidate.PageId);
+        vm.InstagramAccountStatus.Should().Be("2 Instagram hesabı bağlı");
+        vm.ActiveInstagramPicker.Should().BeNull();
+        (_kit.Broker.ConfigCalls, _kit.Broker.ExchangeCalls).Should().Be((0, 0), "TK5: tarayıcı ve sunucu takası yok");
+    }
+
+    [Fact]
+    public async Task Eklenebilecek_hesap_yoksa_cekmece_acilmaz_yonlendirme_metni_yazilir()
+    {
+        await SeedAsync();
+        AddCandidate(withInstagram: false);
+        var vm = await OpenAsync();
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        _drawers.Titles.Should().BeEmpty();
+        vm.InstagramNotice.Should().Be("Eklenebilecek başka hesap bulunamadı. Yeni hesabı önce bir Facebook Sayfasına bağla; Sayfa hazırsa \"Facebook izinlerini güncelle\"ye bas ve açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretle.");
+    }
+
+    [Theory, InlineData(true), InlineData(false)]      // true: izin sondası "izin yok" dedi (0. adım); false: listeleme 190 döndü (NeedsReauthorize)
+    public async Task Oturum_yenilenmeliyse_cekmece_acilmaz_iki_yol_ayni_metne_varir(bool probeSaysNo)
+    {
+        await SeedAsync();
+        AddCandidate();
+        if (probeSaysNo) _kit.Graph.Map(IsPermissions, _ => FakeGraph.Json("""{"data":[]}"""));
+        else _kit.Graph.Map(IsAccounts, _ => FakeGraph.Error(190));
+        var vm = await OpenAsync();
+        var listings = _kit.Graph.Requests.Count(IsAccounts);
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        vm.InstagramNeedsReconnect.Should().Be(probeSaysNo);
+        _kit.Graph.Requests.Count(IsAccounts).Should().Be(probeSaysNo ? listings : listings + 1, "0. adımda listeleme yapılmaz");
+        (_drawers.Titles.Count, vm.InstagramNotice).Should().Be((0, ReconnectText));
+    }
+
+    [Theory]                                                            // karar eki: sınır, yetki ve geçici hata metinleri
+    [InlineData("sinir"), InlineData("yetki"), InlineData("listeleme-5xx"), InlineData("listeleme-ag"), InlineData("ekleme-5xx"), InlineData("ekleme-kota")]
+    public async Task Ekleme_hatalari_kendi_metnine_duser_hicbir_sey_eklenmez_durum_metni_geri_konur(string fault)
+    {
+        await SeedAsync(extraPages: fault == "sinir" ? 3 : 0);              // "sinir": 4 Sayfa bağlı, AddExtraPageAsync reddeder
+        var candidate = AddCandidate();
+        var vm = await OpenAsync();
+        _drawers.Decide = v => Pick(v, candidate.PageId);
+        var (status, rows) = (vm.InstagramAccountStatus, vm.InstagramPages.Count);
+        if (fault == "yetki") _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => FakeGraph.Json("{}"));     // Sayfa yetkisi türetilemez
+        if (fault == "listeleme-5xx") _kit.Graph.Map(IsAccounts, _ => FakeGraph.Error(2, HttpStatusCode.ServiceUnavailable));
+        if (fault == "listeleme-ag") _kit.Graph.Map(IsAccounts, _ => throw new HttpRequestException("ağ yok"));
+        if (fault == "ekleme-5xx") _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => FakeGraph.Error(2, HttpStatusCode.ServiceUnavailable));
+        if (fault == "ekleme-kota") _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => FakeGraph.Error(613));
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        vm.InstagramNotice.Should().Be(fault switch
+        {
+            "sinir" => "En çok 4 Instagram hesabı bağlanabilir.",
+            "yetki" => $"\"{candidate.PageName}\" için yetki alınamadı: bu Sayfada yönetici olduğundan emin ol.",
+            _ => "Sayfalar okunamadı, internetini kontrol edip yeniden dene.",
+        });
+        (vm.InstagramAccountStatus, vm.InstagramPages.Count).Should().Be((status, rows));
+    }
+
+    [Fact]
+    public async Task Cekmecede_vazgecilirse_hicbir_sey_degismez()
+    {
+        await SeedAsync();
+        AddCandidate();
+        var vm = await OpenAsync();                                         // Decide varsayılanı: İptal
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+        _drawers.Titles.Should().ContainSingle();
+        vm.InstagramNotice.Should().BeNull();
+        vm.InstagramPages.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void Secici_bagli_Sayfalari_eler_hesapsiz_Sayfayi_pasif_gosterir_ilk_secilebiliri_secer()
+    {
+        var (connected, bare, addable) = (NewAddable(true, connected: true), NewAddable(false), NewAddable(true));
+        var picker = new InstagramAccountPickerViewModel(new[] { connected, bare, addable });
+        picker.Options.Should().Equal(
+            new InstagramAccountOption(bare.PageId, bare.PageName, $"{bare.PageName} — Instagram hesabı bağlı değil", false),
+            new InstagramAccountOption(addable.PageId, addable.PageName, $"@{addable.IgUsername} — Sayfa: {addable.PageName}", true));
+        picker.Selected.Should().Be(picker.Options[1]);
+    }
+
+    [Fact]                                                                  // Review Focus 3
+    public void Cekmece_secenekleri_cizer_hesapsiz_Sayfa_pasif_secim_yokken_Ekle_kapatmaz() => OnSta(() =>
+    {
+        var picker = new InstagramAccountPickerViewModel(new[] { NewAddable(false), NewAddable(true) });
+        var stack = new DrawerStack();
+        var closed = stack.ShowAsync("Instagram hesabı ekle", d => InstagramAccountAddDrawer.Create(d, picker));
+        var view = (InstagramAccountAddDrawer)stack.Top!.Content!;
+        view.Measure(new Size(400, 700));
+        view.Arrange(new Rect(0, 0, 400, 700));
+        ThemeTestHost.Pump();
+        view.UpdateLayout();
+        Descendants(view).OfType<ListBoxItem>().Select(i => i.IsEnabled).Should().Equal(picker.Options.Select(o => o.CanSelect));
+        ShownTexts(view).Select(t => t.Text).Should().Contain(picker.Options.Select(o => o.Display));
+        var add = Descendants(view).OfType<Button>().Single(b => Equals(b.Content, "Ekle"));
+        picker.Selected = null;
+        add.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        closed.IsCompleted.Should().BeFalse("seçim yokken Ekle kapatmaz");
+        picker.Selected = picker.Options.Single(o => o.CanSelect);
+        add.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        (closed.IsCompletedSuccessfully && closed.Result).Should().BeTrue();
+    });
+
+    [Fact]                                                                  // Review Focus 3
+    public void Kartta_Instagram_hesabi_ekle_dugmesi_bagli_degilken_pasif() => OnSta(() =>
+    {
+        Button Add(SettingsViewModel vm) => Descendants(RenderFacebookTab(vm)).OfType<Button>().Single(b => Equals(b.Content, "Instagram hesabı ekle"));
+        var offline = CreateVm(oauth: null);
+        var button = Add(offline);
+        button.IsEnabled.Should().BeFalse();
+        button.Command.Should().BeSameAs(offline.AddInstagramAccountCommand);
+        var connected = CreateVm(oauth: null);
+        connected.IsFacebookConnected = true;
+        Add(connected).IsEnabled.Should().BeTrue();
+    });
+
+    // ── Ek sabitlemeler: ekleme akışının günlük kuralı ──
+
+    /// <summary>
+    /// Sebebi tam göstermeyen metne ("Sayfalar okunamadı", "yetki alınamadı") düşen hata günlüğe Warning olarak düşer:
+    /// operatör sabit metni görür, destek sebebi (Graph kodu, HTTP durumu) günlükten okur. Satır yalnız Sayfa kimliğini
+    /// taşır; istisna eklidir; token ve Sayfa adı yoktur.
+    /// </summary>
+    [Theory, InlineData("listeleme-5xx"), InlineData("listeleme-ag"), InlineData("ekleme-5xx"), InlineData("yetki")]
+    public async Task Sebebi_soylemeyen_hata_metninde_sebep_gunluge_uyari_olarak_duser(string fault)
+    {
+        await SeedAsync();
+        var candidate = AddCandidate();
+        var log = new CapturingLogger<SettingsViewModel>();
+        var vm = await OpenAsync(log);
+        _drawers.Decide = v => Pick(v, candidate.PageId);
+        if (fault == "listeleme-5xx") _kit.Graph.Map(IsAccounts, _ => FakeGraph.Error(2, HttpStatusCode.ServiceUnavailable));
+        if (fault == "listeleme-ag") _kit.Graph.Map(IsAccounts, _ => throw new HttpRequestException($"ağ yok {Guid.NewGuid():N}"));
+        if (fault == "ekleme-5xx") _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => FakeGraph.Error(2, HttpStatusCode.ServiceUnavailable));
+        if (fault == "yetki") _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => FakeGraph.Json("{}"));
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+
+        var warning = log.Warnings.Should().ContainSingle().Which;
+        (warning.Level, warning.Message).Should().Be((LogLevel.Warning, fault.StartsWith("listeleme", StringComparison.Ordinal)
+            ? "Instagram account listing failed"
+            : $"Instagram account add failed for Page {candidate.PageId}"));
+        warning.Exception.Should().NotBeNull("sebep istisnadadır");
+        var bundle = (await _kit.Store.LoadAsync())!;
+        foreach (var secret in new[] { bundle.UserAccessToken, _pages[0].Page.PageAccessToken, candidate.PageName })
+            warning.Full.Should().NotContain(secret);
+    }
+
+    /// <summary>Metnin sebebi tam söylediği (sınır), sebebin başka yerde günlüğe düştüğü (oturum yenilenmeli: servis
+    /// yazar) ve kullanıcının vazgeçtiği yollar günlüğe bir şey yazmaz.</summary>
+    [Theory, InlineData("vazgec"), InlineData("sinir"), InlineData("oturum")]
+    public async Task Vazgecme_sinir_ve_oturum_yenileme_gunluge_yazilmaz(string kind)
+    {
+        await SeedAsync(extraPages: kind == "sinir" ? 3 : 0);
+        var candidate = AddCandidate();
+        if (kind == "oturum") _kit.Graph.Map(IsAccounts, _ => FakeGraph.Error(190));
+        var log = new CapturingLogger<SettingsViewModel>();
+        var vm = await OpenAsync(log);
+        if (kind == "sinir") _drawers.Decide = v => Pick(v, candidate.PageId);
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+
+        vm.InstagramNotice.Should().Be(kind switch
+        {
+            "vazgec" => null,
+            "sinir" => "En çok 4 Instagram hesabı bağlanabilir.",
+            _ => ReconnectText,
+        });
+        log.Entries.Should().BeEmpty();
+    }
 }

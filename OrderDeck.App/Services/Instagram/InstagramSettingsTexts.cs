@@ -3,7 +3,8 @@ namespace OrderDeck.App.Services.Instagram;
 /// <summary>
 /// Ayarlar'daki Instagram kartının çoklu hesapla gelen, operatöre görünen metinleri (çoklu hesap tasarımı §8.6.1):
 /// <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'in durum satırına, hesap satırlarına ve sonuç satırına
-/// yazdıkları ve XAML'in <c>x:Static</c> ile okuduğu yeni sabit metinler. Kartın çoklu hesaptan ÖNCEKİ sabit metinleri
+/// yazdıkları, "Instagram hesabı ekle" çekmecesinin gösterdikleri ve XAML'in <c>x:Static</c> ile okuduğu yeni sabit
+/// metinler. Kartın çoklu hesaptan ÖNCEKİ sabit metinleri
 /// (başlık, izin uyarısı, ipucu paragrafı) <c>SettingsPage.xaml</c>'de, durum satırının ilk değeri ve genel hata
 /// metni <see cref="OrderDeck.App.ViewModels.SettingsViewModel"/>'de kalır. Metinlerde yalnız hesap ve Sayfa adı ile
 /// sayı geçer.
@@ -65,6 +66,62 @@ public static class InstagramSettingsTexts
 
     /// <summary>Sonuç satırını kapatan düğme.</summary>
     public const string DismissNoticeButton = "Tamam";
+
+    // ---- "Instagram hesabı ekle" --------------------------------------------
+
+    /// <summary>Karttaki düğme; çekmecenin başlığı da budur.</summary>
+    public const string AddAccountButton = "Instagram hesabı ekle";
+
+    /// <summary>Listeleme sürerken durum satırı.</summary>
+    public const string ReadingPages = "Sayfalar okunuyor...";
+
+    /// <summary>Instagram izni eksik ya da kullanıcı token'ı geçersiz (izin sondası ya da listeleme söyledi).</summary>
+    public const string SessionNeedsRenewal =
+        "Facebook oturumunun yenilenmesi gerekiyor. \"Facebook izinlerini güncelle\"ye bas.";
+
+    /// <summary>Listeleme düştü ya da ekleme geçici bir hatayla (ağ, 5xx, kota) düştü.</summary>
+    public const string PagesUnreadable = "Sayfalar okunamadı, internetini kontrol edip yeniden dene.";
+
+    /// <summary>Instagram hesabı olan, henüz bağlı olmayan Sayfa yok: çekmece açılmaz.</summary>
+    public const string NoAddableAccount =
+        "Eklenebilecek başka hesap bulunamadı. Yeni hesabı önce bir Facebook Sayfasına bağla; Sayfa hazırsa " +
+        "\"Facebook izinlerini güncelle\"ye bas ve açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretle.";
+
+    /// <summary>Sınır dolu.</summary>
+    /// <param name="maxPages">Bağlanabilecek en çok Sayfa sayısı (birincil dahil).</param>
+    public static string PageLimitReached(int maxPages) => $"En çok {maxPages} Instagram hesabı bağlanabilir.";
+
+    /// <summary>Seçilen Sayfanın token'ı türetilemedi.</summary>
+    public static string AuthorizationFailed(string pageName) =>
+        $"\"{pageName}\" için yetki alınamadı: bu Sayfada yönetici olduğundan emin ol.";
+
+    /// <summary>Ekleme tamamlandı.</summary>
+    /// <param name="accountLabel">Eklenen hesabın etiketi (<see cref="AccountLabel"/>).</param>
+    public static string AccountAdded(string accountLabel) =>
+        $"{accountLabel} eklendi. Yayın açıksa birkaç saniye içinde okunmaya başlar.";
+
+    /// <summary>Çekmecenin üstündeki cümle.</summary>
+    public const string AddDrawerPrompt = "Yorumlarını da okumak istediğin hesabı seç:";
+
+    /// <summary>Çekmecenin onay düğmesi.</summary>
+    public const string AddDrawerConfirm = "Ekle";
+
+    /// <summary>Çekmecenin vazgeçme düğmesi.</summary>
+    public const string AddDrawerCancel = "İptal";
+
+    /// <summary>Çekmecenin altındaki ilk yardım satırı.</summary>
+    public const string AddDrawerHelpNotListed =
+        "Aradığın hesap listede yok mu? Önce Instagram hesabını bir Facebook Sayfasına bağla.";
+
+    /// <summary>Çekmecenin altındaki ikinci yardım satırı.</summary>
+    public const string AddDrawerHelpReauthorize =
+        "Sayfa yine görünmüyorsa çekmeceyi kapatıp \"Facebook izinlerini güncelle\"ye bas.";
+
+    /// <summary>Çekmecede Instagram hesabı olan Sayfanın seçeneği (ayraç U+2014).</summary>
+    public static string OptionWithAccount(string accountLabel, string pageName) => $"{accountLabel} — Sayfa: {pageName}";
+
+    /// <summary>Çekmecede Instagram hesabı olmayan (pasif) Sayfanın seçeneği (ayraç U+2014).</summary>
+    public static string OptionWithoutAccount(string pageName) => $"{pageName} — Instagram hesabı bağlı değil";
 
     // ---- Altyazı ------------------------------------------------------------
 

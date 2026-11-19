@@ -397,7 +397,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// <summary>
     /// Instagram kartını tazeler: (1) oturumda IG izinleri var mı, (2) bağlı her Sayfaya bir IG profesyonel hesabı
     /// bağlı mı. Graph'a izin için bir, Sayfa başına bir istek gider. Ayarlar açılırken ve bağlantı her değiştiğinde
-    /// (bağlan, bağlantıyı kaldır, hesap kaldır) çalışır; yayın sırasında kendiliğinden çalışmaz.
+    /// (bağlan, bağlantıyı kaldır, hesap ekle, hesap kaldır) çalışır; yayın sırasında kendiliğinden çalışmaz.
     ///
     /// <para>Tazelemeler sıraya girer (<see cref="_instagramRefreshGate"/>): kart hep en son istenen tazelemenin
     /// sonucunda kalır. Sonuç yazılmadan hemen önce bağlı Sayfalar yeniden okunur; liste o arada değiştiyse sonuç
@@ -592,6 +592,123 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     [RelayCommand]
     private void DismissInstagramNotice() => InstagramNotice = null;
+
+    /// <summary>"Instagram hesabı ekle" çekmecesi açıkken onun modeli; kapalıyken null. Testler akışı bunun üzerinden
+    /// sürer.</summary>
+    public InstagramAccountPickerViewModel? ActiveInstagramPicker { get; private set; }
+
+    /// <summary>
+    /// "Instagram hesabı ekle" (§8.6.1): saklı Facebook girişiyle, tarayıcı açmadan ve sunucu takası olmadan (TK5)
+    /// Sayfaları listeler, çekmecede seçileni ek hesap olarak bağlar ve kartı tazeler. İzin eksikse ya da oturum
+    /// yenilenmeliyse listeleme yapmadan "Facebook izinlerini güncelle"ye yönlendirir. Sonuç kart içi satıra yazılır.
+    /// Akış arayüz iş parçacığında kalır.
+    /// </summary>
+    [RelayCommand]
+    private async System.Threading.Tasks.Task AddInstagramAccount()
+    {
+        if (_facebookOAuth is null) return;
+
+        // 0. adım: değer son tazelemede hesaplandı; yeni Graph isteği yok. İzin eksikken Graph Instagram alanını hata
+        // vermeden düşürür: listeleme bütün Sayfaları hesapsız gösterir ve kullanıcıyı yanlış yere yollardı.
+        if (InstagramNeedsReconnect)
+        {
+            InstagramNotice = InstagramSettingsTexts.SessionNeedsRenewal;
+            return;
+        }
+
+        var previousStatus = InstagramAccountStatus;
+        InstagramAccountStatus = InstagramSettingsTexts.ReadingPages;
+        FacebookPageListing listing;
+        try
+        {
+            listing = await _facebookOAuth.ListAddablePagesAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            // Sabit metin sebebi söylemez: sebep (Graph kodu, HTTP durumu, ağ hatası) günlüğe düşer.
+            _log.LogWarning(ex, "Instagram account listing failed");
+            RestoreInstagramStatus(previousStatus);
+            InstagramNotice = InstagramSettingsTexts.PagesUnreadable;
+            return;
+        }
+        RestoreInstagramStatus(previousStatus);
+
+        if (listing.NeedsReauthorize)
+        {
+            InstagramNotice = InstagramSettingsTexts.SessionNeedsRenewal;
+            return;
+        }
+
+        // Instagram'sız aday tek başına çekmece açtırmaz: seçilebilecek bir şey yoktur.
+        var picker = new InstagramAccountPickerViewModel(listing.Pages);
+        if (!picker.Options.Any(option => option.CanSelect))
+        {
+            InstagramNotice = InstagramSettingsTexts.NoAddableAccount;
+            return;
+        }
+
+        if (_drawers is null) return;
+        bool confirmed;
+        ActiveInstagramPicker = picker;
+        try
+        {
+            confirmed = await _drawers.ShowAsync(InstagramSettingsTexts.AddAccountButton,
+                d => Views.Drawers.InstagramAccountAddDrawer.Create(d, picker)).ConfigureAwait(true);
+        }
+        finally
+        {
+            ActiveInstagramPicker = null;
+        }
+        if (!confirmed || picker.Selected is not { CanSelect: true } chosen) return;
+
+        var page = listing.Pages.First(p => string.Equals(p.PageId, chosen.PageId, StringComparison.Ordinal));
+        try
+        {
+            await _facebookOAuth.AddExtraPageAsync(chosen.PageId, chosen.PageName).ConfigureAwait(true);
+        }
+        catch (FacebookPageLimitException)
+        {
+            // Metin sebebi tam söyler: günlük yok.
+            InstagramNotice = InstagramSettingsTexts.PageLimitReached(FacebookOAuthService.MaxInstagramPages);
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Satır yalnız Sayfa kimliğini taşır; sebep istisnadadır.
+            _log.LogWarning(ex, "Instagram account add failed for Page {PageId}", chosen.PageId);
+            InstagramNotice = IsTransientAddFailure(ex)
+                ? InstagramSettingsTexts.PagesUnreadable
+                : InstagramSettingsTexts.AuthorizationFailed(chosen.PageName);
+            return;
+        }
+
+        InstagramNotice = InstagramSettingsTexts.AccountAdded(
+            InstagramSettingsTexts.AccountLabel(page.IgUserId!, page.IgUsername));
+        await RefreshInstagramStatusAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>Durum satırı hâlâ "Sayfalar okunuyor..." ise önceki metni geri koyar; o arada bir tazeleme yeni metin
+    /// yazdıysa ona dokunmaz.</summary>
+    private void RestoreInstagramStatus(string previous)
+    {
+        if (InstagramAccountStatus == InstagramSettingsTexts.ReadingPages) InstagramAccountStatus = previous;
+    }
+
+    /// <summary>
+    /// Eklemenin geçici hatası (yeniden denemek çözebilir): Graph'ın 5xx'i ya da kota kodu (<c>InstagramGraphError.Classify</c>'ın
+    /// kota kümesi: kod 4 / 17 / 32 / 613 / 80002, alt kod 2446079), Graph dışı ağ hatası, zaman aşımı. Geri kalan her
+    /// hata (token türetilemedi, yetki, izin) Sayfa yetkisi sorunudur.
+    /// </summary>
+    private static bool IsTransientAddFailure(Exception ex) => ex switch
+    {
+        FacebookGraphException graph => (int?)graph.StatusCode >= 500
+            || graph.Code is 4 or 17 or 32 or 613 or 80002
+            || graph.Subcode == 2446079,
+        System.Net.Http.HttpRequestException => true,
+        System.Threading.Tasks.TaskCanceledException => true,
+        TimeoutException => true,
+        _ => false,
+    };
 
     [RelayCommand]
     private async System.Threading.Tasks.Task ConnectFacebook()
