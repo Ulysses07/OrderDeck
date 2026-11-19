@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -34,10 +35,16 @@ public sealed class SettingsStore
     /// Kaydetme saniyede bir kez bile olmadığından tek global kilidin
     /// maliyeti ölçülemez.</para>
     ///
-    /// <para><b>Neyi kapatmaz.</b> Süreçler arası yarışı — ama uygulama tek
-    /// örnek çalışıyor (<c>App.xaml.cs</c> mutex'i), o kapı zaten kapalı.</para>
+    /// <para><b>Neyi kapatmaz.</b> Süreçler arası yarışı. Uygulamanın ikinci
+    /// örneği yok (<c>App.xaml.cs</c> mutex'i), ama dosyalara dışarıdan bakan
+    /// süreçler var (Gezgin, antivirüs, dizin oluşturucu); onların anlık
+    /// tutamacını <see cref="MoveIntoPlace"/> karşılıyor.</para>
     /// </summary>
     private static readonly Lock FileGate = new();
+
+    /// <summary>Yeniden denemeler arasındaki bekleme 1 ms'den başlar, ikiye katlanarak en çok buraya
+    /// kadar büyür.</summary>
+    private static readonly TimeSpan MaxRetryPause = TimeSpan.FromMilliseconds(50);
 
     private readonly string _filePath;
     private readonly string _backupPath;
@@ -49,6 +56,12 @@ public sealed class SettingsStore
         _backupPath = filePath + ".bak";
         _log = logger ?? (ILogger)NullLogger<SettingsStore>.Instance;
     }
+
+    /// <summary>
+    /// Yerine geçirme adımı "dosya şu an başka bir süreçte" hatası verdiğinde en çok ne kadar
+    /// süre yeniden denenir. Süre dolunca asıl hata olduğu gibi fırlar. Testler değiştirir.
+    /// </summary>
+    public TimeSpan ReplaceRetryBudget { get; init; } = TimeSpan.FromSeconds(2);
 
     public AppSettings Load()
     {
@@ -155,18 +168,81 @@ public sealed class SettingsStore
         // ya yeni içeriktir; asla yarım değildir.
         var tempPath = _filePath + ".tmp";
         WriteThrough(tempPath, json);
+        MoveIntoPlace(tempPath);
+    }
 
-        if (File.Exists(_filePath))
+    /// <summary>
+    /// Geçici dosyayı asıl dosyanın yerine geçirir; dosyalardan biri o an başka bir sürecin
+    /// elindeyse <see cref="ReplaceRetryBudget"/> dolana kadar yeniden dener.
+    ///
+    /// <para><b>Neden gerekli.</b> <c>File.Replace</c> eski <c>.bak</c>'ın üstüne yazmak zorunda
+    /// ve Windows, üzerinde açık tutamaç olan bir dosyanın üstüne yeniden adlandırmaya izin
+    /// vermiyor — tutamaç yalnız öznitelik okuyan türden olsa bile. Yani yedeğe o an bakan
+    /// herhangi bir süreç (Gezgin penceresi, antivirüs, dizin oluşturucu, yedekleme aracı) kaydı
+    /// <c>ERROR_UNABLE_TO_REMOVE_REPLACED</c> ile düşürüyordu. <see cref="FileGate"/> bunu
+    /// kapatamaz: çakışan taraf başka bir süreç. Bakış anlık: ölçülen 40 örneğin hepsinde çağrıyı
+    /// hemen yinelemek yetti (2026-11-18, geliştirme makinesi, dosyalar TEMP kökünde: ardışık
+    /// kayıtların ~%0,1'i; tam paket yükü altında da aynı oran).</para>
+    ///
+    /// <para><b>Hangi hatalar.</b> Yalnız "dosya şu an kullanımda" ailesi
+    /// (<see cref="IsHeldByAnotherProcess"/>). Yol yok, disk dolu, yetki yok gibi kalıcı hatalar
+    /// beklemeden fırlar.</para>
+    /// </summary>
+    private void MoveIntoPlace(string tempPath)
+    {
+        var waited = Stopwatch.StartNew();
+        var pause = TimeSpan.FromMilliseconds(1);
+        var warned = false;
+
+        while (true)
         {
-            // File.Replace hem yer değiştirmeyi atomik yapar hem de eskisini
-            // .bak olarak bırakır — Load'ın kurtarma yolu buna dayanıyor.
-            File.Replace(tempPath, _filePath, _backupPath, ignoreMetadataErrors: true);
-        }
-        else
-        {
-            File.Move(tempPath, _filePath);
+            try
+            {
+                // Her denemede yeniden bakılır: File.Replace ikinci adımında kalırsa
+                // (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) asıl dosya .bak adına taşınmış, yerinde
+                // hiçbir şey kalmamış olur — o hâlde sıradaki denemenin işi düz taşımadır.
+                if (File.Exists(_filePath))
+                {
+                    // File.Replace hem yer değiştirmeyi atomik yapar hem de eskisini
+                    // .bak olarak bırakır — Load'ın kurtarma yolu buna dayanıyor.
+                    File.Replace(tempPath, _filePath, _backupPath, ignoreMetadataErrors: true);
+                }
+                else
+                {
+                    File.Move(tempPath, _filePath);
+                }
+
+                return;
+            }
+            catch (IOException ex) when (IsHeldByAnotherProcess(ex) && waited.Elapsed < ReplaceRetryBudget)
+            {
+                if (!warned)
+                {
+                    // Kayıt başına bir kez: sahada ne sıklıkta olduğu günlükten okunabilsin.
+                    warned = true;
+                    _log.LogWarning(ex,
+                        "Ayar dosyası yerine geçirilemedi: dosyalardan birini başka bir süreç tutuyor; " +
+                        "en çok {Budget} boyunca yeniden denenecek ({Path})",
+                        ReplaceRetryBudget, _filePath);
+                }
+
+                Thread.Sleep(pause);
+                pause = pause * 2 < MaxRetryPause ? pause * 2 : MaxRetryPause;
+            }
         }
     }
+
+    /// <summary>
+    /// Win32 hata kodu "dosya şu an başka bir tutamaçta" ailesinden mi? (HRESULT = 0x8007 + kod.)
+    /// Deterministik deneyle eşlendi: eski <c>.bak</c> tutuluyorsa 1175; asıl ya da geçici dosya
+    /// paylaşımsız tutuluyorsa 32. 1176 ve 1177, <c>ReplaceFile</c>'ın aynı sebeple ikinci adımında
+    /// kaldığı belgelenmiş hâller.
+    /// </summary>
+    private static bool IsHeldByAnotherProcess(IOException ex) => ex.HResult is
+        unchecked((int)0x80070020)      // ERROR_SHARING_VIOLATION (32)
+        or unchecked((int)0x80070497)   // ERROR_UNABLE_TO_REMOVE_REPLACED (1175)
+        or unchecked((int)0x80070498)   // ERROR_UNABLE_TO_MOVE_REPLACEMENT (1176)
+        or unchecked((int)0x80070499);  // ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177)
 
     /// <summary>
     /// Diske gerçekten yazar. <c>File.WriteAllText</c> işletim sistemi önbelleğine
