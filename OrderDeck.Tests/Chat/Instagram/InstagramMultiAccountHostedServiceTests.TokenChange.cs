@@ -78,6 +78,27 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
             .Rows.Single().StateText.Should().Be("yanıt yok (46 sn)");
     }
 
+    /// <summary>
+    /// Saat yalnız atlanan ya da kesilen beklemeden sonra şimdiye çekilir. Süresi dolan beklemeden sonra saate
+    /// dokunulmaz: zaten geçmiştir, "yanıt yok" da o saatten ölçülür.
+    /// </summary>
+    [Fact]
+    public async Task Suresi_dolan_kalici_hata_beklemesinden_sonra_yeniden_deneme_saatine_dokunulmaz()
+    {
+        var (page, feed) = await OneAsync();
+        var fatal = 1;
+        feed.Intercept = _ =>
+            Volatile.Read(ref fatal) == 1 ? FakeGraph.Error(190) : FakeGraph.Error(1, HttpStatusCode.InternalServerError);
+        await RunAsync(); // IdleAfterFatal 200 ms; token değişmez: bekleme süresi dolar
+        await Until(() => Health(page)?.RetryAt is not null); // kalıcı hata beklemesinde
+
+        Volatile.Write(ref fatal, 0); // bundan sonraki turlar geçici hata: izleyici hiçbir alanı değiştirmez
+        var served = feed.Served;
+
+        await Until(() => feed.Served > served); // bekleme doldu, yeni poller yokladı
+        Health(page)!.RetryAt.Should().Be(_time.GetUtcNow() + Fast.IdleAfterFatal); // beklemeden önce yazılan saat
+    }
+
     [Fact]
     public async Task Cozumleme_beklemesi_token_degisince_kesilir()
     {
