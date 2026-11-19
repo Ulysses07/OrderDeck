@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using FluentAssertions;
 using OrderDeck.App.Services.Instagram;
@@ -157,7 +158,7 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         await Until(() => State(page) == BroadcastEnded); // Long beklenmedi; "bu oturumda canlıydı" korundu (ResetSession yok)
         feed.ServedFor(fresh).Should().BeGreaterThan(0);
         feed.ServedFor(old).Should().Be(served); // boşalmadan sonra eski bağlantıyla tek istek yok
-        ResolveRequests(page).Should().Be(2); // yeni token: hesap bir kez yeniden çözüldü (G11'in tur başı kuralı)
+        ResolveRequests(page).Should().Be(2); // yeni token: hesap bir kez yeniden çözüldü (tur başında token karşılaştırması)
     }
 
     [Fact]
@@ -197,8 +198,10 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
 
     /// <summary>
     /// Liste boşalırken de oturum sonundaki sıra geçerlidir: hesap döngülerinin BİTMESİ → kapının kapanması (özet
-    /// satırı) → girdilerin durması. Tanık, oturum sonu testindeki gibi izleyicinin saatidir: izleyici saati girdilere
-    /// yazan her çağrıda okur; son okuma girdileri durduran çağrınındır ve o an kapının özet satırı yazılmış olmalıdır.
+    /// satırı) → girdilerin durması. Tanık, oturum sonu testindeki gibi izleyicinin saatidir: test yalnız
+    /// <c>StopAll</c>'ın saati okumasına dayanır; son okuma girdileri durduran çağrınındır ve o an kapının özet satırı
+    /// yazılmış olmalıdır. Tanık yalnız kapı özetinin StopAll'dan önce yazıldığını gösterir; kapının ya da girdilerin
+    /// döngüler bitmeden kapanması bu testle yakalanmaz.
     /// </summary>
     [Fact]
     public async Task Liste_bosalirken_once_donguler_biter_sonra_kapi_kapanir_en_son_girdiler_durur()
@@ -325,6 +328,9 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _reads;
 
+        /// <summary>Damga ilk kez okundu: okuyan tutuluyor (ya da test onu bıraktı).</summary>
+        public bool Holding => Volatile.Read(ref _reads) >= 1;
+
         public override long GetTimestamp()
         {
             if (Interlocked.Increment(ref _reads) == 1) _released.Task.Wait(TestPatience.Upper);
@@ -348,6 +354,9 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         StartSession();
         await StartServiceAsync(_health, time, Fast with { IdleAfterFatal = Long });
         await Until(() => State(a) == Faulted); // tur izleyiciye işlendi; poller henüz bitmedi
+        // Faulted, poller damgayı okumadan önce görünür. Tek Sayfada kapı yoktur: damgayı bu ana dek okuyabilecek tek
+        // yer poller'ın kota satırıdır; kapı kurucusu da aynı saati okuduğu için Sayfa ancak tutulma görülünce eklenir.
+        await Until(() => time.Holding);
         var (_, feedB) = await AddPageAsync();
         await feedB.PrimedAsync(); // eklenen hesap yoklanıyor: kapı ondan önce kuruldu ve A'nın döngüsüne takıldı
 
@@ -432,7 +441,9 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
     /// <summary>
     /// Hesap döngüsü 1. adımında Sayfasını bağlı bulamazsa kendi biter. Sayfa iki izleme turu ARASINDA kaldırılıp
     /// yeniden eklenirse izleme Sayfa kümesinde fark görmez; küme çalışan döngülerle değil de başlatılmış döngülerle
-    /// karşılaştırılsaydı Sayfa oturum sonuna dek yoklanmazdı.
+    /// karşılaştırılsaydı Sayfa oturum sonuna dek yoklanmazdı. Eski döngünün bittiği an üretim kodu değişmeden
+    /// gözlenemez: yeniden ekleme, döngünün <c>ResolveFailed</c>'dan sonraki Sayfa aramasından önce yetişirse eski döngü
+    /// Sayfasını bulup kendisi <c>Live</c>'a çıkar ve test korunan yolu sınamadan geçer.
     /// </summary>
     [Fact]
     public async Task Iki_izleme_turu_arasinda_kaldirilip_yeniden_eklenen_sayfanin_biten_dongusunun_yerine_yenisi_baslar()
@@ -458,8 +469,16 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         await Until(() => State(b) == ResolveFailed); // istek düştü: döngü Sayfasını listede bulamadı, bitiyor
         Volatile.Write(ref failing, 0);
         await _oauth.AddExtraPageAsync(b.Page.PageId, b.Page.PageName); // izleme turu atılmadan yeniden eklendi
-        await time.TickAsync(); // izleme aynı Sayfa kümesini görür
 
-        await Until(() => State(b) == Live); // biten döngünün yerine yenisi başladı
+        // İzleme aynı Sayfa kümesini görür. Döngünün görevi durum yazıldıktan SONRA tamamlanır: tek tur o aralığa denk
+        // gelirse bir şey yapmaz. Tur, koşul sağlanana dek yinelenir (izleme her turdan sonra yeniden beklemeye girer).
+        var waited = Stopwatch.StartNew();
+        while (State(b) != Live && waited.Elapsed < TestPatience.Upper)
+        {
+            await time.TickAsync();
+            await Task.Delay(20);
+        }
+
+        State(b).Should().Be(Live); // biten döngünün yerine yenisi başladı
     }
 }

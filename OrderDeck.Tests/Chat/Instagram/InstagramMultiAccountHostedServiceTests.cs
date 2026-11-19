@@ -678,8 +678,10 @@ public sealed partial class InstagramMultiAccountHostedServiceTests : IAsyncLife
     /// <summary>
     /// Oturum sonu sırası: hesap döngülerinin BİTMESİ → kapının kapanması (özet satırı) → girdilerin durması. İzleyici
     /// geç gelen tur olayını durmuş girdide de işler: girdiler poller'lar bitmeden durdurulsaydı o olay hesabı yeniden
-    /// canlı gösterirdi. Tanık izleyicinin saatidir: izleyici saati girdilere yazan her çağrıda okur; son okuma
-    /// girdileri durduran çağrınındır ve o an kapının özet satırı yazılmış olmalıdır.
+    /// canlı gösterirdi. Tanık izleyicinin saatidir: test yalnız <c>StopAll</c>'ın saati okumasına dayanır
+    /// (<c>SetAccount</c>, durum değişmiyorsa saati okumadan yazar); son okuma girdileri durduran çağrınındır ve o an
+    /// kapının özet satırı yazılmış olmalıdır. Tanık yalnız kapı özetinin StopAll'dan önce yazıldığını gösterir;
+    /// kapının ya da girdilerin döngüler bitmeden kapanması bu testle yakalanmaz.
     /// </summary>
     [Fact]
     public async Task Oturum_toplanirken_once_donguler_biter_sonra_kapi_kapanir_en_son_girdiler_durur()

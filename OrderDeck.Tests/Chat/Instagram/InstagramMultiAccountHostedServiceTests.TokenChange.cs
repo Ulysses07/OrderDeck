@@ -63,6 +63,7 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         var waiting = Health(page)!;
         waiting.RetryAt.Should().Be(_time.GetUtcNow() + Long); // elle ilerletilen saat kendiliğinden ilerlemez
         waiting.Detail.Should().NotBeNullOrEmpty(); // poller'ın kalıcı hata mesajı
+        _time.Advance(TimeSpan.FromSeconds(7)); // "şimdi" oturum başından ayrılsın: saat beklemeden önce okunup yazılsa düşer
 
         await _kit.ReauthorizeAllAsync(_oauth);
 
