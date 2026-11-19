@@ -9,8 +9,9 @@ namespace OrderDeck.Tests.App;
 
 /// <summary>
 /// Instagram sağlık izleyicisinin DI kaydı (spec 2026-11-16 §8.6.3): kabuğun kurucu parametresi isteğe bağlıdır,
-/// kayıt eksikse sessizce null düşer ve şerit, üst nokta ve kenar çubuğu boş kalır; iki ayrı örnek de aynı sonucu
-/// verir (hosted service birine yazar, kabuk öbürünü okur). AppHost geçici kökte kurulur (TestAssemblyInit).
+/// kayıt eksikse sessizce null düşer ve şerit, üst nokta ve kenar çubuğu boş kalır. Kayıt tekil değil de iki ayrı
+/// örnek üretirse sonuç yine boş şerittir: hosted service birine yazar, kabuk hiç yazılmayan öbürünü okur. AppHost
+/// geçici kökte kurulur (TestAssemblyInit).
 /// </summary>
 public sealed class InstagramHealthDiTests
 {

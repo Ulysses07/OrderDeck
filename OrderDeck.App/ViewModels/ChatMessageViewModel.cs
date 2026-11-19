@@ -31,8 +31,7 @@ public sealed partial class ChatMessageViewModel : ObservableObject
     /// Satırın sağındaki hesap etiketi: yorumun geldiği Instagram hesabı. <see cref="ChatMessage.SourceAccount"/>
     /// gösterime hazır gelir ve AYNEN kullanılır: "@" kulvar etiketinde hazır gelir (etiketi kulvarı açan hesap
     /// döngüsü kurar; kapı da arayüz de eklemez); burada eklenseydi kullanıcı adı çözülemeyen hesabın Sayfa adı da
-    /// "@" alırdı. Alan boşken null: tek Sayfada ve öbür
-    /// platformlarda etiket çizilmez, satır eskisi gibi kalır.
+    /// "@" alırdı. Alan boşken null: tek Sayfada ve öbür platformlarda etiket çizilmez, satır eskisi gibi kalır.
     /// </summary>
     public string? AccountTag => string.IsNullOrWhiteSpace(Message.SourceAccount) ? null : Message.SourceAccount;
 
