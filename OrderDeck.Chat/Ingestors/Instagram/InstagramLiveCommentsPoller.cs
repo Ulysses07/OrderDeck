@@ -316,9 +316,10 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
                     case InstagramErrorKind.BroadcastEnded:
                         return new PollOutcome(InstagramPollKind.NoBroadcast, UsageHeader: usageHeader);
                     default:
+                        // Ham gövde yazılmaz: Graph ayrıştıramadığı token'ı iletide geri yazabilir.
                         _log.LogDebug(
-                            "[InstagramLiveCommentsPoller] transient {Status}: {Body}",
-                            (int)resp.StatusCode, Truncate(body));
+                            "[InstagramLiveCommentsPoller] transient {Status}: {GraphCode}",
+                            (int)resp.StatusCode, InstagramAccountResolver.GraphCodeText(body));
                         return new PollOutcome(InstagramPollKind.Transient, UsageHeader: usageHeader);
                 }
             }
@@ -379,8 +380,6 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
             ReceivedAt: c.TimestampUnix,
             Badges: Array.Empty<string>()));
     }
-
-    private static string Truncate(string s) => s.Length <= 200 ? s : s.Substring(0, 200);
 
     public void Dispose()
     {

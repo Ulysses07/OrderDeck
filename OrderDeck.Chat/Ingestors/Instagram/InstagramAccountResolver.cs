@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -87,9 +88,10 @@ public sealed class InstagramAccountResolver
 
             if (!resp.IsSuccessStatusCode)
             {
-                _log.LogDebug(
-                    "[InstagramAccountResolver] {Status} for page {PageId}: {Body}",
-                    (int)resp.StatusCode, pageId, Truncate(body));
+                // Ham gövde yazılmaz: Graph ayrıştıramadığı token'ı iletide geri yazabilir.
+                _log.LogWarning(
+                    "[InstagramAccountResolver] {Status} for page {PageId}: {GraphCode}",
+                    (int)resp.StatusCode, pageId, GraphCodeText(body));
                 return (null, InstagramResolveStatus.Failed);
             }
 
@@ -124,9 +126,47 @@ public sealed class InstagramAccountResolver
         }
         catch (Exception ex)
         {
-            _log.LogDebug(ex, "[InstagramAccountResolver] resolve failed for page {PageId}", pageId);
+            // Yalnız tip: istisna iletisi (ve istisnanın kendisi) yazılmaz, adres ya da token taşıyabilir.
+            _log.LogWarning(
+                "[InstagramAccountResolver] resolve failed for page {PageId}: {ExceptionType}",
+                pageId, ex.GetType().Name);
             return (null, InstagramResolveStatus.Failed);
         }
+    }
+
+    /// <summary>
+    /// Graph hata gövdesinin günlüğe yazılabilen özeti: <c>Graph code N, subcode M</c> (alt kod yoksa
+    /// yalnız kod); gövde Graph hatası değilse ya da okunamıyorsa <c>no Graph error code</c>. İleti ve
+    /// gövdenin başka hiçbir parçası taşınmaz. Poller'ın geçici hata satırı da bunu kullanır.
+    /// </summary>
+    internal static string GraphCodeText(string? body)
+    {
+        int? code = null, subcode = null;
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var err)
+                    && err.ValueKind == JsonValueKind.Object)
+                {
+                    if (err.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number
+                        && c.TryGetInt32(out var ci)) code = ci;
+                    if (err.TryGetProperty("error_subcode", out var s) && s.ValueKind == JsonValueKind.Number
+                        && s.TryGetInt32(out var si)) subcode = si;
+                }
+            }
+            catch (JsonException)
+            {
+                // HTML hata sayfası vb.: kod yok.
+            }
+        }
+
+        if (code is null) return "no Graph error code";
+        return subcode is null
+            ? string.Create(CultureInfo.InvariantCulture, $"Graph code {code}")
+            : string.Create(CultureInfo.InvariantCulture, $"Graph code {code}, subcode {subcode}");
     }
 
     /// <summary>Sayfanın saklı token'ı değişince hesap döngüsü çağırır
@@ -137,6 +177,4 @@ public sealed class InstagramAccountResolver
         _cachedPageId = null;
         _cached = null;
     }
-
-    private static string Truncate(string s) => s.Length <= 200 ? s : s.Substring(0, 200);
 }

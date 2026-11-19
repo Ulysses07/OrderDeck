@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -205,6 +207,49 @@ public sealed class InstagramLoggingAuditTests : IDisposable
         Info(UsagePrefix).Should().OnlyContain(l => Regex.IsMatch(l, UsageLine))
             .And.Contain(l => l.Contains($"business {business} call_count 12.5% total_cputime 3% total_time 4% regain 0 min"))
             .And.Contain(l => l.EndsWith("X-Business-Use-Case-Usage header absent"));
+    }
+
+    /// <summary>
+    /// Graph, ayrıştıramadığı token'ı hata iletisinde geri yazabilir. Çözümleme ve yoklama hatası gövdeyi hiçbir
+    /// düzeyde günlüğe taşımamalı: biri Debug'da bile yazsa token günlüğe sızar.
+    /// </summary>
+    [Fact]
+    public async Task Token_yankilayan_cozumleme_ve_yoklama_hatasi_gunluge_token_tasimaz()
+    {
+        var p = await _kit.SeedAsync(extraPages: 1);
+        static HttpResponseMessage Echo(Uri request, int code, HttpStatusCode status) => FakeGraph.Json(
+            new JsonObject
+            {
+                ["error"] = new JsonObject
+                {
+                    ["message"] = "Malformed access token " + InstagramLiveFeed.TokenIn(request),
+                    ["type"] = "OAuthException",
+                    ["code"] = code,
+                },
+            }.ToJsonString(),
+            status);
+        // A'nın çözümlemesi token'ı yankılayarak düşer; B çözülür, yoklaması token'ı yankılayan geçici hata alır.
+        _kit.Graph.Map(
+            u => u.AbsolutePath.EndsWith("/" + p[0].Page.PageId, StringComparison.Ordinal)
+                && u.Query.Contains("instagram_business_account", StringComparison.Ordinal),
+            u => Echo(u, 190, HttpStatusCode.BadRequest));
+        _kit.Graph.Map(
+            u => u.AbsolutePath.EndsWith($"/{p[1].IgUserId}/live_media", StringComparison.Ordinal),
+            u => Echo(u, 2, HttpStatusCode.InternalServerError));
+        var timings = new InstagramChatTimings(
+            TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(50), TimeSpan.FromMinutes(5),
+            TimeSpan.FromMilliseconds(50), TimeSpan.FromMinutes(1));
+        var health = new InstagramHealthMonitor(_time);
+        using var service = new InstagramChatHostedService(
+            _kit.CreateService(_logs.CreateLogger<FacebookOAuthService>()), _bus, _logs, spamFilter: null,
+            sessions: null, _kit.HttpFactory, health, _time, timings);
+        await service.StartAsync(default);
+
+        await Until(() => health.Snapshot().Any(h => h.State == InstagramAccountState.ResolveFailed)
+            && _kit.Graph.Requests.Count(u => u.AbsolutePath.EndsWith("/live_media", StringComparison.Ordinal)) >= 2);
+        await service.StopAsync(default);
+
+        Violations(_logs.Entries, await TokensAsync(), []).Should().BeEmpty();
     }
 
     [Fact]

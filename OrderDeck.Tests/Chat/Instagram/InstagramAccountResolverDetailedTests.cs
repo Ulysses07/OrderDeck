@@ -1,8 +1,11 @@
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.Chat.Ingestors.Instagram;
+using OrderDeck.Tests.TestHelpers;
 
 namespace OrderDeck.Tests.Chat.Instagram;
 
@@ -77,6 +80,43 @@ public sealed class InstagramAccountResolverDetailedTests
             status.Should().Be(expected);
             handler.Calls.Should().Be(call);
         }
+    }
+
+    /// <summary>
+    /// Düşen çözümlemenin sebebi üretim günlüğüne (Information ve üstü) tek bir Warning olarak düşer: Sayfa kimliği,
+    /// HTTP durumu ve Graph kodu ya da istisna tipi. NEDEN: şerit "hesap bilgisi okunamadı" derken günlükte sebep
+    /// (token, kota, 5xx, ağ) olmalı. Ham gövde ve istisna iletisi HİÇBİR düzeyde yazılmaz: Graph ayrıştıramadığı
+    /// token'ı hata iletisinde geri yazabilir (§8.8 "hiçbir düzeyde token").
+    /// </summary>
+    /// <param name="status">Yanıtın HTTP durumu; 0: istek ağ hatasıyla düşer.</param>
+    /// <param name="cause">Uyarıda geçmesi gereken sebep: Graph kodu, HTTP durumu ya da istisna tipi.</param>
+    [Theory]
+    [InlineData(400, "190")]                  // Graph hata gövdesi; iletide isteğin token'ı yankılanır
+    [InlineData(500, "500")]                  // JSON olmayan gövde
+    [InlineData(0, "HttpRequestException")]   // ağ istisnası; iletide token yankılanır
+    public async Task Cozumleme_hatasinin_sebebi_uyari_olarak_yazilir_govde_ve_token_yazilmaz(int status, string cause)
+    {
+        var (pageId, token, marker) = (New("p"), New("t"), New("govde"));
+        var handler = new CountingHandler(() => status switch
+        {
+            0 => throw new HttpRequestException($"{marker} {token}"),
+            400 => Reply(HttpStatusCode.BadRequest, JsonSerializer.Serialize(new
+            {
+                error = new { message = $"Malformed access token {token} {marker}", type = "OAuthException", code = 190 },
+            })),
+            _ => Reply((HttpStatusCode)status, $"<html>{marker}</html>"),
+        });
+        var log = new CapturingLogger<InstagramAccountResolver>();
+
+        var (_, result) = await new InstagramAccountResolver(new HttpClient(handler), log)
+            .ResolveDetailedAsync(pageId, token, CancellationToken.None);
+
+        result.Should().Be(InstagramResolveStatus.Failed);
+        log.Entries.Where(e => e.Level >= LogLevel.Information).Should().ContainSingle()
+            .Which.Should().Match<CapturingLogger<InstagramAccountResolver>.Entry>(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains(pageId) && e.Message.Contains(cause)
+                && (status == 0 || e.Message.Contains(status.ToString(CultureInfo.InvariantCulture))));
+        log.Entries.Should().OnlyContain(e => !e.Full.Contains(token) && !e.Full.Contains(marker)); // her düzeyde
     }
 
     [Fact]
