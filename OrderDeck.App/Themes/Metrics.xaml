@@ -163,8 +163,8 @@
        görünür; bu yüzden "@" dahil 16 karakterlik etiket kırpılmadan sığmalı.
        Ölçüldü (IBMPlexSans-Regular.ttf, OD.Font.F0 = 11): "@" 0,891 em,
        rakam 0,600 em, yani "@" + 15 rakam = 108,8; kalanı ölçüm payı.
-       "m" / "w" ağırlıklı adlar 16 karakterde de kırpılabilir, daha uzun ad
-       hep kırpılır: tam adı etiketin ipucu verir. -->
+       Rakamdan geniş harfler ("m" 0,873 em, "w" 0,768 em) ağırlıktaysa 16
+       karakter de kırpılabilir; kırpılan adın tamamını etiketin ipucu verir. -->
   <sys:Double x:Key="OD.Layout.ChatAccountTagMaxWidth">112</sys:Double>
   <!-- Aktif ürün kodunun yazı boyu; alçak pencerede (<850px) küçüğü.
        Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir

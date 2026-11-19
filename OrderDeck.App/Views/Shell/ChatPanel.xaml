@@ -119,9 +119,10 @@
                                  ÖNCE yazılı: DockPanel çocuklarını sırayla yerleştirir, etiket
                                  yerini alır, mesaj (son çocuk) kalanı doldurur. Böylece kodun
                                  başladığı x konumu etiketli ve etiketsiz satırda aynıdır.
-                                 AccountTag yalnız iki ve üzeri Instagram hesabı bağlıyken dolu;
-                                 null iken etiket boşluğuyla birlikte yer kaplamaz, satır eskisi
-                                 gibidir. Uzun ad sondan kırpılır; tam adı ipucu verir. -->
+                                 AccountTag'i yalnız Instagram birleştirme kapısı doldurur (iki
+                                 ve üzeri Sayfa bağlıyken); null iken etiket boşluğuyla birlikte
+                                 yer kaplamaz, satır eskisi gibidir. Uzun ad sondan kırpılır;
+                                 tam adı ipucu verir. -->
                             <DockPanel Grid.Column="2">
                                 <TextBlock DockPanel.Dock="Right"
                                            Text="{Binding AccountTag}"
