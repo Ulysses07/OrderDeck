@@ -1,6 +1,7 @@
 using System.Net;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
+using OrderDeck.App.Services.Instagram;
 using OrderDeck.Tests.TestHelpers;
 using static OrderDeck.Chat.Ingestors.Instagram.InstagramAccountState;
 
@@ -42,6 +43,39 @@ public sealed partial class InstagramMultiAccountHostedServiceTests
         await Until(() => feed.ServedFor(fresh) >= 1); // Long dolmadan yeni token'la kuruldu
         ResolveRequests(page).Should().Be(2); // önbellek boşaltıldı: tek ek çözümleme
         await Until(() => State(page) == Live);
+    }
+
+    /// <summary>
+    /// Kesilen (ya da atlanan) beklemeden sonra yeniden deneme hemen başlar; girdideki yeniden deneme saati ileride
+    /// kalmamalı. Yeni poller'ın turları geçici hatayla düşerse izleyici hiçbir alanı değiştirmez: saat ileride
+    /// kalsaydı satır, yeniden deneme çoktan başlamışken ileri bir saati gösterir, "yanıt yok" (yeniden deneme saati +
+    /// 45 sn) da o saate kadar, en çok 5 dakika gecikirdi.
+    /// </summary>
+    [Fact]
+    public async Task Kesilen_kalici_hata_beklemesinden_sonra_yeniden_deneme_saati_simdiye_cekilir()
+    {
+        var (page, feed) = await OneAsync();
+        var old = page.Page.PageAccessToken;
+        feed.Intercept = token => // yeni token'la gelen istek geçici hata alır
+            token == old ? FakeGraph.Error(190) : FakeGraph.Error(1, HttpStatusCode.InternalServerError);
+        await RunAsync(Fast with { IdleAfterFatal = Long });
+        await Until(() => Health(page)?.RetryAt is not null); // kalıcı hata beklemesinde
+        var waiting = Health(page)!;
+        waiting.RetryAt.Should().Be(_time.GetUtcNow() + Long); // elle ilerletilen saat kendiliğinden ilerlemez
+        waiting.Detail.Should().NotBeNullOrEmpty(); // poller'ın kalıcı hata mesajı
+
+        await _kit.ReauthorizeAllAsync(_oauth);
+
+        var fresh = await StoredTokenAsync(page);
+        await Until(() => feed.ServedFor(fresh) >= 1); // bekleme kesildi: yeni poller yeni token'la yokluyor, geçici hata alıyor
+        var retrying = Health(page)!;
+        (retrying.State, retrying.Detail).Should().Be((Faulted, waiting.Detail));
+        retrying.RetryAt.Should().Be(_time.GetUtcNow()); // yeniden deneme başladı: saat şimdi
+        Lines(AccountPrefix).Should().ContainSingle(l => l.Contains("-> Faulted")); // durum değişmedi: geçiş satırı yinelenmedi
+        // Operatörün gördüğü: saat 45 sn'den fazla geçilince satır "bağlantı yenilenmeli"de kalmaz.
+        InstagramHealthPresenter
+            .Evaluate(_health.Snapshot(), _time.GetUtcNow() + TimeSpan.FromSeconds(46), sessionActive: true)
+            .Rows.Single().StateText.Should().Be("yanıt yok (46 sn)");
     }
 
     [Fact]

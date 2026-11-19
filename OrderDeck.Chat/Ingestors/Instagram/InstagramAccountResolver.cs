@@ -129,7 +129,9 @@ public sealed class InstagramAccountResolver
         }
     }
 
-    /// <summary>Facebook bağlantısı değişince (disconnect/yeniden bağlan) çağrılır.</summary>
+    /// <summary>Sayfanın saklı token'ı değişince hesap döngüsü çağırır
+    /// (<c>InstagramAccountLoop.ForgetAccountIfTokenChanged</c>): yeni token'la hesap bir kez
+    /// yeniden çözülür.</summary>
     public void Invalidate()
     {
         _cachedPageId = null;

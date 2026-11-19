@@ -57,8 +57,11 @@ internal sealed record InstagramLoopServices(
 /// oldukça sürer, Sayfanın yeni token'ı sonraki kurulumda kullanılır. Token'a yalnız iki uzun
 /// bekleme bakar (hesap çözülemedi, kalıcı hata): saklı token o turda kullanılandan farklıysa
 /// beklenmez (<see cref="WaitUnlessTokenChangedAsync"/>); "Facebook izinlerini güncelle"den
-/// sonra bozuk hesap 5 dakika daha susmaz. Yeni token'la ilk iş hesabın bir kez yeniden
-/// çözülmesidir (<see cref="ForgetAccountIfTokenChanged"/>).</para>
+/// sonra bozuk hesap 5 dakika daha susmaz. Kalıcı hata beklemesi böyle atlanır ya da kesilirse
+/// girdinin yeniden deneme saati "şimdi"ye çekilir: yeniden deneme başlamışken satır ileri bir
+/// saat göstermez, yeni poller yanıt alamazsa "yanıt yok" o saati beklemeden görünür. Yeni
+/// token'la ilk iş hesabın bir kez yeniden çözülmesidir
+/// (<see cref="ForgetAccountIfTokenChanged"/>).</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class InstagramAccountLoop
@@ -233,8 +236,19 @@ internal sealed class InstagramAccountLoop
                         Track(
                             () => health.Report(_pageId, InstagramAccountState.Faulted, reason, RetryAt()),
                             from: _observer.TakeStateBeforeFatal());
-                        await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, ct)
-                            .ConfigureAwait(false);
+                        if (await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, ct)
+                                .ConfigureAwait(false))
+                        {
+                            // Bekleme atlandı ya da kesildi: yeniden deneme ŞİMDİ başlıyor, girdideki saat
+                            // de şimdiye çekilir. İleride kalsaydı, yeni poller'ın turları geçici hatayla
+                            // düşerken (izleyici o turlarda hiçbir alanı değiştirmez) satır başlamış bir
+                            // denemeyi ileri bir saatte gösterir, "yanıt yok" da o saate kadar gecikirdi.
+                            // Durum aynı kaldığı için geçiş satırı yazılmaz. Süre dolduysa yazılacak bir
+                            // şey yoktur: saat zaten geçmiştir.
+                            Track(() => health.Report(
+                                _pageId, InstagramAccountState.Faulted, reason, _services.Time.GetUtcNow()));
+                        }
+
                         continue;
                     }
 
