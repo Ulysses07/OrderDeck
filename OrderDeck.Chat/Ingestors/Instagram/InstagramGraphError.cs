@@ -77,17 +77,24 @@ public static class InstagramGraphError
             catch (JsonException) { /* HTML hata sayfası vb. → Transient */ }
         }
 
-        if (subcode == 2446079) return InstagramErrorKind.RateLimited;
+        if (IsQuotaError(code, subcode)) return InstagramErrorKind.RateLimited;
 
         return code switch
         {
             190 or 463 => InstagramErrorKind.TokenExpired,
             200 or 10 => InstagramErrorKind.PermissionDenied,
-            4 or 17 or 32 or 613 or 80002 => InstagramErrorKind.RateLimited,
             100 => InstagramErrorKind.BroadcastEnded,
             _ => InstagramErrorKind.Transient,
         };
     }
+
+    /// <summary>
+    /// Graph'ın kota hatası mı: kod 4 / 17 / 32 / 613 / 80002 ya da (kod ne olursa olsun) alt kod 2446079. Kota
+    /// kümesinin tek yeri: <see cref="Classify"/> bunu <see cref="InstagramErrorKind.RateLimited"/> için kullanır,
+    /// başka bir çağıranın kendi kopyasını tutması gerekmez.
+    /// </summary>
+    public static bool IsQuotaError(int? code, int? subcode) =>
+        subcode == 2446079 || code is 4 or 17 or 32 or 613 or 80002;
 
     /// <summary>
     /// <c>X-Business-Use-Case-Usage</c> başlığından beklenmesi gereken süreyi

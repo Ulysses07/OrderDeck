@@ -183,4 +183,24 @@ public class InstagramGraphErrorTests
 
         usage.Should().Equal(new InstagramBucUsage(read, 0, 0, 5, null));
     }
+
+    [Theory]
+    [InlineData(4, null, true)]
+    [InlineData(17, null, true)]
+    [InlineData(32, null, true)]
+    [InlineData(613, null, true)]
+    [InlineData(80002, null, true)]
+    [InlineData(1, 2446079, true)]
+    [InlineData(190, 2446079, true)]
+    [InlineData(null, 2446079, true)]
+    [InlineData(190, null, false)]
+    [InlineData(200, null, false)]
+    [InlineData(10, null, false)]
+    [InlineData(100, null, false)]
+    [InlineData(null, null, false)]
+    public void IsQuotaError_recognizes_the_quota_codes_and_the_quota_subcode(int? code, int? subcode, bool expected)
+    {
+        // Alt kod 2446079, kod ne olursa olsun kotadır; Classify'ın kota koşulu bu yöntemdir.
+        InstagramGraphError.IsQuotaError(code, subcode).Should().Be(expected);
+    }
 }

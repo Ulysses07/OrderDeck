@@ -841,6 +841,99 @@ public class SettingsViewModel_InstagramAccountsTests : IDisposable
         log.Entries.Should().BeEmpty();
     }
 
+    // ── Ek sabitlemeler: süren tazelemede 0. adım, çekmecesiz kurulum, kota kodları ──
+
+    /// <summary>
+    /// Ayarlar açılır açılmaz, ilk tazelemenin izin sondası dönmeden "Instagram hesabı ekle"ye basılırsa komut 0.
+    /// adımdan önce o tazelemenin bitmesini bekler; sonda "izin yok" derse listeleme yapılmaz, oturumu yenileme metni
+    /// yazılır. Beklerken durum satırına "Sayfalar okunuyor..." yazılmaz. NEDEN: düğme Facebook durumuyla hemen
+    /// etkinleşir, izin bayrağı ise sonda bitince yazılır; beklemeyen komut izinsiz oturumla listeler, Graph Instagram
+    /// alanını hatasız düşürür ve kullanıcı "Eklenebilecek başka hesap bulunamadı" metniyle yanlış yere gider.
+    /// </summary>
+    [Fact]
+    public async Task Ilk_izin_sondasi_bitmeden_Ekleye_basilirsa_sonda_beklenir_izin_eksikse_listeleme_yapilmaz()
+    {
+        await SeedAsync();
+        AddCandidate();
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var held = 0;
+        _kit.Graph.Map(IsPermissions, _ =>
+        {
+            if (Interlocked.Exchange(ref held, 1) == 0)                 // yalnız İLK izin sondası tutulur
+            {
+                reached.SetResult();
+                release.Wait(TestPatience.Upper);
+            }
+            return FakeGraph.Json("""{"data":[]}""");                  // izin yok
+        });
+
+        SettingsViewModel vm;
+        Task run;
+        try
+        {
+            vm = CreateVm(_kit.CreateService());                        // kurucunun tazelemesi izin sondasında tutuluyor
+            _drawers.Vm = vm;
+            await reached.Task.WaitAsync(TestPatience.Upper);
+            run = vm.AddInstagramAccountCommand.ExecuteAsync(null);
+            run.IsCompleted.Should().BeFalse("komut süren tazelemeyi bekler");
+            _kit.Graph.Requests.Count(IsAccounts).Should().Be(0, "beklerken listeleme yapılmaz");
+            vm.InstagramAccountStatus.Should().NotBe("Sayfalar okunuyor...", "beklerken durum satırına yazılmaz");
+        }
+        finally
+        {
+            release.Set();
+        }
+        await run.WaitAsync(TestPatience.Upper);
+
+        vm.InstagramNotice.Should().Be(ReconnectText);
+        _drawers.Titles.Should().BeEmpty();
+        _kit.Graph.Requests.Count(IsAccounts).Should().Be(0);
+    }
+
+    /// <summary>Çekmece servisi verilmemiş kurulumda "Instagram hesabı ekle" seçilebilir aday olsa da hiçbir şey yazmaz:
+    /// sonuç satırı boş kalır, kart satırları ve durum satırı değişmez, hiçbir Sayfa eklenmez.</summary>
+    [Fact]
+    public async Task Cekmece_servisi_yoksa_Ekle_hicbir_sey_yazmaz()
+    {
+        await SeedAsync();
+        var candidate = AddCandidate();
+        _service = _kit.CreateService();
+        var vm = CreateVm(_service, withoutDrawers: true);
+        await vm.RefreshFacebookConnectionStatusAsync();
+        await vm.RefreshInstagramStatusAsync();
+        var rows = vm.InstagramPages.Select(r => (r.PageId, r.InstagramText)).ToList();
+        var status = vm.InstagramAccountStatus;
+
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+
+        vm.InstagramNotice.Should().BeNull();
+        vm.InstagramPages.Select(r => (r.PageId, r.InstagramText)).Should().Equal(rows);
+        vm.InstagramAccountStatus.Should().Be(status);
+        (await _kit.CreateService().GetConnectedPagesAsync()).Should().ContainSingle("hiçbir Sayfa eklenmedi");
+        _kit.Graph.Requests.Count(u => IsPageToken(u, candidate.PageId)).Should().Be(0);
+    }
+
+    /// <summary>Eklemenin token isteği kota hatası dönerse (Graph'ın kota kümesinin her üyesi) metin geçici hatanındır:
+    /// yeniden denemek çözebilir, "yetki alınamadı" yanlış yere yollar. Hiçbir şey eklenmez.</summary>
+    [Theory]
+    [InlineData(4, null), InlineData(17, null), InlineData(32, null), InlineData(613, null), InlineData(80002, null)]
+    [InlineData(1, 2446079)]                                            // başka kod + kota alt kodu
+    public async Task Ekleme_kota_kodlarinin_hepsi_gecici_hata_metnine_duser(int code, int? subcode)
+    {
+        await SeedAsync();
+        var candidate = AddCandidate();
+        var vm = await OpenAsync();
+        _drawers.Decide = v => Pick(v, candidate.PageId);
+        _kit.Graph.Map(u => IsPageToken(u, candidate.PageId), _ => FakeGraph.Error(code, subcode: subcode));
+
+        await vm.AddInstagramAccountCommand.ExecuteAsync(null);
+
+        vm.InstagramNotice.Should().Be("Sayfalar okunamadı, internetini kontrol edip yeniden dene.");
+        vm.InstagramPages.Should().ContainSingle();
+        (await _kit.CreateService().GetConnectedPagesAsync()).Should().ContainSingle("hiçbir Sayfa eklenmedi");
+    }
+
     // ── "Facebook izinlerini güncelle" ve "İptal" ──
 
     private const string WaitingText = "Tarayıcıdan onay bekleniyor... Açılan Facebook ekranında TÜM Sayfalarını ve Instagram hesaplarını işaretli bırak; yalnız yenisini işaretlersen eski hesabın bağlantısı düşer.";

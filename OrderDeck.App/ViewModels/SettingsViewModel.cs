@@ -573,8 +573,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// <summary>
     /// "Kaldır": bir EK Sayfanın bağlantısını kaldırır. Yazımın ardından satır HEMEN kalkar (tazelemenin Graph
     /// istekleri beklenmez) ve sonuç satırı hesabı adıyla söyler; sonra kart tazelenir. Yazım düşerse bağlantı
-    /// değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler, sebep günlüğe Warning olarak düşer. Birincil satırda hiçbir şey yapmaz: birincil
-    /// ancak "Bağlantıyı Kaldır" ile, bütün bağlantıyla birlikte kalkar.
+    /// değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler, sebep günlüğe Warning olarak düşer. Birincil
+    /// satırda hiçbir şey yapmaz: birincil ancak "Bağlantıyı Kaldır" ile, bütün bağlantıyla birlikte kalkar.
     /// </summary>
     [RelayCommand]
     private async System.Threading.Tasks.Task RemoveInstagramAccount(InstagramPageRow? row)
@@ -619,6 +619,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private async System.Threading.Tasks.Task AddInstagramAccount()
     {
         if (_facebookOAuth is null) return;
+
+        // 0. adımdan önce süren tazeleme (ör. Ayarlar açılırken başlayan ilk izin sondası) beklenir: düğme Facebook
+        // durumuyla hemen etkinleşir, izin bayrağı ise sonda bitince yazılır. Sıra alınıp hemen bırakılır; listeleme
+        // ve çekmece sıranın dışındadır. Süren tazeleme yoksa bekleme hemen döner. Beklerken durum satırı değişmez.
+        await _instagramRefreshGate.WaitAsync().ConfigureAwait(true);
+        _instagramRefreshGate.Release();
 
         // 0. adım: değer son tazelemede hesaplandı; yeni Graph isteği yok. İzin eksikken Graph Instagram alanını hata
         // vermeden düşürür: listeleme bütün Sayfaları hesapsız gösterir ve kullanıcıyı yanlış yere yollardı.
@@ -707,15 +713,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Eklemenin geçici hatası (yeniden denemek çözebilir): Graph'ın 5xx'i ya da kota kodu (<c>InstagramGraphError.Classify</c>'ın
-    /// kota kümesi: kod 4 / 17 / 32 / 613 / 80002, alt kod 2446079), Graph dışı ağ hatası, zaman aşımı. Geri kalan her
-    /// hata (token türetilemedi, yetki, izin) Sayfa yetkisi sorunudur.
+    /// Eklemenin geçici hatası (yeniden denemek çözebilir): Graph'ın 5xx'i ya da kota kodu
+    /// (<see cref="InstagramGraphError.IsQuotaError"/>), Graph dışı ağ hatası, zaman aşımı. Geri kalan her hata (token
+    /// türetilemedi, yetki, izin) Sayfa yetkisi sorunudur.
     /// </summary>
     private static bool IsTransientAddFailure(Exception ex) => ex switch
     {
         FacebookGraphException graph => (int?)graph.StatusCode >= 500
-            || graph.Code is 4 or 17 or 32 or 613 or 80002
-            || graph.Subcode == 2446079,
+            || InstagramGraphError.IsQuotaError(graph.Code, graph.Subcode),
         System.Net.Http.HttpRequestException => true,
         System.Threading.Tasks.TaskCanceledException => true,
         TimeoutException => true,
