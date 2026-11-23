@@ -134,12 +134,11 @@
                                      28 px'e sabitlenirse ikon 19,5 px'e küçülürdü. -->
                                 <ColumnDefinition Width="Auto"
                                                   MinWidth="{StaticResource OD.Layout.ChatBadgeColumn}"/>
-                                <!-- Ad kolonu: OD.Layout.ChatUserMaxWidth'e sabit.
-                                     Min=Max, çünkü her satır kendi Grid'i — Auto olsaydı
-                                     satırlar arası mesaj kolonu hizası kayardı. -->
-                                <ColumnDefinition Width="Auto"
-                                                  MinWidth="{StaticResource OD.Layout.ChatUserMaxWidth}"
-                                                  MaxWidth="{StaticResource OD.Layout.ChatUserMaxWidth}"/>
+                                <!-- Satırın geri kalanı (ad alanı + mesaj + hesap etiketi) TEK yıldız
+                                     kolonda: içindeki panel sonlu genişlikle ölçülür, böylece ad
+                                     alanının ne kadar büyüyebileceğini satırın genişliği belirler.
+                                     Ad alanı ayrı bir Auto kolonda dursaydı Grid onu sonsuz genişlikle
+                                     ölçerdi: dar pencerede uzun ad, mesaja yer bırakmadan büyürdü. -->
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <!-- Platform rozeti — her platformun RESMİ marka ikonu
@@ -164,19 +163,33 @@
                                     </Style>
                                 </ContentControl.Style>
                             </ContentControl>
-                            <TextBlock Grid.Column="1" Text="{Binding Display}"
-                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center"
-                                       ToolTip="{Binding Username}"/>
-                            <!-- Mesaj + Instagram hesap etiketi. Etiket sağa yaslı ve mesajdan
-                                 ÖNCE yazılı: DockPanel çocuklarını sırayla yerleştirir, etiket
-                                 yerini alır, mesaj (son çocuk) kalanı doldurur. Böylece kodun
-                                 başladığı x konumu etiketli ve etiketsiz satırda aynıdır.
-                                 AccountTag'i yalnız Instagram birleştirme kapısı doldurur (iki
-                                 ve üzeri Sayfa bağlıyken); null iken etiket boşluğuyla birlikte
-                                 yer kaplamaz, satır eskisi gibidir. Uzun ad sondan kırpılır;
-                                 tam adı ipucu verir. -->
-                            <DockPanel Grid.Column="2">
+                            <!-- Ad alanı + mesaj + Instagram hesap etiketi. DockPanel çocuklarını
+                                 YAZILDIKLARI sırayla ölçer; bu sıra aynı zamanda yer önceliğidir:
+
+                                 1) Hesap etiketi (sağda). Yerini ilk o alır; böylece ada sığan
+                                    satırlarda kodun başladığı x konumu etiketli ve etiketsiz satırda
+                                    aynıdır. AccountTag'i
+                                    yalnız Instagram birleştirme kapısı doldurur (iki ve üzeri Sayfa
+                                    bağlıyken); null iken etiket boşluğuyla birlikte yer kaplamaz.
+                                    Uzun hesap adı sondan kırpılır; tam adı ipucu verir.
+
+                                 2) Ad alanı (solda): ad + "Kayıtlı" rozeti (telefonu kayıtlı
+                                    müşteri; kural CustomerRepository.GetChatSenderMarks'ta). Rozet
+                                    alanın sağ ucunda ve addan ÖNCE yazılı: yerini alır, ad kalanı
+                                    doldurur. Kayıtsız satırda rozet boşluğuyla birlikte yer kaplamaz,
+                                    ad o yeri de kullanır.
+                                    Ad KESİLMEZ. Alan ada göre büyür: tabanı ChatNameColumn (ada sığan
+                                    satırlarda mesaj aynı hizada başlar), tavanı ChatNameColumnMax.
+                                    Yer mesajdan alınır, ama mesaja ayrılan tabana dokunulmaz: alanın
+                                    sağ boşluğu (ChatMessageReserve) o tabandır. Alan ölçülürken kalan
+                                    genişliğin tabanı düşülmüş hâlini görür; oraya sığmayan ad alt
+                                    satıra iner.
+
+                                 3) Mesaj: kalanı doldurur, sığmazsa alt satıra iner. Negatif sol
+                                    boşluğu (ChatMessageReclaim), ad alanının ayırdığı tabanın üstüne
+                                    oturmasını sağlar: mesaj tam ad alanının bittiği yerde başlar ve
+                                    ayrılan tabanı da kullanır. -->
+                            <DockPanel Grid.Column="1">
                                 <TextBlock DockPanel.Dock="Right"
                                            Text="{Binding AccountTag}"
                                            ToolTip="{Binding AccountTooltip}"
@@ -188,8 +201,31 @@
                                            Margin="{StaticResource OD.Pad.Left4}"
                                            Visibility="{Binding AccountTag,
                                                         Converter={StaticResource NullToCollapsedConverter}}"/>
+                                <DockPanel DockPanel.Dock="Left"
+                                           MinWidth="{StaticResource OD.Layout.ChatNameColumn}"
+                                           MaxWidth="{StaticResource OD.Layout.ChatNameColumnMax}"
+                                           Margin="{StaticResource OD.Pad.ChatMessageReserve}">
+                                    <Border DockPanel.Dock="Right"
+                                            CornerRadius="{StaticResource OD.Radius.Xs}"
+                                            Padding="{StaticResource OD.Pad.1}"
+                                            Margin="{StaticResource OD.Pad.Right2}"
+                                            Background="{StaticResource OD.Brush.Surface2}"
+                                            VerticalAlignment="Center"
+                                            ToolTip="Telefonu kayıtlı müşteri"
+                                            Visibility="{Binding IsSenderRegistered,
+                                                         Converter={StaticResource BoolToVisibleConverter}}">
+                                        <TextBlock Text="Kayıtlı" Style="{StaticResource OD.Text.Micro}"
+                                                   Foreground="{StaticResource OD.Brush.Success}"/>
+                                    </Border>
+                                    <TextBlock Text="{Binding Display}"
+                                               FontWeight="SemiBold" TextWrapping="Wrap"
+                                               VerticalAlignment="Center"
+                                               Margin="{StaticResource OD.Pad.Right3}"
+                                               ToolTip="{Binding Username}"/>
+                                </DockPanel>
                                 <TextBlock Text="{Binding Text}"
                                            TextWrapping="Wrap" VerticalAlignment="Center"
+                                           Margin="{StaticResource OD.Pad.ChatMessageReclaim}"
                                            Foreground="{StaticResource OD.Brush.Text}"/>
                             </DockPanel>
                         </Grid>
