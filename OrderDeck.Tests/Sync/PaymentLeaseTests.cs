@@ -325,6 +325,30 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().BeEmpty("bugünkü davranış: wa.me açılmaz");
     }
 
+    [Fact] // W-havuz §6.1-b (K2), mod On: eşitlenmeme kirayı abandoned ile kapatır; iş taze, mesaj yok; sonraki tıklama yeni kirayla sürer
+    public async Task Mod_On_esitlenmeme_kira_abandoned_is_taze_sonraki_tiklama_surer()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, $"alici-{Guid.NewGuid():N}", 120m);
+        _server.BalancePreview = 50m;
+        _server.EnqueueProblem(FakeSalesServer.BalancePreviewEndpoint, 409, "customer-not-synced");
+        var scope = Scope(live);
+
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.BalanceNotSynced);
+
+        FinishOutcomes().Should().Equal(new[] { "abandoned" }, "mesaj gitmedi: kira gönderim denemesinden önce kapanır");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Calls(FakeSalesServer.BalanceApplyEndpoint).Should().BeEmpty();
+        var job = pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], scope).Jobs.Should().ContainSingle().Subject;
+        job.State.Should().Be(PaymentJobState.Created, "MarkNoBalance yazılmadı");
+        job.ApplyKey.Should().BeNull();
+
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.Opened);
+        FinishOutcomes().Should().Equal("abandoned", "delivered");
+        _server.Calls(FakeSalesServer.BalanceApplyEndpoint).Should().ContainSingle();
+    }
+
     [Fact]
     public async Task Tamami_bakiyeden_odenen_istegin_finishi_fullyFromBalance_ve_dusumu_tasir()
     {
@@ -594,6 +618,33 @@ public sealed class PaymentLeaseTests : IDisposable
     }
 
     [Fact]
+    public async Task Begin_cevrimdisi_GUIDli_ama_gonderilemeyen_ve_yalniz_kendi_etiketleri_olan_kiside_yerel_yol_ve_kayit()
+    {
+        // Ortak bakiye §6.1-a: GUID'li ama Username'i boş satır sahip adayı değil (OwnerId null). Sunucu onu hiç
+        // görmez, düşüm yazılamaz: kişi GUID'siz kişinin yolundan gider (§5.8, Y3). Bugün FailClosed'du.
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var customer = new Customer(Guid.NewGuid().ToString("N"), "tiktok", "", "Örnek", null,
+            1, 1, false, null, null, 0, 0m, null, null, TestPhone.NewE164());
+        pc.Customers.Insert(customer);
+        var label = InsertLabel(pc, live, customer.Id, "tiktok", "", 100m, printed: true);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+
+        (await RequestAsync(pc, customer, Scope(live))).Result.Should().Be(PaymentRequestResult.Opened,
+            "sahip adayı olmayan, yalnız kendi etiketleri olan kişi kira alınamazsa yerel yoldan gider");
+
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+        var record = pc.PendingPaymentRecords.List().Where(r => r.Kind == PendingPaymentRecordKinds.Record)
+            .Select(PendingPaymentRecordCodec.DecodeRecord).Should().ContainSingle(
+                "RecordsLocally: kayıt bağlantı gelince yazılır (W3-06'nın kirasız kaydı)").Subject;
+        record.ScopeKey.Should().Be(Scope(live));
+        record.State.Should().Be(PaymentRequestStates.Delivered);
+        record.OrderIds.Should().Equal(Guid.ParseExact(label, "N"));
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty("sahip yok: bakiye işi açılmaz");
+    }
+
+    [Fact]
     public async Task Kira_ucu_yoksa_satir_ici_engel_mesaj_yok()
     {
         var pc = await PcAsync();
@@ -809,6 +860,25 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().ContainSingle("yalnız ilk istek");
         Begins().Should().HaveCount(2);
         FinishOutcomes().Should().Equal(new[] { "delivered" }, "409 kira yazmaz: kapatılacak kira yok");
+    }
+
+    [Fact] // Ortak bakiye §6.1-d (plan fark 10): uzak soruya katılan yerel planın notu kipi bilmez — PersonPool null
+    public async Task Uzak_soruya_katilan_yerel_planin_notu_kipten_bagimsiz_null()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, $"alici-{Guid.NewGuid():N}", 500m);
+        var own = await DeliveredLocallyAsync(pc, buyer.Customer, "cumulative");
+        EnqueueAlreadyRequested(Prior(own, "PC-A", 550m, 550m, TenOClock));
+        var dialogs = new FakeDialogService();
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        outcome.Prompt!.AlsoConfirms.Should().ContainSingle("yerel planın belirteci aynı soruya katıldı (WithLocalPlan)");
+        outcome.Prompt.PersonPool.Should().BeNull("kira bakiyeden önce istenir; scope yanıtı yok, kip bilinmiyor");
+        dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
+            .NotContain("Not:", "tekrar gönderme sorusu, iade yok (RefundsToOtherRow false)");
     }
 
     [Fact]

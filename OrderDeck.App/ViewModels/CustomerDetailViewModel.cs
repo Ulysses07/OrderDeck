@@ -204,7 +204,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
             ? _customers.GetGroupMembers(c.GroupId!)
             : new[] { c };
         foreach (var m in members)
-            Identities.Add($"{PlatformLabel(m.Platform)}: {IdentityHandle(m)}");
+            Identities.Add($"{CustomerIdentityText.PlatformLabel(m.Platform)}: {CustomerIdentityText.Handle(m)}");
 
         ReloadLabels();
 
@@ -226,21 +226,36 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         return true;
     }
 
-    /// <summary>Customer.Id'yi server projection ID'ye parse eder.
-    /// PR #88 sonrası ingest edilen müşteriler için Id zaten hex N format
-    /// (== WpfCustomerProjection.Id). Eski Customer'lar (shopper app öncesi)
-    /// projection ile eşleşmemiş olabilir — bu durumda parse fail, balance
-    /// section gizli kalır.</summary>
-    private bool TryGetProjectionId(out Guid id)
+    /// <summary>Kartın bakiye kimliği (server WpfCustomerProjection.Id). Açılan satır GUID ("N") ise o satır — bugünkü gibi.
+    /// Değilse (eski/yerel satır) kişinin sahip satırı (spec 2026-10-11 §6.1-f; GetPaymentPerson(id).OwnerId, sahip kuralı:
+    /// GUID'li ve sunucunun kabul edeceği satır). Böylece arama, sohbet ve kara listeden açılan kartlar aynı kişinin bakiyesini
+    /// okur; havuz kipinde panel GET bütün üyeler için aynı toplamı döner. Sahip yoksa (GUID'li ya da gönderilebilir üye yok)
+    /// false: "server eşlemesi yok" metni — o satırlar sunucuya hiç ulaşmaz. Bakiye okuması ve "Bakiye Ekle" bu Id'yi kullanır.
+    /// internal: testler sahip yedeğini doğrudan sınar.</summary>
+    internal bool TryGetProjectionId(out Guid id)
     {
         id = Guid.Empty;
         if (_customerId is null) return false;
-        return Guid.TryParseExact(_customerId, "N", out id);
+        if (Guid.TryParseExact(_customerId, "N", out id)) return true;
+        var owner = _customers.GetPaymentPerson(_customerId).OwnerId;
+        return owner is not null && Guid.TryParseExact(owner, "N", out id);
     }
 
     public async Task ReloadBalanceAsync()
     {
-        if (!TryGetProjectionId(out var projectionId))
+        // Sahip yedeği yerel DB okur (GetPaymentPerson). Load bunu ateşle-unut çağırır: istisna Task'ta yutulur,
+        // kart "0,00 TL"de hatasız kalırdı — bugünkü hata metniyle gösterilir.
+        bool mapped;
+        Guid projectionId;
+        try { mapped = TryGetProjectionId(out projectionId); }
+        catch (Exception ex)
+        {
+            BalanceError = $"Bakiye yüklenemedi: {ex.Message}";
+            BalanceLoaded = false;
+            BalanceTransactions.Clear();
+            return;
+        }
+        if (!mapped)
         {
             BalanceLoaded = false;
             BalanceError = "Bu müşteri server eşlemesi olmadığı için bakiye gösterilemiyor.";
@@ -426,28 +441,6 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
     private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled) && CancelBlockedReason is null;
     private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled) && UncancelBlockedReason is null;
-
-    /// <summary>
-    /// Kimlik rozetinde gösterilecek kullanıcı adı. Kayıt formundan gelen
-    /// müşterilerde <c>DisplayName</c>'e Ad Soyad yazılıyor (arama listesinde
-    /// isim görünsün diye), o yüzden rozette <c>Display</c> kullanılamaz —
-    /// "Instagram: Ayşe Önal" gibi, handle'ı hiç göstermeyen bir satır çıkar.
-    /// YouTube istisna: orada <c>Username</c> = channelId, okunabilir @handle
-    /// <c>DisplayName</c>'de durur.
-    /// </summary>
-    private static string IdentityHandle(Customer c) =>
-        c.Platform?.ToLowerInvariant() == "youtube" ? c.Display : c.Username;
-
-    /// <summary>Platform kodunu okunabilir etikete çevirir (instagram → Instagram).</summary>
-    private static string PlatformLabel(string platform) => platform?.ToLowerInvariant() switch
-    {
-        "instagram" => "Instagram",
-        "youtube" => "YouTube",
-        "facebook" => "Facebook",
-        "tiktok" => "TikTok",
-        "twitch" => "Twitch",
-        _ => string.IsNullOrWhiteSpace(platform) ? "—" : platform,
-    };
 }
 
 /// <summary>UI row tipi — server BalanceTransactionDto'sundan map'lenir.</summary>

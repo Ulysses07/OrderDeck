@@ -53,10 +53,17 @@ public sealed class FakeDialogService : IDialogService
         return ThreeWayResult(title);
     }
 
+    /// <summary>Çekmece onaylarının onay düğmesi yazıları, sırayla (ödeme soruları "Evet", Ayır onayı "Ayır" —
+    /// spec 2026-10-11 §6.1-e).</summary>
+    public List<string> ConfirmTexts { get; } = new();
+
     // Çekmece karşılıkları AYNI listelere yazar: bir çağrı yeri senkrondan
     // async'e geçtiğinde testinin assert'ini değiştirmek gerekmesin.
-    public Task<bool> ConfirmAsync(string message, string title)
-        => Task.FromResult(Confirm(message, title));
+    public Task<bool> ConfirmAsync(string message, string title, string confirmText = "Evet")
+    {
+        ConfirmTexts.Add(confirmText);
+        return Task.FromResult(Confirm(message, title));
+    }
 
     public Task ShowAsync(string message, string title, DialogSeverity severity = DialogSeverity.Info)
     {

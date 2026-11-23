@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
@@ -67,6 +68,13 @@ public enum PaymentRequestResult
     /// <see cref="PaymentRequestOutcome.Message"/>'da ve SATIR İÇİ gösterilir (açılır pencere yok — sahibin #508
     /// tercihi).</summary>
     Blocked,
+
+    /// <summary>Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor (409 <c>customer-not-synced</c>; yalnız
+    /// havuz kipi — birleştirme ya da ayırma sunucuya henüz ulaşmadı). Mesaj GÖNDERİLMEDİ, <c>MarkNoBalance</c> yazılmadı: iş
+    /// taze ya da anahtarlı-belirsiz; sonraki tıklama kaldığı yerden sürdürür, çift düşüm olmaz. Banka W2 açısından
+    /// <see cref="BalanceUncertain"/> gibidir (beklenti yazılmaz). Aynı kişide 5 dakikadan uzun sürerse metin
+    /// <see cref="PaymentRequestOutcome.Message"/>'ta. Yeni üye EN SONDA: var olan üyelerin değerleri değişmez.</summary>
+    BalanceNotSynced,
 }
 
 /// <summary>Operatöre sorulacak soru (<see cref="PaymentRequestResult.AlreadyRequested"/> /
@@ -77,8 +85,10 @@ public enum PaymentRequestResult
 /// <param name="UnsentDeductions">Birleştirmede para taşıyan ama müşteriye hiç gitmemiş istek sayısı
 /// ("gitmiş" sayılmaz, ayrıca söylenir).</param>
 /// <param name="RefundsToOtherRow">Birleştirmenin iade edeceği düşümlerden biri başka bir satırın
-/// bakiyesinden yapılmış: bakiye satır başına tutulduğu için iade o satırda kalır, bu istekte
-/// kullanılmaz (ayrı kartken ayrı ürünler için yapılmış meşru düşüm de olabilir).</param>
+/// bakiyesinden yapılmış (ayrı kartken ayrı ürünler için yapılmış meşru düşüm de olabilir). Satır kipinde
+/// iade o satırda kalır, bu istekte kullanılmaz. Havuz kipinde kişinin bakiyesine döner ve birleşik istekte
+/// kullanılır. Notu <see cref="PersonPool"/> belirler (spec 2026-10-11 §6.1-d). Satır kipi geçiş boyunca
+/// sürdüğü için alan kalır.</param>
 /// <param name="RefundsDeductions">Birleştirme bir düşümü iade ediyor; değilse (parasız istekler
 /// birleşiyor) soru "önceki düşümler iade edilir" demez.</param>
 /// <param name="RemoteDeductions">Kişi düzeyindeki kapsam uzlaştırmasının (R4-03) sunucuda bulduğu
@@ -101,6 +111,18 @@ public sealed record PaymentPrompt(
     /// </summary>
     public IReadOnlyList<string> AlsoConfirms { get; init; } = [];
 
+    /// <summary>
+    /// Lisansın bakiye kipi, birleştirme notu (<see cref="RefundsToOtherRow"/>) için (spec 2026-10-11 §6.1-d, M3):
+    /// <c>false</c> = satır kipi ya da eski sunucu (iade o hesaba döner, bu istekte kullanılmaz — bugünkü not);
+    /// <c>true</c> = havuz kipi (iade kişinin bakiyesine döner, birleşik istekte kullanılır — not yok);
+    /// <c>null</c> = bilinmiyor (iki kipte de doğru nötr not).
+    /// <para>Kaynak yalnız aynı akışta alınan <c>GET scope</c> yanıtlarıdır (sunucu izlerinin sorusu). Yerel planın sorusu
+    /// hiçbir sunucu çağrısından önce kurulduğu için her zaman <c>null</c>dır; önceki yanıtlardan bellekte değer TUTULMAZ:
+    /// <c>enable</c>/<c>disable</c> oturum ortasında kipi değiştirebilir, bayat değer yanlış not gösterirdi. Varsayılan
+    /// <c>false</c>: bu alanı kurmayan sorular (kiranın uzak sorusu, miras işin kapsam sorusu) zaten not taşımaz.</para>
+    /// </summary>
+    public bool? PersonPool { get; init; } = false;
+
     /// <summary>"Evet"in onayladığı bütün belirteçler: <see cref="Token"/> ve <see cref="AlsoConfirms"/>. Onaylayan her
     /// çağıran (soru, fiyat düzeltmesinin toplu gönderimi) yeniden çağrıya bunların HEPSİNİ verir.</summary>
     public IReadOnlyList<string> Tokens => AlsoConfirms.Count == 0 ? [Token] : [Token, .. AlsoConfirms];
@@ -120,8 +142,10 @@ public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, boo
 /// indirilen her iş için (CustomerId, OriginalScopeKey) beklentisi iptal edilir. Sahip yeniden
 /// türetilmez.</para>
 /// <para><see cref="Message"/>: operatöre gösterilecek metin — <see cref="PaymentRequestResult.Blocked"/>'ta her zaman,
-/// <see cref="PaymentRequestResult.PaymentInProgress"/>'ta kirayı tutan bilgisayarın adı biliniyorsa; öbür sonuçlarda
-/// null (metni <see cref="PaymentResultPresenter"/> kurar).</para></summary>
+/// <see cref="PaymentRequestResult.PaymentInProgress"/>'ta kirayı tutan bilgisayarın adı biliniyorsa,
+/// <see cref="PaymentRequestResult.BalanceNotSynced"/>'ta aynı kişide <c>customer-not-synced</c> 5 dakikadan uzun sürüyorsa
+/// (<see cref="PaymentResultPresenter.NotSyncedPersistentText"/>; daha kısaysa null — spec 2026-10-11 §6.1-b); öbür
+/// sonuçlarda null (metni <see cref="PaymentResultPresenter"/> kurar).</para></summary>
 public sealed record PaymentRequestOutcome(
     PaymentRequestResult Result,
     PaymentPrompt? Prompt = null,
@@ -162,6 +186,31 @@ public sealed class PaymentRequestService
     /// <see cref="PaymentRequestResult.PaymentInProgress"/>. Testler kısaltır.</summary>
     internal TimeSpan PersonGateTimeout { get; set; } = TimeSpan.FromSeconds(20);
 
+    /// <summary>Spec 2026-10-11 §6.1-b: havuz kipinin "kişinin bir üyesi sunucuda henüz yok" reddinin problem başlığı
+    /// (<c>ValidationException.Code</c>; önizlemede ve yeni anahtarlı apply'da 409).</summary>
+    private const string CustomerNotSyncedCode = "customer-not-synced";
+
+    /// <summary>Spec §6.1-b: aynı kişide <c>customer-not-synced</c> bundan UZUN sürerse metin değişir ve günlüğe kişinin satır
+    /// Id'leri yazılır (tam 5 dakika henüz kısa metindir).</summary>
+    internal static readonly TimeSpan NotSyncedPatience = TimeSpan.FromMinutes(5);
+
+    /// <summary>Spec §6.1-b'nin "sürerse"si: aynı kişinin art arda iki <c>customer-not-synced</c>'i arasında bundan uzun ara
+    /// varsa ilk görülme yeniden başlar (ör. ayırıp yeniden birleştirme sonrası, saatler sonraki ilk 409). Spec aralığı
+    /// vermez; değer Sahip sorusu 3 = (A), 16.11.2026: 30 dk.</summary>
+    internal static readonly TimeSpan NotSyncedStreakGap = TimeSpan.FromMinutes(30);
+
+    /// <summary>5 dakika kuralının saati (monoton zaman damgası: <see cref="TimeProvider.GetTimestamp"/>); testler elle
+    /// ilerletir (<see cref="PersonGateTimeout"/> deseni).</summary>
+    internal TimeProvider NotSyncedClock { get; set; } = TimeProvider.System;
+
+    /// <summary>Spec §6.1-b: kişinin <c>customer-not-synced</c>'i ilk ve son gördüğü an (<see cref="NotSyncedClock"/>'un
+    /// zaman damgası; duvar saati değil — NTP ya da elle saat düzeltmesi eşiği kaydırmaz), kişi anahtarı
+    /// (<see cref="PaymentPerson.MemberKey"/>) başına. Servis tekil: süreç ömrü boyunca bellekte. Kesin sonuç ya da soru kaydı
+    /// siler (<see cref="SendCoreAsync"/>); ağ belirsizliği silmez. Aynı üye kümesi aynı anahtarı üretir
+    /// (<see cref="PaymentPerson.KeyOf"/> sıralar): ayırıp yeniden birleştirme anahtarı değiştirmez; sayacı
+    /// <see cref="NotSyncedStreakGap"/> yeniden başlatır.</summary>
+    private readonly ConcurrentDictionary<string, (long First, long Last)> _notSyncedSince = new(StringComparer.Ordinal);
+
     /// <param name="shipping">Kargo eşiği ve ücretinin kaynağı (spec 2026-10-13 §6.2): mod Off'ta yerel ayar, mod On'da
     /// lisans geneli ayar. Mesaj şablonu ve hesap bilgileri <paramref name="settingsStore"/>'dan okunmaya devam eder.</param>
     /// <param name="customers">U12 (Bölüm C): bakiye akışının girişinde müşteri Id'sini yerel
@@ -174,6 +223,8 @@ public sealed class PaymentRequestService
     /// yeniden okunan tutar, bakiyeden önce kira (<c>begin</c>; fail-closed) ve her çıkışta <c>finish</c>. Yalnız girişte ve
     /// çıkışta çağrılır, ödeme işinin durum makinesi değişmez; yerel kip Off'ta hiçbir şey yapmaz. DI verir; null yalnız
     /// testlerde (bugünkü yol).</param>
+    /// <param name="customerPull">Spec 2026-10-11 §6.1-b (K2): 409 customer-not-synced'te fire-and-forget müşteri senkron turu
+    /// (önce gönderim, sonra çekme). DI verir; null yalnız testlerde (tur yok).</param>
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
@@ -186,7 +237,8 @@ public sealed class PaymentRequestService
         CustomerRepository? customers = null,
         CustomerBusySet? busy = null,
         PaymentOffRecordWriter? offRecords = null,
-        PaymentLeaseCoordinator? lease = null)
+        PaymentLeaseCoordinator? lease = null,
+        CustomerChangesPullService? customerPull = null)
     {
         _settingsStore = settingsStore;
         _messageBuilder = messageBuilder;
@@ -200,7 +252,22 @@ public sealed class PaymentRequestService
         _busy = busy;
         _offRecords = offRecords;
         _lease = lease;
+        // Yöntem grubu: PullOnceAsync Task<CustomerPullOutcome> döner, temsilci Task bekler (dönüş türü kovaryansı).
+        // Temsilcinin Target'ı DI'ın tekil örneğidir — tek tur kilidi yalnız tek örnekte geçerli.
+        if (customerPull is not null) CustomerTour = customerPull.PullOnceAsync;
     }
+
+    /// <summary>customer-not-synced'in tetiklediği müşteri senkron turu (ctor: <see cref="CustomerChangesPullService.PullOnceAsync"/>;
+    /// spec 2026-10-11 §6.1-b). Null = tur yok. Testler kendi turunu verir.</summary>
+    internal Func<CancellationToken, Task>? CustomerTour { get; set; }
+
+    /// <summary>Son başlatılan tur (yoksa tamamlanmış görev). Akış BEKLEMEZ ve okumaz; yalnız testler bekler.</summary>
+    internal Task LastCustomerTour { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Tur sayacı (spec §6.1-b: "tur kilidi üst üste binmeyi önler; bekleyen bir tetik varken yenisi eklenmez"):
+    /// 0 = boşta, 1 = bir tur koşuyor, 2 = bir tur koşuyor ve bir tur sırada (bekleyen). Yalnız <see cref="Interlocked"/>
+    /// ile değişir. <see cref="CustomerChangesPullService.PullOnceAsync"/> tur kilidini BEKLER (düşürmez); kural buradadır.</summary>
+    private int _customerTourPending;
 
     // License key → Guid LicenseId resolution. Aynı pattern CustomerChangesPullService /
     // WpfCustomerProjectionSync'te de var. Caching: LicenseKey değişene kadar tutar.
@@ -321,6 +388,14 @@ public sealed class PaymentRequestService
     /// <see cref="PaymentPerson.RecipientPaysActive"/>) — kart ve rapor farklı satırları kiralasa da aynı
     /// toplam. KVKK silmesi boşaltılmış satırı bırakmış olabilir — silinmiş kişinin eski telefonuna
     /// mesaj gitmez.</para>
+    ///
+    /// <para>Spec 2026-10-11 §6.1-b (K2): koşu <see cref="PaymentRequestResult.BalanceNotSynced"/> dönerse (havuz kipi;
+    /// sunucu kişinin bir üyesini henüz tanımıyor) bir müşteri senkron turu (<see cref="CustomerTour"/>) arka planda
+    /// başlatılır ve BEKLENMEZ. Tetik koşu döndükten SONRADIR: kişi kilitleri ve müşteri kirası bırakılmıştır — kira
+    /// tutulurken çekilen öğe o üyeye düşseydi müşteri akışı onu meşgul sayıp turu o öğede durdururdu. Koşu başına tek
+    /// sonuç olduğundan önizlemenin ya da apply'ın (SettleAsync'in anında tekrarı dahil; spec 2026-10-13 §6.6, W3-11)
+    /// 409'u tek tetiktir. Tur koşarken gelen tetik bir tur sıraya alır; bekleyen bir tur varken yenisi eklenmez
+    /// (<see cref="TriggerCustomerTour"/>).</para>
     /// </summary>
     /// <param name="productTotalFor">Kira altında okunan GÜNCEL kişiyle çağrılır ve kişinin ürün
     /// toplamını döner (kart: üyelerin yayın/kümülatif toplamı; rapor: üyelerin yayın toplamı — ikisi
@@ -346,6 +421,8 @@ public sealed class PaymentRequestService
             var run = new LeaseRun();
             var outcome = await RequestPaymentOnceAsync(
                 customer, productTotalFor, streamDate, scopeKey, confirmedTokens, retried, modeOnTotal, run, ct);
+            // Spec §6.1-b: kişi kilitleri ve müşteri kirası burada bırakılmıştır — tur beklenmez.
+            if (outcome.Result == PaymentRequestResult.BalanceNotSynced) TriggerCustomerTour();
             var retry = run.Flow?.PendingRetry ?? PaymentLeaseRetry.None;
             if (retry == PaymentLeaseRetry.None) return outcome;
 
@@ -353,6 +430,67 @@ public sealed class PaymentRequestService
             if (stop is not null) return stop with { OwnerId = outcome.OwnerId };
             if ((retry & PaymentLeaseRetry.ModeOffRound) != 0) modeOnTotal = run.Flow!.BegunProductTotal;
             retried |= retry;
+        }
+    }
+
+    /// <summary>Spec 2026-10-11 §6.1-b: customer-not-synced'in müşteri senkron turunu arka planda başlatır (fire-and-forget;
+    /// iş parçacığı havuzunda — müşteri akışı arayüz iş parçacığında koşmamalı). Tur kilidi üst üste binmeyi önler; bekleyen
+    /// bir tetik varken yenisi eklenmez (<see cref="_customerTourPending"/>): boştaysa (0→1) tur başlar; tur koşuyorsa
+    /// (1→2) bir tur sıraya alınır — koşan tur gönderim aşamasını geçmiş olabilir, bu PC'nin yeni birleştirmesini/ayırmasını
+    /// sıradaki tur gönderir; bir tur zaten sıradaysa (2) tetik düşer. Sıradaki tur aynı görevin döngüsünde, koşan bitince
+    /// koşar. Tur akışın iptalinden bağımsız yaşar (<see cref="CancellationToken.None"/>; tıklama bitince akışın belirteci
+    /// geçersiz). Turun hatası yutulur ve Warning olarak yazılır (yalnız istisna; ad, telefon yok) — akışı düşürmez,
+    /// sonraki 409 yeniden tetikler.</summary>
+    private void TriggerCustomerTour()
+    {
+        var tour = CustomerTour;
+        if (tour is null) return;
+        while (true)
+        {
+            int state = Volatile.Read(ref _customerTourPending);
+            if (state == 2)
+            {
+                _log?.LogDebug("customer-not-synced: bir müşteri senkron turu zaten sırada — yeni tetik eklenmedi");
+                return;
+            }
+            // Yarışta (başka tetik ya da biten tur sayacı değiştirdi) yeniden okunur.
+            if (Interlocked.CompareExchange(ref _customerTourPending, state + 1, state) != state) continue;
+            if (state == 1)
+            {
+                _log?.LogDebug("customer-not-synced: müşteri senkron turu koşuyor — bir tur sıraya alındı");
+                return;
+            }
+            break;   // 0 → 1: tur bu tetikle başlar
+        }
+        LastCustomerTour = Task.Run(async () =>
+        {
+            try
+            {
+                do
+                {
+                    try { await tour(CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception ex) { _log?.LogWarning(ex, "customer-not-synced'in tetiklediği müşteri senkron turu başarısız"); }
+                }
+                while (TakeQueuedCustomerTour());
+            }
+            catch
+            {
+                // Yalnız günlük yazıcısı fırlatırsa buraya düşülür: sayaç kilitli kalmasın, sonraki 409 yeniden tetiklesin.
+                Volatile.Write(ref _customerTourPending, 0);
+                throw;
+            }
+        });
+    }
+
+    /// <summary>Bir tur bitince çağrılır. true: sırada bir tur vardı (2→1), aynı görev bir tur daha koşar. false: sıra boş
+    /// (1→0), sonraki tetik yeni tur başlatır. İki karşılaştır-değiştir arasında bir tetik 1'i 2 yapabilir; döngü yeniden
+    /// dener (tur koşarken sayaç yalnız 1 ya da 2'dir, biri mutlaka tutar).</summary>
+    private bool TakeQueuedCustomerTour()
+    {
+        while (true)
+        {
+            if (Interlocked.CompareExchange(ref _customerTourPending, 1, 2) == 2) return true;
+            if (Interlocked.CompareExchange(ref _customerTourPending, 0, 1) == 1) return false;
         }
     }
 
@@ -691,8 +829,9 @@ public sealed class PaymentRequestService
         // hak eder. Düşülecek bir şey yoksa aşağıdaki akış zaten ağa çıkmadan
         // "bakiye yok" ile kapanır.
         //
-        // Kişinin GUID'li bir üyesi varsa (sahip) bakiye akışına girilir — tıklanan satır GUID'siz
-        // olsa da. GUID'li üye yoksa iş yoktur (sunucu GUID olmayan Id'ye düşüm yazamaz).
+        // Kişinin GUID'li ve sunucuya gönderilebilir bir üyesi varsa (sahip) bakiye akışına girilir —
+        // tıklanan satır GUID'siz ya da gönderilemez olsa da. Yoksa iş yoktur: sunucu GUID olmayan Id'ye
+        // düşüm yazamaz, gönderilemeyen satır (ServerCustomerRule) sunucuya hiç ulaşmaz (ortak bakiye §6.1-a).
         if (person.OwnerId is not null)
         {
             // Kira tutuluyken kapsam uzlaştırmasının adaylarına begin'in sunucu üyeleri de katılır (§6.4).
@@ -701,13 +840,21 @@ public sealed class PaymentRequestService
             if (outcome.MembershipChanged) return null;
             demoted = outcome.Demoted ?? demoted;
             ownerId = outcome.Job?.CustomerId ?? ownerId;
+            // Spec 2026-10-11 §6.1-b: 5 dakika sayacı yalnız art arda gelen customer-not-synced'lerle yaşar. Kesin sonuç ya da
+            // soru kişinin kaydını siler; ağ belirsizliği ve öbür belirsizlikler (sunucu kişiyi tanıdığını söylemedi) silmez.
+            if (!outcome.NotSynced && (!outcome.Uncertain || outcome.Prompt is not null))
+                _notSyncedSince.TryRemove(person.MemberKey, out _);
             if (outcome.Prompt is { } prompt)
                 return new(prompt.Kind == PersonScopePromptKind.Merge
                         ? PaymentRequestResult.MergeRequired
                         : PaymentRequestResult.AlreadyRequested,
                     prompt, ownerId, demoted);
+            // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor (409 customer-not-synced) — mesaj gitmez,
+            // MarkNoBalance yazılmadı; operatöre ayrı uyarı ("Henüz eşitlenmedi"). Banka W2 açısından BalanceUncertain gibidir.
             if (outcome.Uncertain)
-                return new(PaymentRequestResult.BalanceUncertain, null, ownerId, demoted);
+                return outcome.NotSynced
+                    ? NotSyncedOutcome(person, ownerId, demoted)
+                    : new PaymentRequestOutcome(PaymentRequestResult.BalanceUncertain, null, ownerId, demoted);
             deliveryJob = outcome.Job;
             appliedBalance = outcome.AppliedBalance;
             totalAmount -= appliedBalance;
@@ -867,6 +1014,28 @@ public sealed class PaymentRequestService
         }
     }
 
+    /// <summary>Spec 2026-10-11 §6.1-b: <see cref="PaymentRequestResult.BalanceNotSynced"/> sonucu ve 5 dakika kuralı. İlk ve
+    /// son görülme kişi anahtarı başına bellekte (<see cref="_notSyncedSince"/>); önceki 409'dan bu yana
+    /// <see cref="NotSyncedStreakGap"/> aşıldıysa ilk görülme yeniden başlar. İlk görülmeden bu yana
+    /// <see cref="NotSyncedPatience"/>'tan UZUN zaman geçtiyse metin <see cref="PaymentResultPresenter.NotSyncedPersistentText"/>
+    /// olur ve günlüğe kişinin satır Id'leri yazılır (ad, kullanıcı adı, telefon yok). Sunucu 409 gövdesinde Id döndürmez;
+    /// Id'ler bu PC'nin üyeleridir. Süreler monoton saatle (<see cref="TimeProvider.GetElapsedTime(long, long)"/>).</summary>
+    private PaymentRequestOutcome NotSyncedOutcome(PaymentPerson person, string? ownerId, IReadOnlyList<DemotedJob> demoted)
+    {
+        var clock = NotSyncedClock;
+        var now = clock.GetTimestamp();
+        var seen = _notSyncedSince.AddOrUpdate(person.MemberKey,
+            _ => (now, now),
+            (_, old) => clock.GetElapsedTime(old.Last, now) > NotSyncedStreakGap ? (now, now) : (old.First, now));
+        var elapsed = clock.GetElapsedTime(seen.First, now);
+        if (elapsed <= NotSyncedPatience)
+            return new(PaymentRequestResult.BalanceNotSynced, null, ownerId, demoted);
+        _log?.LogWarning("customer-not-synced 5 dakikadan uzun sürüyor ({Elapsed}) — kişinin satırları: {MemberIds}",
+            elapsed, string.Join(",", person.MemberIds));
+        return new(PaymentRequestResult.BalanceNotSynced, null, ownerId, demoted,
+            Message: PaymentResultPresenter.NotSyncedPersistentText);
+    }
+
     private sealed record BalanceOutcome(bool Uncertain, decimal AppliedBalance, PaymentJob? Job)
     {
         /// <summary>Doluysa akış durur ve operatöre sorulur (hiçbir şey değişmedi).</summary>
@@ -882,6 +1051,12 @@ public sealed class PaymentRequestService
         /// (<see cref="Job"/>) benimsendi — akış revizyon adımına döner (<see cref="ReviseAndSettleAsync"/>). Sonuç tek
         /// başına kesin değildir (Uncertain=true): dönüşü işlemeyen bir çağıran mesajı engeller.</summary>
         public bool ScopeDeductionAdopted { get; init; }
+
+        /// <summary>Spec 2026-10-11 §6.1-b (K2): belirsizliğin (<see cref="Uncertain"/>) nedeni 409 <c>customer-not-synced</c> —
+        /// sunucu kişinin bir üyesini henüz tanımıyor (önizleme ya da apply). Sonuç
+        /// <see cref="PaymentRequestResult.BalanceNotSynced"/>; <c>MarkNoBalance</c> yazılmadı, iş taze ya da
+        /// anahtarlı-belirsiz.</summary>
+        public bool NotSynced { get; init; }
     }
 
     /// <summary>Bir apply denemesinin (<see cref="ReplayAsync"/>) sonucu.</summary>
@@ -892,8 +1067,12 @@ public sealed class PaymentRequestService
     /// (<see cref="IPaymentJobStore.AdoptRemoteResult(string, Guid, decimal, decimal, Guid, int)"/>).</param>
     /// <param name="LegacyScopeDeduction">Miras işte 409 <c>scope-has-deduction</c>: benimsenmedi, hiçbir şey yazılmadı —
     /// çağıran #506'nın birleştirme sorusunu sorar.</param>
+    /// <param name="NotSynced">Spec 2026-10-11 §6.1-b (K2): 409 <c>customer-not-synced</c> — sunucu kişinin bir üyesini henüz
+    /// tanımıyor, hiçbir şey yazmadı. İş anahtarıyla <c>apply_uncertain</c> kalır (sonraki tıklama aynı anahtarla oynatır);
+    /// <c>MarkNoBalance</c> YOK. Belirsiz dönüş bayrağı <see cref="BalanceOutcome.NotSynced"/>'a taşır.</param>
     private sealed record ApplyAttempt(
-        PaymentJob Job, bool Stale = false, bool Adopted = false, ScopeHasDeductionException? LegacyScopeDeduction = null);
+        PaymentJob Job, bool Stale = false, bool Adopted = false, ScopeHasDeductionException? LegacyScopeDeduction = null,
+        bool NotSynced = false);
 
     /// <summary>
     /// Lisans id'si çözülemediğinde (sunucuya ulaşılamıyor) verilecek karar. Kişi × kapsamın işi
@@ -1060,6 +1239,8 @@ public sealed class PaymentRequestService
                 NewTotal = merge ? null : remote.NewTotal,
                 PriorHadBalance = !merge && remote.PriorHadBalance,
                 AlsoConfirms = [plan.Token],
+                // Ortak bakiye §6.1-d: yerel plan, sunucunun scope yanıtından önce kurulur; kip bilinmez, nötr not.
+                PersonPool = null,
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1091,7 +1272,12 @@ public sealed class PaymentRequestService
             plan.RefundsToOtherRow,
             plan.RefundsDeductions,
             NewTotal: changed ? totalAmount : null,
-            PriorHadBalance: changed && priorBalance > 0m);
+            PriorHadBalance: changed && priorBalance > 0m)
+        {
+            // Ortak bakiye §6.1-d: yerel planın sorusu hiçbir sunucu çağrısından önce kurulur; kip bilinmez, nötr not.
+            // Önceki akışların scope yanıtı bellekte tutulmaz: enable/disable oturum ortasında kipi değiştirebilir.
+            PersonPool = null,
+        };
     }
 
     /// <summary>Kişi × kapsamın işini (<paramref name="job"/>) kesinleştirir. Sunucuya giden BÜTÜN
@@ -1135,7 +1321,8 @@ public sealed class PaymentRequestService
             var resolved = new List<PaymentJob>(legacies.Count);
             foreach (var l in legacies)
             {
-                var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, Guid.ParseExact(l.CustomerId, "N"), l, ct);
+                var attempt = await ReplayOnceMoreIfStaleAsync(
+                    licenseId.Value, person, Guid.ParseExact(l.CustomerId, "N"), l, ct);
                 if (attempt.LegacyScopeDeduction is { } deduction)
                 {
                     // §6.6 (W3-11): miras iş kapsamdaki düşümü BENİMSEMEZ — düşüm büyük olasılıkla başka bir yerel
@@ -1149,7 +1336,7 @@ public sealed class PaymentRequestService
                     continue;
                 }
                 if (attempt.Job.State == PaymentJobState.ApplyUncertain)
-                    return new(true, 0m, attempt.Job);
+                    return new(true, 0m, attempt.Job) { NotSynced = attempt.NotSynced };
                 resolved.Add(attempt.Job);
             }
 
@@ -1224,12 +1411,12 @@ public sealed class PaymentRequestService
         //    güncel cevaptır (yüklem geri alınmışları dışlar), 6. adım yeniden sormaz; tutar farkını 5. adım revize eder.
         if (job.State == PaymentJobState.ApplyUncertain)
         {
-            var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, wpfCustomerId, job, ct);
+            var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, person, wpfCustomerId, job, ct);
             job = attempt.Job;
             if (attempt.Adopted)
                 remoteConfirmed = true;
             else if (job.State == PaymentJobState.ApplyUncertain)
-                return new(true, 0m, job);
+                return new(true, 0m, job) { NotSynced = attempt.NotSynced };
         }
 
         // 4) R4-03 uzlaştırma (KİŞİ düzeyinde): iş hiç denenmemiş görünüyor ama
@@ -1272,9 +1459,11 @@ public sealed class PaymentRequestService
         //    anahtarla taze uygulanır. Cevap kilit altındaki güncel gerçektir (yüklem geri alınmışları dışlar): 6. adım
         //    yeniden doğrulamaz. Aynı tıklamada ikinci benimseme (araya yine başka düşüm girdi) dönmez: DefiniteForCall
         //    toplam tutarsa mesaja çıkar, tutmazsa durur — sıradaki tıklama revize eder (ping-pong yok).
-        var settled = await ReviseAndSettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, remoteConfirmed, ct);
+        var settled = await ReviseAndSettleAsync(
+            licenseId.Value, person, wpfCustomerId, job, totalAmount, remoteConfirmed, ct);
         if (!settled.ScopeDeductionAdopted) return settled;
-        settled = await ReviseAndSettleAsync(licenseId.Value, wpfCustomerId, settled.Job!, totalAmount, remoteConfirmed: true, ct);
+        settled = await ReviseAndSettleAsync(
+            licenseId.Value, person, wpfCustomerId, settled.Job!, totalAmount, remoteConfirmed: true, ct);
         return settled.ScopeDeductionAdopted ? DefiniteForCall(settled.Job!, totalAmount) : settled;
     }
 
@@ -1284,7 +1473,7 @@ public sealed class PaymentRequestService
     /// <param name="remoteConfirmed">R6-02: işin sonucu bu tıklamada sunucudan güncel bir cevapla öğrenildi (kapsam
     /// benimsemesi) — 6. adım yeniden sormaz.</param>
     private async Task<BalanceOutcome> ReviseAndSettleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal totalAmount, bool remoteConfirmed,
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, decimal totalAmount, bool remoteConfirmed,
         CancellationToken ct)
     {
         // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
@@ -1316,7 +1505,7 @@ public sealed class PaymentRequestService
             {
                 _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
                 job = _jobs.Get(job.Id)!;
-                return await SettleAsync(licenseId, wpfCustomerId, job, totalAmount, ct);
+                return await SettleAsync(licenseId, person, wpfCustomerId, job, totalAmount, ct);
             }
         }
 
@@ -1394,11 +1583,24 @@ public sealed class PaymentRequestService
 
         // 8) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
         //    anahtar diske → apply.
+        //    W-havuz (spec 2026-10-11 §6.1-a): önizleme akışın kişisinin GUID'li üyelerini memberIds ile taşır (MemberIdsOf;
+        //    depo okunmaz — tıklamanın girişindeki anlık görüntü, apply'la ve oynatmayla aynı liste).
         decimal previewBalance;
         try
         {
-            var preview = await _api.GetBalancePreviewAsync(licenseId, wpfCustomerId, ct);
+            var preview = await _api.GetBalancePreviewAsync(
+                licenseId, wpfCustomerId, MemberIdsOf(wpfCustomerId, person), ct);
             previewBalance = preview.Balance;
+        }
+        catch (ValidationException ex) when (ex.Code == CustomerNotSyncedCode)
+        {
+            // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir üyesini henüz tanımıyor. Kesin "bakiye yok" DEĞİL: MarkNoBalance
+            // yazılırsa iş kesinleşir ve eşitlemeden sonra bakiye bir daha sorulmaz. Anahtar yazılmadı, iş created kalır —
+            // sonraki tıklama temiz dener.
+            _log?.LogInformation(
+                "Bakiye önizlemesi: kişinin bir üyesi sunucuya henüz ulaşmadı (customer-not-synced) — mesaj engellendi, iş taze "
+                + "kaldı (job={JobId})", job.Id);
+            return new(true, 0m, job) { NotSynced = true };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1428,7 +1630,7 @@ public sealed class PaymentRequestService
                 return DefiniteForCall(job, totalAmount);
         }
         job = _jobs.Get(job.Id)!;
-        return await SettleAsync(licenseId, wpfCustomerId, job, totalAmount, ct);
+        return await SettleAsync(licenseId, person, wpfCustomerId, job, totalAmount, ct);
     }
 
     /// <summary>Kişi düzeyindeki kapsam uzlaştırmasının sonucu: <see cref="Job"/> null = sorgu ya da
@@ -1504,14 +1706,18 @@ public sealed class PaymentRequestService
         {
             var token = "uzak:" + string.Join(";", traces
                 .Select(t => t.Scope.TransactionId.ToString("N")).OrderBy(x => x, StringComparer.Ordinal));
-            // İzler tanım gereği farklı üyelerde: iade edilen düşüm kendi satırına döner. Sunucu teslim
-            // bilgisini bilmez — izler "gitmiş istek" diye değil, bulunan bakiye düşümleri diye anlatılır
-            // (biri gönderilememiş de olabilir; eski sürüm bilgisayarın LaunchFailed/SendPending'i).
+            // İzler tanım gereği farklı üyelerde. İade edilen düşüm satır kipinde kendi satırına, havuz kipinde
+            // kişinin bakiyesine döner; notu bu akışın scope yanıtlarındaki kip seçer (PersonPoolOf; ortak bakiye
+            // §6.1-d). Sunucu teslim bilgisini bilmez: izler "gitmiş istek" diye değil, bulunan bakiye düşümleri diye
+            // anlatılır (biri gönderilememiş de olabilir; eski sürüm bilgisayarın LaunchFailed/SendPending'i).
             if (confirmedTokens?.Contains(token) != true)
                 return new(job, new PaymentPrompt(PersonScopePromptKind.Merge, job.ScopeKey,
                     Array.Empty<PriorPaymentRequest>(), token, RefundsToOtherRow: true,
                     RemoteDeductions: traces.OrderBy(t => t.Scope.CreatedAt)
-                        .Select(t => t.Scope.AppliedAmount).ToList()));
+                        .Select(t => t.Scope.AppliedAmount).ToList())
+                {
+                    PersonPool = PersonPoolOf(traces),
+                });
 
             // Onaylandı: en eski düşüm kalır (sunucu teslim bilgisini bilmez); fazlası iade edilir.
             var keep = traces.OrderBy(t => t.Scope.CreatedAt).ThenBy(t => candidates.IndexOf(t.MemberId)).First();
@@ -1561,6 +1767,13 @@ public sealed class PaymentRequestService
         _jobs.AdoptRemoteResult(job.Id, scope.TransactionId, scope.AppliedAmount, scope.ProductTotal);
         return new(_jobs.Get(job.Id)!);
     }
+
+    /// <summary>Sunucu izlerinin sorusunun kipi (ortak bakiye spec 2026-10-11 §6.1-d). İzlerin hepsi aynı
+    /// <c>personPool</c>'u taşıyorsa o değer, değilse <c>null</c> (iki kipte de doğru nötr not). İzler aynı lisansın aynı
+    /// akışta alınmış scope yanıtlarıdır; değerler yalnız akış ortasındaki <c>enable</c>/<c>disable</c> yarışında
+    /// karışır. Alanı göndermeyen eski sunucunun izi <c>false</c> taşır (DTO varsayılanı) ve bugünkü notu verir.</summary>
+    private static bool? PersonPoolOf(IReadOnlyList<(string MemberId, CustomerBalanceScope Scope)> traces)
+        => traces.Select(t => t.Scope.PersonPool).Distinct().Count() == 1 ? traces[0].Scope.PersonPool : null;
 
     /// <summary>R6-02: tekrar paylaşımdan önce "kayıtlı düşüm sunucuda hâlâ
     /// geçerli mi?" Cevaba göre üç yol:
@@ -1614,7 +1827,7 @@ public sealed class PaymentRequestService
     /// oynatır), mesaj gitmez. Apply 409 <c>scope-has-deduction</c> aldıysa düşüm işe benimsenmiştir: sonuç
     /// <see cref="BalanceOutcome.ScopeDeductionAdopted"/> ile döner, çağıran revizyon adımına döner.</para></summary>
     private async Task<BalanceOutcome> SettleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal requestedTotal,
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, decimal requestedTotal,
         CancellationToken ct)
     {
         // R6-03: girişteki deneme kimliği. Cevap, gönderildiği denemeye aittir;
@@ -1623,26 +1836,28 @@ public sealed class PaymentRequestService
         var entryKey = job.ApplyKey;
         var entryRevision = job.Revision;
 
-        var attempt = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        var attempt = await ReplayAsync(licenseId, person, wpfCustomerId, job, ct);
         if (!attempt.Adopted && attempt.Job.State == PaymentJobState.ApplyUncertain)
         {
-            attempt = await ReplayAsync(licenseId, wpfCustomerId, attempt.Job, ct);
+            attempt = await ReplayAsync(licenseId, person, wpfCustomerId, attempt.Job, ct);
             if (attempt.Stale) LogStalePersists(attempt.Job);
         }
         if (attempt.Adopted)
             return new(true, 0m, attempt.Job) { ScopeDeductionAdopted = true };
-        return ClassifySettledJob(attempt.Job, entryKey, entryRevision, requestedTotal);
+        // Spec 2026-10-11 §6.1-b: son denemenin customer-not-synced'i belirsiz sonuca taşınır (BalanceNotSynced).
+        var classified = ClassifySettledJob(attempt.Job, entryKey, entryRevision, requestedTotal);
+        return attempt.NotSynced && classified.Uncertain ? classified with { NotSynced = true } : classified;
     }
 
     /// <summary>Tek apply denemesi (<see cref="ReplayAsync"/>); kilit zaman aşımında (409 <c>stale</c>, hiçbir şey
     /// yazılmadı) hemen bir kez daha — spec 2026-10-13 §6.6, en çok iki apply. Belirsiz işin (3. adım) ve miras işlerin
     /// (1. adım) tek replay'i için: ağ hatası bugünkü gibi yeniden denenmez, akış durur.</summary>
     private async Task<ApplyAttempt> ReplayOnceMoreIfStaleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
-        var attempt = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        var attempt = await ReplayAsync(licenseId, person, wpfCustomerId, job, ct);
         if (!attempt.Stale || attempt.Job.State != PaymentJobState.ApplyUncertain) return attempt;
-        attempt = await ReplayAsync(licenseId, wpfCustomerId, attempt.Job, ct);
+        attempt = await ReplayAsync(licenseId, person, wpfCustomerId, attempt.Job, ct);
         if (attempt.Stale) LogStalePersists(attempt.Job);
         return attempt;
     }
@@ -1753,7 +1968,8 @@ public sealed class PaymentRequestService
 
     /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe
     /// yazar. Amount=ProductTotal gönderilir — sunucu bakiyeye/toplama kırpar;
-    /// replay'de birebir aynı gövde gittiği için A11 içerik kontrolünden geçer.
+    /// replay'de A11'in karşılaştırdığı alanlar (müşteri, ProductTotal, Amount) aynı gittiği için içerik kontrolünden geçer
+    /// (kapsam ve memberIds karşılaştırmanın dışında).
     ///
     /// R4-03: gövdeye işin <c>ScopeKey</c>'i de eklenir — satışın kalıcı
     /// kimliği. Sunucu bunu A11 karşılaştırmasının DIŞINDA tutar, yoksa bu
@@ -1767,6 +1983,12 @@ public sealed class PaymentRequestService
     /// tutmuyorsa cevap sessizce DEĞİL, günlüğe yazılarak atılır — dönüşte
     /// satır yeniden okunduğu için çağıran zaten kazananın sonucunu görür.
     ///
+    /// <para>W-havuz (spec 2026-10-11 §6.1-a, §8.4-1): gövde akışın kişisinin GUID'li üyelerini <c>memberIds</c> ile taşır
+    /// (<see cref="MemberIdsOf"/>; <paramref name="person"/> tıklamanın girişindeki anlık görüntü, depo okunmaz) — taze apply,
+    /// belirsiz işin ve miras işlerin oynatması hepsi buradan geçer. Havuz kipinde kayıtlı anahtarın oynatması üye denetiminden
+    /// önce döner, ama sunucuya hiç ulaşmamış anahtarın oynatması yeni yazımdır ve <c>memberIds</c> ister. Liste A11 içerik
+    /// karşılaştırmasının dışında: tıklamalar arasında değişse de oynatma çakışmaz.</para>
+    ///
     /// <para>Spec 2026-10-13 §6.6 (W3-11; sunucu bunları yalnız mod On'da üretir, kod moddan bağımsız):
     /// <list type="bullet">
     /// <item>409 <c>stale</c> (kapsam kilidi 5 sn'de alınamadı): hiçbir şey yazılmadı, iş anahtarıyla belirsiz kalır;
@@ -1778,7 +2000,7 @@ public sealed class PaymentRequestService
     ///   aynı düşümü sahiplenirdi — hiçbir şey yazılmaz, <see cref="ApplyAttempt.LegacyScopeDeduction"/> ile döner.</item>
     /// </list></para></summary>
     private async Task<ApplyAttempt> ReplayAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+        Guid licenseId, PaymentPerson person, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
         if (job.ApplyKey is null)
             throw new InvalidOperationException($"Replay anahtarsız işte çağrıldı (job={job.Id})");
@@ -1798,7 +2020,8 @@ public sealed class PaymentRequestService
             var apply = await _api.ApplyBalanceAsync(
                 licenseId,
                 new CustomerBalanceApplyRequest(
-                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, SaleScopeOf(job)),
+                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, SaleScopeOf(job),
+                    MemberIds: MemberIdsOf(wpfCustomerId, person)),
                 ct);
             if (!_jobs.MarkApplied(job.Id, key, revision, apply.AppliedAmount))
                 LogBayat("uygulandı");
@@ -1824,6 +2047,16 @@ public sealed class PaymentRequestService
                 "Bakiye apply'ı kilit zaman aşımı aldı (stale) — sunucu hiçbir şey yazmadı (job={JobId}, key={Key})",
                 job.Id, key);
             return new(_jobs.Get(job.Id)!, Stale: true);
+        }
+        catch (ValidationException ex) when (ex.Code == CustomerNotSyncedCode)
+        {
+            // Spec 2026-10-11 §6.1-b (K2): yeni anahtar sunucuda HİÇ yazılmadı (kayıtlı anahtarın oynatması üyelik denetiminden
+            // önce çalışır, bu 409'u almaz). "Bakiye yok" DEĞİL — MarkNoBalance yazılmaz; iş anahtarıyla apply_uncertain kalır,
+            // sonraki tıklama aynı anahtarla oynatır.
+            _log?.LogInformation(
+                "Bakiye apply: kişinin bir üyesi sunucuya henüz ulaşmadı (customer-not-synced) — iş anahtarıyla belirsiz kaldı "
+                + "(job={JobId}, key={Key})", job.Id, key);
+            return new(_jobs.Get(job.Id)!, NotSynced: true);
         }
         catch (ScopeHasDeductionException ex)
         {
@@ -1860,6 +2093,30 @@ public sealed class PaymentRequestService
     /// eskisi gibi kendi adıyla gider. Tanım <see cref="PaymentJob.SaleScopeKey"/>'de: kirasız ödeme kaydı
     /// (W3-06) aynı eşlemeyle gider.</summary>
     private static string SaleScopeOf(PaymentJob job) => job.SaleScopeKey;
+
+    /// <summary>W-havuz (spec 2026-10-11 §6.1-a): sunucuya giden kişi üyeleri — akışın kişisinin
+    /// (<paramref name="person"/>: tıklamanın girişinde okunan, kilitleri ve kiraları tutulan anlık görüntü,
+    /// <see cref="PersonHold"/>) GUID'li bütün üyeleri (silinmişler ve sahip dahil; <see cref="PaymentOwnerRule.IsOwnerCapable"/>
+    /// süzgeci, kapsam uzlaştırmasının yerel adaylarıyla aynı). Depo OKUNMAZ: çekme turu kira altındaki satırın GroupId'sini
+    /// de yazar (<c>CustomerSyncRepository.ApplyServerCustomer</c>, var olan satırda kira denetimi yok); akış ortasında
+    /// okunan kişi çapayı başka bir kişiyle gösterebilir, sunucu o listeyi kendi S(a)'sıyla tutarlı bulur ve işin
+    /// toplamını, telefonunu, onayını taşıyan kişinin dışındaki bir satırdan düşerdi. Anlık görüntü para taşıyan bir
+    /// ayrışma içeriyorsa (W'nin S dışındaki canlı üyesi ya da S'nin W dışındaki, bakiyesi &gt; 0 canlı üyesi) sunucu
+    /// <c>customer-not-synced</c> döner; öbür bayat görüntülerde çekim <c>W ∩ S</c>'nin canlıları ∪ S'nin silinmişleriyle
+    /// sınırlıdır (kişide olmayan canlı satırdan para çekilmez). Sonraki tıklama kişiyi girişte yeniden okur (iş açıldıktan sonra
+    /// birleşen üye o tıklamada gider). Mod On'da liste kiranın <c>begin</c>'ine giden üye kümesiyle aynı kaynaktan
+    /// (spec §15-5). Çapa (<paramref name="anchor"/>) her zaman listede: sunucu <c>W ∪ {a}</c> kurar; depo yoksa (testler)
+    /// kişi tek satırlıktır (<see cref="ReadPerson"/>), liste yalnız çapa. Sıra <c>"N"</c> biçiminin ordinal sırası: aynı
+    /// kişi her çağrıda aynı listeyi gönderir; liste A11 içerik karşılaştırmasına girmez. Kiranın sunucu üyeleri
+    /// katılmaz — liste WPF'in bildiği kişidir. Satır kipindeki sunucu alanı okumaz; eski sunucu yok sayar.</summary>
+    private static IReadOnlyList<Guid> MemberIdsOf(Guid anchor, PaymentPerson person)
+        => person.MemberIds
+            .Where(PaymentOwnerRule.IsOwnerCapable)
+            .Select(id => Guid.ParseExact(id, "N"))
+            .Append(anchor)
+            .Distinct()
+            .OrderBy(g => g.ToString("N"), StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>R4-02: diske inmiş geri alma niyetini uzlaştırır. Sunucudaki
     /// geri alma deterministik idempotenttir (tekrar = 409 already-reversed =

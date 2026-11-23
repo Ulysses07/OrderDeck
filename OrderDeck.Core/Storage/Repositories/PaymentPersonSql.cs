@@ -32,12 +32,15 @@ internal static class PaymentPersonSql
             : conn.Query<Row>(Columns + " WHERE Id = @customerId", new { customerId }, tx);
         return rows
             .Select(r => new PaymentPersonMember(
-                r.Id, r.Phone, r.PurgedAt is not null, r.RecipientPaysActive != 0, r.TotalAmount))
+                r.Id, r.Phone, r.PurgedAt is not null, r.RecipientPaysActive != 0, r.TotalAmount,
+                r.Platform, r.Username))
             .ToList();
     }
 
+    // Platform/Username: sahip kuralının girdisi (ServerCustomerRule). İşlem içi doğrulama yalnız
+    // MemberKey'e (Id kümesi) bakar; yeni kolonlar onu etkilemez.
     private const string Columns =
-        "SELECT Id, Phone, PurgedAt, RecipientPaysActive, TotalAmount FROM Customer";
+        "SELECT Id, Phone, PurgedAt, RecipientPaysActive, TotalAmount, Platform, Username FROM Customer";
 
     private sealed class Row
     {
@@ -46,5 +49,7 @@ internal static class PaymentPersonSql
         public long? PurgedAt { get; init; }
         public int RecipientPaysActive { get; init; }
         public decimal TotalAmount { get; init; }
+        public string? Platform { get; init; }
+        public string? Username { get; init; }
     }
 }

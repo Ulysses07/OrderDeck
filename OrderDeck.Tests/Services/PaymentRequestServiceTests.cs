@@ -146,6 +146,13 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// <summary>A9: preview cevabından önce beklenir (yarış rendezvous'u).</summary>
         public Func<Task>? OnPreviewAsync { get; set; }
 
+        /// <summary>W-havuz (spec 2026-10-11 §6.1-b): önizlemenin çağrı başına cevabı (parametre kaçıncı önizleme olduğu, 1'den;
+        /// sayaç <c>_sync</c> altında). Dolu dönerse o cevap gider (ör. 409 <c>customer-not-synced</c>, havuz kipinin
+        /// <c>personPool</c>'lu 200'ü); null → normal yol (<see cref="PreviewBalance"/> / <see cref="RowBalances"/>). Fonksiyon
+        /// fırlatırsa istek ağ hatasıyla düşer.</summary>
+        public Func<int, HttpResponseMessage?>? PreviewResponse { get; set; }
+        private int _previewCount;
+
         /// <summary>R4-01: apply cevabından önce beklenir. Parametre kaçıncı
         /// apply çağrısı olduğudur (1'den başlar) — tek bir cevabı yolda
         /// bekletip gecikmiş cevap senaryosunu kurmak için.</summary>
@@ -228,8 +235,18 @@ public partial class PaymentRequestServiceTests : IDisposable
             if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
             {
                 var previewed = WpfCustomerIdOf(request);
-                lock (_sync) PreviewCustomerIds.Add(previewed);
+                // W-havuz: tekrarlı parametre GetValues ile okunur — indeksleyici (["memberIds"]) değerleri virgülle birleştirir.
+                var memberIds = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query).GetValues("memberIds");
+                lock (_sync)
+                {
+                    PreviewCustomerIds.Add(previewed);
+                    _previewMemberIds.Add(memberIds?.Select(v => Guid.Parse(v)).ToList() ?? new List<Guid>());
+                }
                 if (OnPreviewAsync is not null) await OnPreviewAsync();
+                int onizlemeSira;
+                lock (_sync) onizlemeSira = ++_previewCount;
+                // W-havuz: senaryolu cevap (409 customer-not-synced, client-update-required, havuzun 200'ü, ağ hatası).
+                if (PreviewResponse?.Invoke(onizlemeSira) is { } scriptedPreview) return scriptedPreview;
                 decimal balance;
                 lock (_sync)
                     balance = RowBalances is { } rows ? rows.GetValueOrDefault(CanonicalOf(previewed)) : PreviewBalance;
@@ -361,10 +378,21 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// <summary>Önizleme ucuna sorulan WpfCustomerId'ler (sahip anahtarı testleri).</summary>
         public List<Guid> PreviewCustomerIds { get; } = new();
 
+        /// <summary>W-havuz: her önizlemenin tekrarlı memberIds değerleri, geliş sırasıyla (parametre yoksa boş liste) —
+        /// kilit altında alınmış anlık görüntü (<see cref="AppliedMemberIds"/> gibi).</summary>
+        public IReadOnlyList<IReadOnlyList<Guid>> PreviewMemberIds { get { lock (_sync) return _previewMemberIds.ToList(); } }
+        private readonly List<IReadOnlyList<Guid>> _previewMemberIds = new();
+
         /// <summary>Apply gövdelerinin WpfCustomerId'leri, gönderim sırasıyla.</summary>
         public IReadOnlyList<Guid> AppliedCustomerIds
         {
             get { lock (_sync) return AppliedBalanceBodies.Select(WpfCustomerIdOf).ToList(); }
+        }
+
+        /// <summary>W-havuz: apply gövdelerinin memberIds alanı, gönderim sırasıyla (alan yok ya da null → null).</summary>
+        public IReadOnlyList<IReadOnlyList<Guid>?> AppliedMemberIds
+        {
+            get { lock (_sync) return AppliedBalanceBodies.Select(MemberIdsOfBody).ToList(); }
         }
 
         private static Guid WpfCustomerIdOf(HttpRequestMessage request)
@@ -374,6 +402,17 @@ public partial class PaymentRequestServiceTests : IDisposable
         {
             using var doc = System.Text.Json.JsonDocument.Parse(applyBody);
             return doc.RootElement.GetProperty("wpfCustomerId").GetGuid();
+        }
+
+        /// <summary>W-havuz: apply gövdesinin <c>memberIds</c> alanı — ham JSON adı, sunucunun bağladığı ad
+        /// (<c>LicensesCustomerBalanceApplyController.ApplyRequest.MemberIds</c>). Alan yoksa ya da null ise null.</summary>
+        public static IReadOnlyList<Guid>? MemberIdsOfBody(string applyBody)
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(applyBody);
+            return doc.RootElement.TryGetProperty("memberIds", out var el)
+                   && el.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? el.EnumerateArray().Select(e => e.GetGuid()).ToList()
+                : null;
         }
 
         private static decimal AppliedAmountRequested(string body)
@@ -397,7 +436,8 @@ public partial class PaymentRequestServiceTests : IDisposable
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
 
-        private static HttpResponseMessage Problem(
+        /// <summary>Sunucunun problem+json reddi (<c>title</c> = <c>ValidationException.Code</c>). Varsayılan 409.</summary>
+        public static HttpResponseMessage Problem(
             string title, HttpStatusCode status = (HttpStatusCode)409) => new(status)
         {
             Content = new StringContent(
@@ -429,17 +469,19 @@ public partial class PaymentRequestServiceTests : IDisposable
     /// kısaltılır: kilide takılan bir test 20 sn asılı kalmasın, hızla düşsün.</summary>
     /// <param name="shipping">Kargo ayarı sağlayıcısı; verilmezse ayar dosyası (mod Off).</param>
     /// <param name="offRecords">Mod Off'taki kirasız ödeme kaydı (W3-06); verilmezse kayıt yok.</param>
+    /// <param name="log">Servisin günlüğü (W-havuz: "günlükte yalnız Id" denetimi); verilmezse günlük yok.</param>
     private PaymentRequestService SutOn(
         WhatsAppStubHandler handler, SettingsStore store, FakeUrlLauncher launcher,
         ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null,
         CustomerRepository? customers = null, CustomerBusySet? busy = null,
-        IShippingSettingsProvider? shipping = null, PaymentOffRecordWriter? offRecords = null)
+        IShippingSettingsProvider? shipping = null, PaymentOffRecordWriter? offRecords = null,
+        Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null)
     {
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
             api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs, shipping ?? LocalShipping.Of(store),
-            log: null, customers: customers, busy: busy, offRecords: offRecords)
+            log: log, customers: customers, busy: busy, offRecords: offRecords)
         {
             PersonGateTimeout = TimeSpan.FromSeconds(5),
         };

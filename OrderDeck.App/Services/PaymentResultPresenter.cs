@@ -25,12 +25,26 @@ namespace OrderDeck.App.Services;
 /// </summary>
 public static class PaymentResultPresenter
 {
+    /// <summary>Spec 2026-10-11 §6.1-b (K2): <see cref="PaymentRequestResult.BalanceNotSynced"/> uyarısının başlığı.</summary>
+    public const string NotSyncedTitle = "Henüz eşitlenmedi";
+
+    /// <summary>Spec §6.1-b: sunucu kişinin bir hesabını henüz tanımıyor (birleştirmeden hemen sonra) — kısa metin.</summary>
+    public const string NotSyncedText =
+        "Kişinin hesapları sunucuyla henüz eşitlenmedi; mesaj gönderilmedi. Birazdan tekrar deneyin — bakiye kaybolmaz, çift düşüm olmaz.";
+
+    /// <summary>Spec §6.1-b: aynı kişide <c>customer-not-synced</c> 5 dakikadan uzun sürüyor (kalıcı eşitlenmeme: bozuk satır,
+    /// hiç inmeyen üye, yakınsamayan eski grup) — servis <see cref="PaymentRequestOutcome.Message"/>'a koyar.</summary>
+    public const string NotSyncedPersistentText =
+        "Bu kişinin hesaplarından biri sunucuya ulaşmıyor; mesaj gönderilmedi. Müşteri kaydını kontrol edin ya da grubu ayırıp yeniden birleştirin.";
+
     /// <summary>
     /// Sonucun tamamıyla bildirim (spec 2026-10-13 §6.4; W3-07): <see cref="PaymentRequestResult.Blocked"/> açılır pencere
     /// AÇMAZ — metni çağıran satır içi gösterir (<see cref="InlineProblem"/>; sahibin #508 tercihi).
     /// <see cref="PaymentRequestResult.PaymentInProgress"/> başka bilgisayarın kirasında makine adlı metni
-    /// (<see cref="PaymentRequestOutcome.Message"/>) gösterir; öbür sonuçlar <see cref="Notify(IDialogService, PaymentRequestResult)"/>
-    /// ile bugünkü gibi.
+    /// (<see cref="PaymentRequestOutcome.Message"/>) gösterir. <see cref="PaymentRequestResult.BalanceNotSynced"/> (spec 2026-10-11
+    /// §6.1-b) "Henüz eşitlenmedi" uyarısını servisin metniyle (<see cref="PaymentRequestOutcome.Message"/>; aynı kişide 5
+    /// dakikadan uzun sürüyorsa), yoksa kısa metinle gösterir. Öbür sonuçlar
+    /// <see cref="Notify(IDialogService, PaymentRequestResult)"/> ile bugünkü gibi.
     /// </summary>
     public static void Notify(IDialogService dialogs, PaymentRequestOutcome outcome)
     {
@@ -40,6 +54,9 @@ public static class PaymentResultPresenter
                 return;
             case PaymentRequestResult.PaymentInProgress when !string.IsNullOrWhiteSpace(outcome.Message):
                 dialogs.ShowInfo(outcome.Message);
+                return;
+            case PaymentRequestResult.BalanceNotSynced:
+                dialogs.Show(outcome.Message ?? NotSyncedText, NotSyncedTitle, DialogSeverity.Warning);
                 return;
             default:
                 Notify(dialogs, outcome.Result);
@@ -83,6 +100,13 @@ public static class PaymentResultPresenter
                     "Bağlantıyı kontrol edip tekrar deneyin — çift düşüm olmaz.",
                     "Bakiye doğrulanamadı",
                     DialogSeverity.Warning);
+                break;
+
+            case PaymentRequestResult.BalanceNotSynced:
+                // Spec 2026-10-11 §6.1-b (K2): sunucu kişinin bir hesabını henüz tanımıyor; mesaj gönderilmedi, iş taze ya da
+                // anahtarlı-belirsiz. BalanceUncertain gibi UYARI: kayıp yok, operatör biraz sonra tekrar dener. Kişi burada
+                // bilinmez: 5 dakika metni yalnız Notify(dialogs, outcome) yolundan (Message) gelir.
+                dialogs.Show(NotSyncedText, NotSyncedTitle, DialogSeverity.Warning);
                 break;
 
             case PaymentRequestResult.ListStale:
@@ -150,9 +174,12 @@ public static class PaymentResultPresenter
     /// <para>Birleştirmede yalnız TESLİM edilmiş istekler "gitmiş" sayılır; para taşıyan ama hiç
     /// gönderilmemiş istek ayrıca söylenir (operatöre gitmemiş bir isteği gitmiş diye göstermemek
     /// için). "Fazladan düşülen" denmez: iki ayrı kartken ayrı ürünler için yapılmış düşümler de
-    /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın bakiyesine dönüyorsa
-    /// (bakiye satır başına) bu da söylenir: o tutar bu istekte kullanılmaz. İade edilecek düşüm yoksa
-    /// (parasız istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
+    /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın düşümüne dokunuyorsa
+    /// (<see cref="PaymentPrompt.RefundsToOtherRow"/>) notu kip belirler (<see cref="PaymentPrompt.PersonPool"/>,
+    /// spec 2026-10-11 §6.1-d). Satır kipinde iade o satırda kalır ve bu istekte kullanılmaz (bugünkü not).
+    /// Havuz kipinde kişinin bakiyesine döner ve birleşik istekte kullanılır (not yok). Kip bilinmiyorsa
+    /// (yerel planın sorusu) iki kipte de doğru nötr not gösterilir. İade edilecek düşüm yoksa (parasız
+    /// istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
     ///
     /// <para>Sunucunun bulduğu ayrı düşümler (<see cref="PaymentPrompt.RemoteDeductions"/>) "gitmiş
     /// istek" değildir — sunucu teslimi bilmez; bulunan düşüm olarak anlatılır.</para>
@@ -237,11 +264,19 @@ public static class PaymentResultPresenter
         return ("Birden çok ödeme isteği", WithOtherRowNote(message, prompt));
     }
 
+    /// <summary>Birleştirme notu, kipe göre (spec 2026-10-11 §6.1-d tablosu). Not yalnız iade başka bir hesabın
+    /// düşümüne dokunuyorsa (<see cref="PaymentPrompt.RefundsToOtherRow"/>) kurulur. <see cref="PaymentPrompt.PersonPool"/>
+    /// <c>false</c> (satır kipi, eski sunucu): bugünkü metin, iade o hesapta kalır ve bu istekte kullanılmaz.
+    /// <c>true</c> (havuz kipi): not yok, iade kişinin bakiyesine döner ve birleşik istekte kullanılır.
+    /// <c>null</c> (bilinmiyor; yerel planın sorusu): iki kipte de doğru nötr metin.</summary>
     private static string WithOtherRowNote(string message, PaymentPrompt prompt)
-        => prompt.RefundsToOtherRow
-            ? message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
-              "iade o hesaba döner, bu istekte kullanılmaz."
-            : message;
+        => !prompt.RefundsToOtherRow ? message : prompt.PersonPool switch
+        {
+            false => message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
+                     "iade o hesaba döner, bu istekte kullanılmaz.",
+            true => message,
+            null => message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; iade o hesaba döner.",
+        };
 
     /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim (rapordaki kişi toplamı, kargo notu):
     /// iki kuruş hanesi + "TL".</summary>

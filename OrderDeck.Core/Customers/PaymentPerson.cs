@@ -7,13 +7,18 @@ namespace OrderDeck.Core.Customers;
 /// <summary>Ödeme kişisinin bir üyesi (Customer satırı) — sahip kuralının ve kişi düzeyindeki
 /// iletişim/kargo kararlarının girdisi. Yalnız senkronlanan ve yakınsayan alanlar: liste sırası,
 /// <c>LastSeenAt</c> gibi bilgisayara özgü veriler bilerek YOK (iki bilgisayar aynı sahibi seçsin).
+/// <see cref="Platform"/> ve <see cref="Username"/> sahip kuralının girdisidir: gönderilebilirlik
+/// (<see cref="ServerCustomerRule.IsServerAcceptable"/>, ortak bakiye §6.1-a). İkisi de senkronlanan,
+/// yakınsayan alanlar. Sona varsayılanlı eklendiler; alan taşımayan üye sahip adayı olmaz.
 /// <see cref="TotalAmount"/> yalnız kartın kümülatif tutarı içindir, sahip kuralına girmez.</summary>
 public sealed record PaymentPersonMember(
     string Id,
     string? Phone,
     bool Purged,
     bool RecipientPaysActive = false,
-    decimal TotalAmount = 0m);
+    decimal TotalAmount = 0m,
+    string? Platform = null,
+    string? Username = null);
 
 /// <summary>
 /// "Ödeme iste"nin kişisi: tıklanan (kiralanan) satır + aynı kişinin bütün satırları
@@ -46,8 +51,10 @@ public sealed class PaymentPerson
     /// <summary>Üye kümesinin sıradan bağımsız anahtarı — işlem içi doğrulama bununla yapılır.</summary>
     public string MemberKey { get; }
 
-    /// <summary>Yeni bir iş açılacaksa sahibi (<see cref="PaymentOwnerRule.PickOwner"/>); GUID'li
-    /// üye yoksa null — o kişide bakiye işi açılmaz (sunucu GUID olmayan Id'ye düşüm yazamaz).</summary>
+    /// <summary>Yeni bir iş açılacaksa sahibi (<see cref="PaymentOwnerRule.PickOwner"/>); GUID'li ve
+    /// sunucunun kabul edeceği (Platform/Username, <see cref="ServerCustomerRule.IsServerAcceptable"/>) üye
+    /// yoksa null — o kişide bakiye işi açılmaz (sunucu GUID olmayan Id'ye düşüm yazamaz; gönderilemeyen
+    /// satır sunucuya hiç ulaşmaz).</summary>
     public string? OwnerId { get; }
 
     /// <summary>Kargo kararı kişi düzeyinde: üyelerden HERHANGİ birinde "alıcı ödemeli" açıksa kişi
@@ -79,7 +86,7 @@ public sealed class PaymentPerson
         => new(customer.Id, new[]
         {
             new PaymentPersonMember(customer.Id, customer.Phone, Purged: false,
-                customer.RecipientPaysActive, customer.TotalAmount),
+                customer.RecipientPaysActive, customer.TotalAmount, customer.Platform, customer.Username),
         });
 
     /// <summary>Üye Id'lerinin sıradan bağımsız anahtarı.</summary>
@@ -90,12 +97,20 @@ public sealed class PaymentPerson
 /// <summary>
 /// Yeni ödeme işinin sahip satırı — saf ve belirlenimli. Sıra:
 /// <list type="number">
-/// <item>GUID "N" biçimli Id (sunucu yalnız böyle Id'ye düşüm yazar; GUID'siz üye hiç sahip olmaz),</item>
+/// <item>GUID "N" biçimli Id VE sunucunun kabul edeceği Platform/Username
+///   (<see cref="ServerCustomerRule.IsServerAcceptable"/>; ikisi birlikte <see cref="IsOwnerCandidate"/>):
+///   sunucu yalnız böyle satıra düşüm yazar. Gönderilemeyen satır sahip olsaydı çapa hiç yazılamaz, kişide
+///   kalıcı <c>customer-not-synced</c> olurdu. Gönderilemeyen satır başka bilgisayara da inmez — iki
+///   bilgisayarın seçimi tutarlı kalır. GUID'siz ya da gönderilemeyen üye hiç sahip olmaz,</item>
 /// <item>silinmemiş (<c>PurgedAt IS NULL</c>) önce,</item>
 /// <item>geçerli TR telefonu olan önce (<see cref="PhoneNormalizer.IsValidTr"/> — <c>PhoneRequired</c>
 ///   kapısıyla aynı kural),</item>
 /// <item>Id (küçük harfe indirilmiş, ordinal), eşitlikte ham Id (ordinal).</item>
 /// </list>
+/// <para><see cref="Order"/>'ın ilk anahtarı yalnız GUID'dir (<see cref="IsOwnerCapable"/>): GUID'li ama
+/// gönderilemeyen üye listede yerinde kalır, <see cref="PickOwner"/> onu atlar. Adayların kendi aralarındaki
+/// sıra 2–4 ile aynı olduğu için seçilen sahip yukarıdaki sıranın aynısıdır; <c>MemberIds</c> sırası ve
+/// iletişim telefonu yedeği gönderilebilirlikten etkilenmez.</para>
 /// <para>Liste sırası, <c>TotalAmount</c>, <c>LastSeenAt</c> KULLANILMAZ: senkron yakınsadıktan sonra
 /// iki bilgisayar aynı kişi ve kapsam için aynı (WpfCustomerId, ScopeKey) çiftini seçer. Telefon
 /// önceliği tek telefonlu grupta bugünkü kart birincilini korur.</para>
@@ -104,8 +119,19 @@ public sealed class PaymentPerson
 /// </summary>
 public static class PaymentOwnerRule
 {
-    /// <summary>Id sunucuya müşteri kimliği (WpfCustomerId) olarak gidebilir mi.</summary>
+    /// <summary>Id sunucuya müşteri kimliği (WpfCustomerId) olarak gidebilir mi (GUID "N"). Sahip seçimine
+    /// yetmez — <see cref="IsOwnerCandidate"/>. Id dizesiyle sorulan yerler (miras işler, kapsam adayları,
+    /// <c>memberIds</c>) bunu kullanır.</summary>
     public static bool IsOwnerCapable(string id) => Guid.TryParseExact(id, "N", out _);
+
+    /// <summary>Üye yeni işin sahibi olabilir mi: Id GUID ("N") VE satır sunucuya gönderilebilir
+    /// (<see cref="ServerCustomerRule.IsServerAcceptable"/>, ortak bakiye §6.1-a, M14). Sınır: "gönderilebilir"
+    /// silinmişliğe bakmaz, oysa müşteri senkronu <c>PurgedAt</c>'li satırı göndermez
+    /// (<c>WpfCustomerProjectionSyncService</c>) — hiç gönderilmeden yerelde silinmiş GUID'li satır sunucuya hiç
+    /// ulaşmaz; böyle bir sahip ancak kişinin canlı adayı yoksa seçilir (<see cref="Order"/>: silinmişler canlılardan
+    /// sonra).</summary>
+    public static bool IsOwnerCandidate(PaymentPersonMember member)
+        => IsOwnerCapable(member.Id) && ServerCustomerRule.IsServerAcceptable(member.Platform, member.Username);
 
     /// <summary>Üyeleri sahip kuralı sırasına dizer (GUID'siz üyeler sona; iletişim için yine
     /// listede kalırlar).</summary>
@@ -119,7 +145,8 @@ public static class PaymentOwnerRule
             .ThenBy(m => m.Id, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>Sahip satırın Id'si; GUID'li üye yoksa null.</summary>
+    /// <summary>Sahip satırın Id'si: sahip kuralı sırasındaki ilk aday (<see cref="IsOwnerCandidate"/>);
+    /// aday yoksa null.</summary>
     public static string? PickOwner(IEnumerable<PaymentPersonMember> members)
-        => Order(members).FirstOrDefault(m => IsOwnerCapable(m.Id))?.Id;
+        => Order(members).FirstOrDefault(IsOwnerCandidate)?.Id;
 }

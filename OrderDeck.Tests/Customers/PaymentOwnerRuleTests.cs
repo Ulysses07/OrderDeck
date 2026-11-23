@@ -13,11 +13,13 @@ namespace OrderDeck.Tests.Customers;
 /// Ödeme işinin sahip satırı (<see cref="PaymentOwnerRule"/>). Vektörler ortak dosyadan
 /// (<c>PaymentOwnerRuleVectors.json</c>): sunucu ileride aynı kuralı uygularsa aynı küme ona da koşar.
 /// Her vektör üyelerin BÜTÜN sıralamalarında ve bilgisayara özgü alanlar (ciro, alıcı ödemeli)
-/// değiştirilerek de koşar — iki bilgisayar aynı kişi için aynı sahibi seçmeli.
+/// değiştirilerek de koşar — iki bilgisayar aynı kişi için aynı sahibi seçmeli. Üyeler gönderilebilirliği
+/// (platform/username: ok | empty | long) taşır: GUID'li ama sunucunun reddedeceği satır sahip olmaz
+/// (ortak bakiye §6.1-a, M14).
 /// </summary>
 public sealed class PaymentOwnerRuleTests
 {
-    private sealed record VectorMember(string Id, string Phone, bool Purged);
+    private sealed record VectorMember(string Id, string Phone, bool Purged, string Platform, string Username);
     private sealed record Vector(string Name, IReadOnlyList<VectorMember> Members, string? Owner);
 
     private static IReadOnlyList<Vector> Vectors()
@@ -29,7 +31,9 @@ public sealed class PaymentOwnerRuleTests
             v.GetProperty("members").EnumerateArray().Select(m => new VectorMember(
                 m.GetProperty("id").GetString()!,
                 m.GetProperty("phone").GetString()!,
-                m.TryGetProperty("purged", out var p) && p.GetBoolean())).ToList(),
+                m.TryGetProperty("purged", out var p) && p.GetBoolean(),
+                m.TryGetProperty("platform", out var pl) ? pl.GetString()! : "ok",
+                m.TryGetProperty("username", out var un) ? un.GetString()! : "ok")).ToList(),
             v.GetProperty("owner").ValueKind == JsonValueKind.Null ? null : v.GetProperty("owner").GetString()))
             .ToList();
     }
@@ -42,6 +46,23 @@ public sealed class PaymentOwnerRuleTests
         "invalid" => TestPhone.Digits(7),
         "none" => null,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "bilinmeyen telefon türü"),
+    };
+
+    // Gönderilebilirlik (ServerCustomerRule): ok = kabul edilir, empty = boş, long = sunucu sınırının bir fazlası.
+    private static string PlatformOf(string kind) => kind switch
+    {
+        "ok" => "instagram",
+        "empty" => "",
+        "long" => new string('p', 33),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "bilinmeyen platform türü"),
+    };
+
+    private static string UsernameOf(string kind) => kind switch
+    {
+        "ok" => $"u{Guid.NewGuid():N}"[..12],
+        "empty" => "",
+        "long" => new string('u', 129),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "bilinmeyen kullanıcı adı türü"),
     };
 
     private static IEnumerable<IReadOnlyList<T>> Permutations<T>(IReadOnlyList<T> items)
@@ -61,7 +82,8 @@ public sealed class PaymentOwnerRuleTests
     {
         var vector = Vectors().Single(v => v.Name == name);
         var members = vector.Members
-            .Select(m => new PaymentPersonMember(m.Id, PhoneOf(m.Phone), m.Purged))
+            .Select(m => new PaymentPersonMember(m.Id, PhoneOf(m.Phone), m.Purged,
+                Platform: PlatformOf(m.Platform), Username: UsernameOf(m.Username)))
             .ToList();
 
         var random = new Random(name.Length);
@@ -88,6 +110,25 @@ public sealed class PaymentOwnerRuleTests
         var ba = new PaymentPerson(b, new[] { new PaymentPersonMember(b, null, false), new PaymentPersonMember(a, null, false) });
 
         ab.MemberKey.Should().Be(ba.MemberKey);
+        ab.OwnerId.Should().BeNull("üyeler Platform/Username taşımaz, gönderilebilir değil: sahip yok — sahip eşitliği "
+            + nameof(Kisi_anahtari_ve_sahip_gonderilebilir_uyelerle_sirasindan_bagimsizdir) + "'de sınanır");
+        ba.OwnerId.Should().BeNull("aynı gerekçe, ters sıra");
+    }
+
+    // Ortak bakiye §6.1-a: sahip, gönderilebilir (Platform/Username dolu) üyeler arasında da sıradan bağımsız.
+    // Alan taşımayan üyeli eski olgu yeni kuralla iki null'u karşılaştırır; sahip eşitliği burada kanıtlanır.
+    [Fact]
+    public void Kisi_anahtari_ve_sahip_gonderilebilir_uyelerle_sirasindan_bagimsizdir()
+    {
+        var a = new PaymentPersonMember(Guid.NewGuid().ToString("N"), null, false,
+            Platform: "instagram", Username: $"u{Guid.NewGuid():N}"[..12]);
+        var b = new PaymentPersonMember(Guid.NewGuid().ToString("N"), null, false,
+            Platform: "instagram", Username: $"u{Guid.NewGuid():N}"[..12]);
+        var ab = new PaymentPerson(a.Id, new[] { a, b });
+        var ba = new PaymentPerson(b.Id, new[] { b, a });
+
+        ab.MemberKey.Should().Be(ba.MemberKey);
+        ab.OwnerId.Should().NotBeNull("iki üye de GUID'li ve gönderilebilir");
         ab.OwnerId.Should().Be(ba.OwnerId);
     }
 
