@@ -220,6 +220,40 @@ public sealed class CustomerRepository
                && FindSpelling(conn, null, platform, alt)?.IsBlacklisted == 1;
     }
 
+    /// <summary>
+    /// Sohbet satırının iki işareti tek bağlantıda: kara liste vurgusu ve "Kayıtlı" rozeti. Kara liste
+    /// <see cref="IsBlacklistedAnySpelling"/> ile aynı kuraldır (iki yazım). Kayıtlı, müşteri arama
+    /// çekmecesindeki rozetle aynı kuraldır (telefon dolu, <see cref="CountRegistered"/>) ama KİŞİ
+    /// düzeyinde: operatör için "kaydı var mı" sorusunun cevabı, kişi formu hangi hesabıyla doldurmuş
+    /// olursa olsun aynıdır. Bu yüzden telefon yazan hesabın satırında yoksa öbür "@" yazımındaki ikize
+    /// ve aynı kişinin bağlı hesaplarına da bakılır.
+    /// </summary>
+    public ChatSenderMarks GetChatSenderMarks(string platform, string username)
+    {
+        using var conn = _factory.Open();
+        var row = FindSpelling(conn, null, platform, username);
+        var twin = CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt
+            ? FindSpelling(conn, null, platform, alt)
+            : null;
+        return new ChatSenderMarks(
+            IsBlacklisted: row?.IsBlacklisted == 1 || twin?.IsBlacklisted == 1,
+            IsRegistered: IsRegisteredPerson(conn, row) || IsRegisteredPerson(conn, twin));
+    }
+
+    /// <summary>Satırın kendisinde ya da kişisinin (aynı ham <c>GroupId</c>) bir satırında telefon var mı.
+    /// Boş <c>GroupId</c> grup DEĞİLDİR (<see cref="CustomerGroup.IsGrouped"/>): öyle sayılsaydı
+    /// gruplanmamış bütün müşteriler tek kişi olur, birinin telefonu hepsine "Kayıtlı" derdi.</summary>
+    private static bool IsRegisteredPerson(System.Data.IDbConnection conn, Row? row)
+    {
+        if (row is null) return false;
+        if (!string.IsNullOrWhiteSpace(row.Phone)) return true;
+        return CustomerGroup.IsGrouped(row.GroupId)
+               && conn.ExecuteScalar<long>(
+                   @"SELECT EXISTS(SELECT 1 FROM Customer
+                                   WHERE GroupId = @groupId AND Phone IS NOT NULL AND TRIM(Phone) <> '')",
+                   new { groupId = row.GroupId }) == 1;
+    }
+
     private static Row? FindSpelling(
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
         => conn.QueryFirstOrDefault<Row>(
