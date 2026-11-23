@@ -192,6 +192,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// <summary>
     /// Yeni veri katmanı YOK: ViewerCountTracker zaten platform başına
     /// yapılandırılmış kayıt tutuyor, taze kayıt = bağlı.
+    /// Instagram sağlık izleyicisi verildiyse Instagram satırı "en az bir hesap canlı" bilgisini son nabzın
+    /// değerlendirmesinden okur (burada değerlendirme koşmaz) ve sayı göstermez (§8.6.4).
     /// </summary>
     public void RefreshConnections()
     {
@@ -200,8 +202,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             var row = snap?.PerPlatform
                 .FirstOrDefault(p => string.Equals(p.Platform, c.Platform, StringComparison.OrdinalIgnoreCase));
-            c.IsConnected = row is not null;
             c.ViewerCount = row?.Count ?? 0;
+            if (_instagramHealth is not null && c.Platform == "instagram")
+            {
+                c.IsConnected = _instagramView?.AnyAccountLive ?? false;
+                c.ShowViewerCount = false;
+            }
+            else
+            {
+                c.IsConnected = row is not null;
+                c.ShowViewerCount = c.IsConnected;
+            }
         }
     }
 
@@ -1128,7 +1139,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Sync.SessionOrderSyncService? orderSync = null,
         Services.Sync.SalesChangesPullService? salesPull = null,
         Services.Sales.ILabelEditor? labelEditor = null,
-        RemoteSessionsViewModel? remoteSessions = null)
+        RemoteSessionsViewModel? remoteSessions = null,
+        OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor? instagramHealth = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1162,6 +1174,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _giveaways.WinnersDrawn += OnGiveawayWinnersDrawn;
         _bridge = bridge;
         _viewers = viewers;
+        // Kurucu aşağıda EnsureChatFlushTimer() üzerinden UpdateChatHealth'i eşzamanlı çağırır: izleyici ondan önce.
+        _instagramHealth = instagramHealth;
         _youTubeModeration = youTubeModeration;
         _facebookModeration = facebookModeration;
         Banner = banner;
@@ -1320,7 +1334,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ViewerCountVisible = true;
     }
 
-    private void UpdateChatHealth()
+    internal void UpdateChatHealth()
     {
         UpdateViewerCount();
 
@@ -1346,6 +1360,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         // 5 sn'lik nabız: SettingsStore.Load() önbeleksiz (her çağrıda disk
         // okuması) — bu yüzden 1 sn'lik hero zamanlayıcısına DEĞİL buraya bindi.
+        // Instagram sağlığı bir kez değerlendirilir; kenar çubuğu ve üst nokta bu sonucu okur.
+        EvaluateInstagramHealth(hasActiveSession);
         RefreshConnections();
         RefreshPrinterStatus(printerName);
 
@@ -1382,6 +1398,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             ChatHealthTooltip = _lastChatMessageAtUtc == DateTime.MinValue
                 ? $"Chat takibi açık ({sourceList}) — henüz mesaj yok"
                 : $"Chat takibi açık ({sourceList}) — son mesaj 60sn'den uzun süre önce, scraper takılmış olabilir";
+        }
+
+        // Instagram'da üst noktayı sarartan durum (§8.6.4): "ok" sararır ve ipucu yalnız Instagram cümlesidir
+        // ("diğer kaynaklar akıyor" denmez: "ok" susan hesabın kendi mesajlarından da gelebilir); "idle" aynı kalır,
+        // Instagram cümlesi mevcut ipucunun önüne yazılır. "off"ta (oturum yok) buraya gelinmez.
+        if (_instagramView?.TopDotTooltip is { } instagramTooltip)
+        {
+            ChatHealthTooltip = ChatHealthState == "ok"
+                ? instagramTooltip
+                : instagramTooltip + "\n" + ChatHealthTooltip;
+            ChatHealthState = "idle";
         }
     }
 

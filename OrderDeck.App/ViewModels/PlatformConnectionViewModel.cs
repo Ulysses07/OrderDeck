@@ -29,4 +29,8 @@ public sealed partial class PlatformConnectionViewModel : ObservableObject
 
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private int _viewerCount;
+
+    /// <summary>Sayı sütunu görünsün mü. Bağlı satırda görünür; Instagram API yolunda izleyici sayısı yoktur,
+    /// satır yeşil yanarken sayı gizlidir.</summary>
+    [ObservableProperty] private bool _showViewerCount;
 }

@@ -220,7 +220,7 @@
                                 <TextBlock Grid.Column="2" Text="{Binding ViewerCount}"
                                            Style="{StaticResource OD.Text.Mono}"
                                            VerticalAlignment="Center"
-                                           Visibility="{Binding IsConnected,
+                                           Visibility="{Binding ShowViewerCount,
                                                         Converter={StaticResource BoolToVisibleConverter}}"/>
                             </Grid>
                         </DataTemplate>

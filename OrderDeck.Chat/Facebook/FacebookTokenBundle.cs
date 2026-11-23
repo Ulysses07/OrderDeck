@@ -1,6 +1,23 @@
 using System;
+using System.Collections.Generic;
 
 namespace OrderDeck.Chat.Facebook;
+
+/// <summary>
+/// Bağlı bir Facebook Sayfası: kimliği, o Sayfanın erişim token'ı ve görünen
+/// adı. Demette EK Sayfalar bu kayıtla durur
+/// (<see cref="FacebookTokenBundle.ExtraPages"/>).
+/// </summary>
+public sealed record FacebookLinkedPage(string PageId, string PageAccessToken, string PageName)
+{
+    /// <summary>
+    /// Token BASMAZ. NEDEN override: kaydın otomatik <c>ToString</c>'i bütün
+    /// alanları yazar; kayıt bir log satırına ya da istisna mesajına düşerse
+    /// token da onunla düşerdi.
+    /// </summary>
+    public override string ToString() =>
+        $"{nameof(FacebookLinkedPage)} {{ PageId = {PageId}, PageName = {PageName} }}";
+}
 
 /// <summary>
 /// Everything we need to call the Graph API on the operator's behalf,
@@ -22,9 +39,25 @@ namespace OrderDeck.Chat.Facebook;
 /// token effectively doesn't expire, but if the user token dies we lose
 /// the ability to re-derive it, so we treat this as the overall lifetime.
 /// Null = "never expires" (older Meta accounts).</param>
+/// <param name="ExtraPages">Yalnız EK Sayfalar; birincil burada tekrarlanmaz
+/// (o, yukarıdaki <c>PageId</c> / <c>PageAccessToken</c> / <c>PageName</c>
+/// alanlarında durur). Null ya da boş = tek Sayfa. Bu alanı tanımayan
+/// sürümün yazdığı blob'da alan yoktur, null okunur; o sürüm de yeni
+/// blob'daki alanı atlayıp birincil Sayfayı görür. Sürüm alanı ve göç adımı
+/// bu yüzden yoktur.</param>
 public sealed record FacebookTokenBundle(
     string UserAccessToken,
     string PageId,
     string PageAccessToken,
     string PageName,
-    DateTimeOffset? ExpiresAt);
+    DateTimeOffset? ExpiresAt,
+    IReadOnlyList<FacebookLinkedPage>? ExtraPages = null)
+{
+    /// <summary>
+    /// Token BASMAZ (gerekçe: <see cref="FacebookLinkedPage.ToString"/>).
+    /// Ek Sayfaların yalnız sayısı yazılır.
+    /// </summary>
+    public override string ToString() =>
+        $"{nameof(FacebookTokenBundle)} {{ PageId = {PageId}, PageName = {PageName}, " +
+        $"ExpiresAt = {ExpiresAt:O}, ExtraPageCount = {ExtraPages?.Count ?? 0} }}";
+}
