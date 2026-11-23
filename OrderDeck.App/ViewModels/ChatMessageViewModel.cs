@@ -14,6 +14,13 @@ public sealed partial class ChatMessageViewModel : ObservableObject
 
     [ObservableProperty] private bool _isSenderBlacklisted;
 
+    /// <summary>
+    /// Gönderenin kaydı var (telefonu kayıtlı; kişi düzeyinde, bkz. <c>CustomerRepository.GetChatSenderMarks</c>):
+    /// adının sağında "Kayıtlı" rozeti çizilir. Gözlemlenebilir, çünkü yayın sırasında form dolduran kişinin
+    /// ekrandaki satırları sonradan döner.
+    /// </summary>
+    [ObservableProperty] private bool _isSenderRegistered;
+
     public string Platform => Message.Platform;
     public string Username => Message.Username;
     public string Text     => Message.Text;
@@ -50,9 +57,10 @@ public sealed partial class ChatMessageViewModel : ObservableObject
         $"Instagram: {sourceAccount} · "
         + DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToOffset(utcOffset).ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
-    public ChatMessageViewModel(ChatMessage message, bool isSenderBlacklisted)
+    public ChatMessageViewModel(ChatMessage message, bool isSenderBlacklisted, bool isSenderRegistered = false)
     {
         Message = message;
         IsSenderBlacklisted = isSenderBlacklisted;
+        IsSenderRegistered = isSenderRegistered;
     }
 }
