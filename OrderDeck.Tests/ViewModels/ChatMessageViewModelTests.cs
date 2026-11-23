@@ -17,6 +17,15 @@ public class ChatMessageViewModelTests
         new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, $"izleyici-{Guid.NewGuid():N}", null, null,
             "A12", 1_800_000_000, Array.Empty<string>(), sourceAccount), isSenderBlacklisted: false);
 
+    [Fact]
+    public void Kayitli_isareti_kurucudan_gelir_varsayilan_kapali()
+    {
+        var mesaj = Vm(null).Message;
+        new ChatMessageViewModel(mesaj, isSenderBlacklisted: false).IsSenderRegistered.Should().BeFalse();
+        new ChatMessageViewModel(mesaj, isSenderBlacklisted: false, isSenderRegistered: true)
+            .IsSenderRegistered.Should().BeTrue();
+    }
+
     [Theory, InlineData(null), InlineData(""), InlineData("  ")]
     public void SourceAccount_bosken_etiket_ve_ipucu_yok(string? source) =>
         (Vm(source).AccountTag, Vm(source).AccountTooltip).Should().Be(((string?)null, (string?)null));

@@ -1098,6 +1098,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     partial void OnNewIntakeSubmissionsCountChanged(int value)
     {
         OnPropertyChanged(nameof(HasNewIntakeSubmissions));
+
+        // Yeni form kaydı eşitlendi: yayın sırasında formu dolduran kişinin ekrandaki satırları da
+        // "Kayıtlı"ya dönsün. 0 = kayıt çekmecesi açılınca yapılan sıfırlama; yeni kayıt değil, sorgulanmaz.
+        if (value > 0) RefreshChatSenderMarks();
     }
 
     public IAsyncRelayCommand OpenAccountCommand { get; private set; } = null!;
@@ -1412,7 +1416,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
     }
 
-    private void DrainPendingChat()
+    // internal: testler, veri yolundan giren mesajı zamanlayıcıyı beklemeden listeye boşaltabilsin diye.
+    internal void DrainPendingChat()
     {
         if (_pendingChat.IsEmpty) return;
 
@@ -1422,9 +1427,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         foreach (var m in batch)
         {
-            // İki yazım ("ad"/"@ad") — Ağustos–Ekim'de "@ad" satırında kara listeye alınanlar da.
-            var blacklisted = _customerRepo.IsBlacklistedAnySpelling(m.Platform, m.Username);
-            ChatMessages.Add(new ChatMessageViewModel(m, blacklisted));
+            // İki işaret tek depo çağrısından: kara liste (iki yazım, "ad"/"@ad" — Ağustos–Ekim'de
+            // "@ad" satırında kara listeye alınanlar da) ve "Kayıtlı" (kişi düzeyinde telefon).
+            var marks = _customerRepo.GetChatSenderMarks(m.Platform, m.Username);
+            ChatMessages.Add(new ChatMessageViewModel(m, marks.IsBlacklisted, marks.IsRegistered));
 
             // Forward to active giveaway. Same per-message work as before;
             // batching only saves dispatcher overhead, not domain logic.
@@ -2957,14 +2963,30 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private void RefreshHighlights()
     {
-        foreach (var vm in ChatMessages)
-        {
-            vm.IsSenderBlacklisted = _customerRepo.IsBlacklistedAnySpelling(vm.Platform, vm.Username);
-        }
+        RefreshChatSenderMarks();
         foreach (var vm in PrintQueue)
         {
             var c = _customerRepo.GetById(vm.CustomerId);
             vm.IsCustomerBlacklisted = c?.IsBlacklisted ?? false;
+        }
+    }
+
+    /// <summary>
+    /// Ekrandaki sohbet satırlarının iki işaretini (kara liste vurgusu, "Kayıtlı" rozeti) depodan yeniden okur.
+    /// Gönderen başına TEK depo çağrısı (birkaç dizin araması), satır başına değil: listede 500 satıra kadar
+    /// mesaj durur ama gönderen sayısı çok daha azdır ve bu yol yayın sırasında, her yeni form kaydında arayüz
+    /// iş parçacığında koşar.
+    /// </summary>
+    private void RefreshChatSenderMarks()
+    {
+        foreach (var sender in ChatMessages.GroupBy(m => (m.Platform, m.Username)))
+        {
+            var marks = _customerRepo.GetChatSenderMarks(sender.Key.Platform, sender.Key.Username);
+            foreach (var row in sender)
+            {
+                row.IsSenderBlacklisted = marks.IsBlacklisted;
+                row.IsSenderRegistered = marks.IsRegistered;
+            }
         }
     }
 
