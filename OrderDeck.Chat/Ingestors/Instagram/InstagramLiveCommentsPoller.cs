@@ -61,7 +61,8 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
     private readonly HttpClient _http;
     private readonly ILogger<InstagramLiveCommentsPoller> _log;
     private readonly SpamFilter? _spamFilter;
-    private readonly InstagramCommentWatermark _watermark = new();
+    private readonly IInstagramPollObserver? _observer;
+    private readonly InstagramCommentWatermark _watermark;
 
     private CancellationTokenSource? _cts;
     private Task? _runner;
@@ -79,13 +80,21 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
     /// </summary>
     public string? FatalReason { get; private set; }
 
+    /// <param name="observer">Verilirse her turun başlangıcı ve sonucu bildirilir; verilmezse
+    /// döngü gözlemcisiz, aynı biçimde çalışır.</param>
+    /// <param name="watermark">Verilirse bu filigran kullanılır: durmuş bir poller'ın filigranı
+    /// devredilince ilk çekim yutulmaz, yorum kaybı olmaz. Verilmezse taze bir filigranla
+    /// başlanır ve ilk çekim yutulur. Filigran thread-safe değildir; iki çalışan poller aynı
+    /// örneği paylaşamaz.</param>
     public InstagramLiveCommentsPoller(
         string igUserId,
         string pageAccessToken,
         IChatBus bus,
         HttpClient http,
         ILogger<InstagramLiveCommentsPoller> log,
-        SpamFilter? spamFilter = null)
+        SpamFilter? spamFilter = null,
+        IInstagramPollObserver? observer = null,
+        InstagramCommentWatermark? watermark = null)
     {
         _igUserId = igUserId;
         _pageAccessToken = pageAccessToken;
@@ -93,6 +102,8 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
         _http = http;
         _log = log;
         _spamFilter = spamFilter;
+        _observer = observer;
+        _watermark = watermark ?? new();
     }
 
     public Task StartAsync(CancellationToken ct)
@@ -149,24 +160,30 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
         {
             while (!ct.IsCancellationRequested)
             {
+                NotifyObserver(static o => o.RoundStarting());
                 var outcome = await PollOnceAsync(url, ct).ConfigureAwait(false);
+
+                // Ok dışındaki sonuç beklemeye girmeden ve döngüden çıkmadan ÖNCE
+                // bildirilir; Ok ise aşağıda, o turun yayımlarından SONRA.
+                if (outcome.Kind != InstagramPollKind.Ok)
+                    NotifyCompleted(outcome);
 
                 switch (outcome.Kind)
                 {
-                    case PollKind.Fatal:
+                    case InstagramPollKind.Fatal:
                         FatalReason = outcome.Message;
                         _log.LogWarning(
                             "[InstagramLiveCommentsPoller] stopping: {Reason}", outcome.Message);
                         return;
 
-                    case PollKind.RateLimited:
+                    case InstagramPollKind.RateLimited:
                         _log.LogWarning(
                             "[InstagramLiveCommentsPoller] rate limited; waiting {Wait}",
                             outcome.RetryAfter);
                         await Task.Delay(outcome.RetryAfter, ct).ConfigureAwait(false);
                         continue;
 
-                    case PollKind.Transient:
+                    case InstagramPollKind.Transient:
                         if (++consecutiveErrors >= MaxConsecutiveErrors)
                         {
                             _log.LogWarning(
@@ -177,13 +194,13 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
                         await Task.Delay(interval, ct).ConfigureAwait(false);
                         continue;
 
-                    case PollKind.NoBroadcast:
+                    case InstagramPollKind.NoBroadcast:
                         consecutiveErrors = 0;
                         interval = BaseInterval; // yayın açılınca hemen 1sn'den başla
                         await Task.Delay(NoBroadcastIdle, ct).ConfigureAwait(false);
                         continue;
 
-                    case PollKind.Ok:
+                    case InstagramPollKind.Ok:
                         consecutiveErrors = 0;
                         var result = _watermark.Advance(outcome.MediaId!, outcome.Comments!);
 
@@ -197,6 +214,8 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
 
                         foreach (var c in result.NewComments)
                             Publish(c);
+
+                        NotifyCompleted(outcome);
 
                         interval = NextInterval(interval, result.Overflowed);
                         await Task.Delay(interval, ct).ConfigureAwait(false);
@@ -216,14 +235,35 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
         }
     }
 
-    private enum PollKind { Ok, NoBroadcast, Transient, RateLimited, Fatal }
+    private void NotifyCompleted(PollOutcome outcome) =>
+        NotifyObserver(o => o.RoundCompleted(
+            outcome.Kind, outcome.Message, outcome.RetryAfter, outcome.UsageHeader));
 
+    /// <summary>
+    /// Gözlemci çağrılarının tek geçidi: gözlemcinin fırlattığı istisna yutulur,
+    /// döngüyü durduramaz. Debug düzeyinde yazılır — saniyede bir tur var,
+    /// Warning günlüğü doldururdu.
+    /// </summary>
+    private void NotifyObserver(Action<IInstagramPollObserver> call)
+    {
+        if (_observer is null) return;
+
+        try { call(_observer); }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "[InstagramLiveCommentsPoller] poll observer threw; swallowed");
+        }
+    }
+
+    /// <param name="UsageHeader">Yanıtın <c>X-Business-Use-Case-Usage</c> başlığının ham metni;
+    /// başlık yoksa ya da istek düştüyse null. Yalnız gözlemciye gider.</param>
     private readonly record struct PollOutcome(
-        PollKind Kind,
+        InstagramPollKind Kind,
         string? MediaId = null,
         System.Collections.Generic.IReadOnlyList<InstagramComment>? Comments = null,
         string? Message = null,
-        TimeSpan RetryAfter = default);
+        TimeSpan RetryAfter = default,
+        string? UsageHeader = null);
 
     private async Task<PollOutcome> PollOnceAsync(string url, CancellationToken ct)
     {
@@ -233,6 +273,15 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
         try
         {
             using var resp = await _http.GetAsync(url, reqCts.Token).ConfigureAwait(false);
+
+            // Kota başlığı her yanıtta bir kez okunur ve bu yanıttan kurulan HER sonuca ham
+            // metin olarak konur (birden çok değer "," ile birleşir). Metin yalnız gözlemciye
+            // gider: ölçüm ve günlük içindir, döngünün davranışını değiştirmez.
+            var usageHeader =
+                resp.Headers.TryGetValues("X-Business-Use-Case-Usage", out var usageValues)
+                    ? string.Join(",", usageValues)
+                    : null;
+
             var body = await resp.Content.ReadAsStringAsync(reqCts.Token).ConfigureAwait(false);
 
             if (!resp.IsSuccessStatusCode)
@@ -241,12 +290,17 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
                 switch (kind)
                 {
                     case InstagramErrorKind.TokenExpired:
-                        return new PollOutcome(PollKind.Fatal,
-                            Message: "Instagram bağlantını yenilemen gerekiyor.");
+                        return new PollOutcome(InstagramPollKind.Fatal,
+                            Message: "Instagram bağlantını yenilemen gerekiyor.",
+                            UsageHeader: usageHeader);
                     case InstagramErrorKind.PermissionDenied:
-                        return new PollOutcome(PollKind.Fatal,
-                            Message: "Instagram yorum izni verilmemiş. Facebook bağlantısını yenile.");
+                        return new PollOutcome(InstagramPollKind.Fatal,
+                            Message: "Instagram yorum izni verilmemiş. Facebook bağlantısını yenile.",
+                            UsageHeader: usageHeader);
                     case InstagramErrorKind.RateLimited:
+                        // Bekleme birleşik metinden DEĞİL, başlık değerleri tek tek denenerek
+                        // okunur: birden çok değer birleşince geçerli JSON olmaz, bekleme
+                        // başlıktaki süre yerine 1 dakikaya düşerdi.
                         var wait = TimeSpan.FromMinutes(1);
                         if (resp.Headers.TryGetValues("X-Business-Use-Case-Usage", out var vals))
                         {
@@ -257,29 +311,34 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
                                     break;
                                 }
                         }
-                        return new PollOutcome(PollKind.RateLimited, RetryAfter: wait);
+                        return new PollOutcome(InstagramPollKind.RateLimited, RetryAfter: wait,
+                            UsageHeader: usageHeader);
                     case InstagramErrorKind.BroadcastEnded:
-                        return new PollOutcome(PollKind.NoBroadcast);
+                        return new PollOutcome(InstagramPollKind.NoBroadcast, UsageHeader: usageHeader);
                     default:
+                        // Ham gövde yazılmaz: Graph ayrıştıramadığı token'ı iletide geri yazabilir.
                         _log.LogDebug(
-                            "[InstagramLiveCommentsPoller] transient {Status}: {Body}",
-                            (int)resp.StatusCode, Truncate(body));
-                        return new PollOutcome(PollKind.Transient);
+                            "[InstagramLiveCommentsPoller] transient {Status}: {GraphCode}",
+                            (int)resp.StatusCode, InstagramAccountResolver.GraphCodeText(body));
+                        return new PollOutcome(InstagramPollKind.Transient, UsageHeader: usageHeader);
                 }
             }
 
             var page = InstagramLiveMediaParser.Parse(body);
-            if (page is null) return new PollOutcome(PollKind.NoBroadcast);
+            if (page is null)
+                return new PollOutcome(InstagramPollKind.NoBroadcast, UsageHeader: usageHeader);
 
             if (page.Comments is null)
             {
                 // Yayın var ama comments alanı hiç gelmedi → izin arızası.
                 // "Yorum yok" sanıp sessizce dönmek arızayı görünmez yapardı.
-                return new PollOutcome(PollKind.Fatal,
-                    Message: "Instagram yorumları okunamıyor — yorum izni eksik görünüyor.");
+                return new PollOutcome(InstagramPollKind.Fatal,
+                    Message: "Instagram yorumları okunamıyor — yorum izni eksik görünüyor.",
+                    UsageHeader: usageHeader);
             }
 
-            return new PollOutcome(PollKind.Ok, page.MediaId, page.Comments);
+            return new PollOutcome(InstagramPollKind.Ok, page.MediaId, page.Comments,
+                UsageHeader: usageHeader);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -288,7 +347,7 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
         catch (Exception ex)
         {
             _log.LogDebug(ex, "[InstagramLiveCommentsPoller] request failed");
-            return new PollOutcome(PollKind.Transient);
+            return new PollOutcome(InstagramPollKind.Transient);
         }
     }
 
@@ -321,8 +380,6 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
             ReceivedAt: c.TimestampUnix,
             Badges: Array.Empty<string>()));
     }
-
-    private static string Truncate(string s) => s.Length <= 200 ? s : s.Substring(0, 200);
 
     public void Dispose()
     {

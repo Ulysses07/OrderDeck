@@ -9,6 +9,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.Chat.Facebook;
+using OrderDeck.Chat.Ingestors.Instagram;
 using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
@@ -16,6 +17,7 @@ using OrderDeck.Labeling;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services;
+using OrderDeck.App.Services.Instagram;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -102,20 +104,71 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _facebookConnectionStatus = "Bağlı değil";
     [ObservableProperty] private bool _isFacebookConnected;
     [ObservableProperty] private bool _isFacebookBusy;
-    public bool IsFacebookIdle => !IsFacebookBusy && !IsFacebookConnected;
-    partial void OnIsFacebookBusyChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
-    partial void OnIsFacebookConnectedChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
+    public bool IsFacebookIdle => !IsFacebookBusy && !IsFacebookConnected && !IsReauthorizePending;
+
+    /// <summary>"Facebook izinlerini güncelle"nin tarayıcı akışı sürüyor: "İptal" görünür. "Facebook'a Bağlan" da
+    /// akış bitene dek pasif kalır (aynı anda tek tarayıcı akışı): beklerken "Bağlantıyı Kaldır" basılıp
+    /// <see cref="IsFacebookBusy"/> inse de.</summary>
+    [ObservableProperty] private bool _isReauthorizePending;
+
+    partial void OnIsReauthorizePendingChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
+
+    /// <summary>"Instagram hesabı ekle" sürüyor (listeleme, çekmece, ekleme ve son tazeleme): kartın iki düğmesi
+    /// pasiftir, iki akış aynı anda yürümez. "Kaldır" ve Facebook kartı etkilenmez.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanManageInstagram))]
+    private bool _isInstagramAddBusy;
+
+    /// <summary>Instagram hesapları yönetilebilir: Facebook bağlı ve o an ne bir bağlantı işlemi ne bir ekleme
+    /// sürüyor.</summary>
+    public bool CanManageInstagram => IsFacebookConnected && !IsFacebookBusy && !IsInstagramAddBusy;
+
+    partial void OnIsFacebookBusyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsFacebookIdle));
+        OnPropertyChanged(nameof(CanManageInstagram));
+    }
+
+    partial void OnIsFacebookConnectedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsFacebookIdle));
+        OnPropertyChanged(nameof(CanManageInstagram));
+    }
 
     // Instagram resmi Graph API (2026-08-05). Ayrı bir OAuth yok — IG erişimi
     // bağlı Facebook Sayfa'sı üzerinden gidiyor. Bu yüzden burada yalnız durum
     // var, "Bağlan" butonu yok. Kip seçimi de yok: kazıyıcı uzantıdan
     // kaldırıldığı için resmi API tek yol.
-    [ObservableProperty] private string _instagramAccountStatus = "Kontrol ediliyor...";
+    [ObservableProperty] private string _instagramAccountStatus = InstagramSettingsTexts.Checking;
+
+    /// <summary>Kartın son GERÇEK durum metni (tazeleme ya da "Kaldır" yazar, <see cref="SetInstagramStatus"/>).
+    /// Bekleme metni görünürken durum satırına yansımaz; bekleme kalkınca satır buna döner.</summary>
+    private string _instagramStatus = InstagramSettingsTexts.Checking;
+
+    /// <summary>Durum satırında o an gösterilen geçici bekleme metni ("Sayfalar okunuyor...", tarayıcı bekleme
+    /// metni); yoksa null. Onu gösteren akış kaldırır (<see cref="HideInstagramWaiting"/>).</summary>
+    private string? _instagramWaitingText;
 
     /// <summary>Bağlı Facebook oturumunda IG izinleri yoksa true — kullanıcı
     /// IG izinleri yapılandırmaya eklenmeden önce bağlanmış demektir ve
     /// yeniden bağlanmadan resmi API sessizce boş döner.</summary>
     [ObservableProperty] private bool _instagramNeedsReconnect;
+
+    /// <summary>Bağlı Sayfalar ve Instagram hesapları, bağlı sırasıyla (birincil önce). Yalnız
+    /// <see cref="RefreshInstagramStatusAsync"/> doldurur. Kart satırları iki ve üzeri Sayfada çizer
+    /// (<see cref="ShowInstagramPageRows"/>): tek Sayfada durum satırı aynı bilgiyi verir.</summary>
+    public ObservableCollection<InstagramPageRow> InstagramPages { get; } = new();
+
+    /// <summary>Hesap satırları görünsün mü: iki ve üzeri Sayfa bağlıyken.</summary>
+    public bool ShowInstagramPageRows => InstagramPages.Count >= 2;
+
+    /// <summary>Instagram kartındaki bir işlemin sonucu, kart içi satır (açılır pencere yok); "Tamam" kapatır.</summary>
+    [ObservableProperty] private string? _instagramNotice;
+
+    /// <summary>Instagram tazelemelerini sıraya sokar. Kurucu bir tazeleme başlatır, bağlantıyı değiştiren her komut
+    /// bir tane daha ister; iç içe koşsalardı bağlantı değişmeden ÖNCE başlamış bir okuma, sonrakinin yazdığı
+    /// satırların üstüne eski hâli yazabilirdi.</summary>
+    private readonly System.Threading.SemaphoreSlim _instagramRefreshGate = new(1, 1);
 
     // Phase 5f — Spam / troll filter toggles
     [ObservableProperty] private bool _spamFilterEnabled = true;
@@ -154,6 +207,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
     private readonly System.Net.Http.IHttpClientFactory? _httpFactory;
 
+    /// <summary>Bir istisnayı sebebini tam göstermeyen sabit bir metne çeviren yollar sebebi buraya yazar (ör. düşen
+    /// "Kaldır"). Verilmezse (testler) günlük yazılmaz; uygulamada DI doldurur.</summary>
+    private readonly ILogger<SettingsViewModel> _log;
+
     /// <summary>Facebook sayfa seçim çekmecesi için. Testte verilmiyor —
     /// oradaki senaryolar OAuth bağlama komutunu tetiklemiyor.</summary>
     private readonly Services.Drawers.IDrawerService? _drawers;
@@ -171,6 +228,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private decimal? _shownFee;
     private int? _shownVersion;
 
+    /// <summary>Kurucunun çağrıldığı bağlam (uygulamada arayüz iş parçacığı). OAuth servisinin kendi iş parçacığından
+    /// gelen eksik Sayfa onayı çekmeceyi bunun üzerinden açar; null ise doğrudan.</summary>
+    private readonly System.Threading.SynchronizationContext? _uiContext;
+
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
         ShopperAppSettingsViewModel shopperApp,
@@ -182,8 +243,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Services.Drawers.IDrawerService? drawers = null,
         WhatsAppCloudSettingsViewModel? whatsAppCloud = null,
         IShippingSettingsProvider? shipping = null,
-        Services.Sync.LicenseShippingSettingsWriter? shippingWriter = null)
+        Services.Sync.LicenseShippingSettingsWriter? shippingWriter = null,
+        ILogger<SettingsViewModel>? log = null)
     {
+        _uiContext = System.Threading.SynchronizationContext.Current;
+        _log = log ?? NullLogger<SettingsViewModel>.Instance;
         _shipping = shipping;
         _shippingWriter = shippingWriter;
         _drawers = drawers;
@@ -198,6 +262,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _facebookOAuth = facebookOAuth;
         _waTemplateSync = waTemplateSync;
         _httpFactory = httpFactory;
+
+        // Satır sayısı, satırların görünüp görünmeyeceğini belirler: koleksiyon her değiştiğinde bildirilir.
+        InstagramPages.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ShowInstagramPageRows));
 
         LoadFromSettings();
         LoadInstalledPrinters();
@@ -355,61 +422,491 @@ public sealed partial class SettingsViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// IG durumunu iki soruyla belirler: (1) bağlı Sayfa'ya bir IG profesyonel
-    /// hesabı bağlı mı, (2) oturumda IG izinleri var mı. İkisi de Graph'a birer
-    /// istek — dialog açılışında bir kez çalışır, yayın sırasında değil.
+    /// Instagram kartını tazeler: (1) oturumda IG izinleri var mı, (2) bağlı her Sayfaya bir IG profesyonel hesabı
+    /// bağlı mı. Graph'a izin için bir, Sayfa başına bir istek gider. Ayarlar açılırken ve bağlantı her değiştiğinde
+    /// (bağlan, bağlantıyı kaldır, hesap ekle, hesap kaldır) çalışır; yayın sırasında kendiliğinden çalışmaz.
+    ///
+    /// <para>Tazelemeler sıraya girer (<see cref="_instagramRefreshGate"/>): kart hep en son istenen tazelemenin
+    /// sonucunda kalır. Sonuç yazılmadan hemen önce bağlı Sayfalar yeniden okunur; liste o arada değiştiyse sonuç
+    /// atılır ve okuma güncel listeyle yinelenir: süren tazeleme, o sırada değişen bağlantının eski hâlini karta
+    /// yazmaz (değişikliği yapan arkadan tazeleme istemese de).</para>
     /// </summary>
     public async System.Threading.Tasks.Task RefreshInstagramStatusAsync()
     {
+        await _instagramRefreshGate.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            await ReadInstagramStatusAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            _instagramRefreshGate.Release();
+        }
+    }
+
+    /// <summary><see cref="RefreshInstagramStatusAsync"/>'in gövdesi; yalnız oradan, sıra alınmışken çağrılır.</summary>
+    private async System.Threading.Tasks.Task ReadInstagramStatusAsync()
+    {
         if (_facebookOAuth is null)
         {
-            InstagramAccountStatus = "Önce Facebook'a bağlan.";
-            InstagramNeedsReconnect = false;
+            ShowInstagramNotConnected();
             return;
         }
 
         try
         {
-            var creds = await _facebookOAuth.GetPageCredentialsAsync().ConfigureAwait(true);
-            if (creds is null)
+            var pages = await _facebookOAuth.GetConnectedPagesAsync().ConfigureAwait(true);
+            System.Net.Http.HttpClient? http = null;
+
+            // Her tur: sonda + çözümleme, sonra sonucu yazmadan HEMEN önce bağlı Sayfalar yeniden okunur (bellekten,
+            // Graph isteği yok). Sayfa kimliklerinin sırası değiştiyse sonuç atılır ve okuma güncel listeyle baştan
+            // yinelenir: süren bir tazeleme, o sırada kaldırılan / eklenen Sayfanın eski hâlini karta yazmaz.
+            while (true)
             {
-                InstagramAccountStatus = "Önce Facebook'a bağlan.";
-                InstagramNeedsReconnect = false;
+                if (pages.Count == 0)
+                {
+                    ShowInstagramNotConnected();
+                    return;
+                }
+
+                http ??= _httpFactory?.CreateClient(InstagramChatHostedService.HttpClientName)
+                         ?? new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+
+                // İzin kontrolü kullanıcı token'ı ister (Sayfa token'ıyla /me Sayfa olur). Tek kullanıcı token'ı bağlı
+                // bütün Sayfaları kapsar: sonda Sayfa başına değil, tazeleme turu başına BİR kez koşar.
+                bool? needsReconnect = null;
+                var userToken = await _facebookOAuth.GetUserAccessTokenAsync().ConfigureAwait(true);
+                if (!string.IsNullOrEmpty(userToken))
+                {
+                    var probe = new InstagramPermissionProbe(http, NullLogger<InstagramPermissionProbe>.Instance);
+                    // null = bilinmiyor (ağ hatası) → uyarı gösterme, yanlış alarm olmasın.
+                    needsReconnect =
+                        await probe.HasInstagramPermissionsAsync(userToken!).ConfigureAwait(true) == false;
+                }
+
+                // Çözümleyicinin önbelleği tek Sayfalıktır: her Sayfa kendi isteğiyle çözülür.
+                var resolver = new InstagramAccountResolver(http, NullLogger<InstagramAccountResolver>.Instance);
+                var resolved = new List<ResolvedInstagramPage>(pages.Count);
+                foreach (var page in pages)
+                {
+                    var (account, status) = await resolver.ResolveDetailedAsync(
+                        page.PageId, page.PageAccessToken,
+                        System.Threading.CancellationToken.None).ConfigureAwait(true);
+                    resolved.Add(new ResolvedInstagramPage(page, account, status));
+                }
+
+                // Servis her çağrıda yeni liste döner: kimlikler DEĞERLE karşılaştırılır. Kullanıcı token'ı
+                // karşılaştırılmaz: bağlantıyı değiştiren her komut kendi tazelemesini ister. Karşılaştırma ile
+                // yazım arasında bekleme yoktur.
+                var current = await _facebookOAuth.GetConnectedPagesAsync().ConfigureAwait(true);
+                if (!SamePageIds(pages, current))
+                {
+                    pages = current;
+                    continue;
+                }
+
+                if (needsReconnect is { } value) InstagramNeedsReconnect = value;
+                ShowInstagramPages(resolved);
                 return;
             }
-
-            var http = _httpFactory?.CreateClient(
-                           OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService.HttpClientName)
-                       ?? new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-
-            // İzin kontrolü kullanıcı token'ı ister (Sayfa token'ıyla /me Sayfa olur).
-            var userToken = await _facebookOAuth.GetUserAccessTokenAsync().ConfigureAwait(true);
-            if (!string.IsNullOrEmpty(userToken))
-            {
-                var probe = new OrderDeck.Chat.Ingestors.Instagram.InstagramPermissionProbe(
-                    http, Microsoft.Extensions.Logging.Abstractions
-                        .NullLogger<OrderDeck.Chat.Ingestors.Instagram.InstagramPermissionProbe>.Instance);
-                // null = bilinmiyor (ağ hatası) → uyarı gösterme, yanlış alarm olmasın.
-                InstagramNeedsReconnect =
-                    await probe.HasInstagramPermissionsAsync(userToken!).ConfigureAwait(true) == false;
-            }
-
-            var resolver = new OrderDeck.Chat.Ingestors.Instagram.InstagramAccountResolver(
-                http, Microsoft.Extensions.Logging.Abstractions
-                    .NullLogger<OrderDeck.Chat.Ingestors.Instagram.InstagramAccountResolver>.Instance);
-            var account = await resolver.ResolveAsync(
-                creds.Value.PageId, creds.Value.PageAccessToken,
-                System.Threading.CancellationToken.None).ConfigureAwait(true);
-
-            // InstagramAccount bir record struct → nullable erişim .Value ile.
-            InstagramAccountStatus = account is null
-                ? "Bu Sayfa'ya bağlı Instagram profesyonel hesabı yok."
-                : $"Bağlı Instagram hesabı: @{account.Value.Username ?? account.Value.IgUserId}";
         }
         catch (Exception ex)
         {
-            InstagramAccountStatus = $"Durum okunamadı: {ex.Message}";
+            SetInstagramStatus($"Durum okunamadı: {ex.Message}");
             InstagramNeedsReconnect = false;
+        }
+    }
+
+    /// <summary>Kartın gerçek durum metnini yazar; durum satırına ancak o an bekleme metni gösterilmiyorsa yansır.
+    /// Tazelemenin bütün yazıcıları ve "Kaldır" buradan geçer: bekleme sırasında biten tazeleme talimatı silmez.</summary>
+    private void SetInstagramStatus(string text)
+    {
+        _instagramStatus = text;
+        if (_instagramWaitingText is null) InstagramAccountStatus = text;
+    }
+
+    /// <summary>Durum satırında geçici bekleme metnini gösterir; gerçek durum metni değişmez.</summary>
+    private void ShowInstagramWaiting(string text)
+    {
+        _instagramWaitingText = text;
+        InstagramAccountStatus = text;
+    }
+
+    /// <summary>Gösterilen bekleme metni <paramref name="text"/> ise kaldırır ve durum satırını O ANKİ gerçek metne
+    /// döndürür (akış başlarkenki metne değil); değilse hiçbir şey yapmaz. Eşgüçlüdür.</summary>
+    private void HideInstagramWaiting(string text)
+    {
+        if (_instagramWaitingText != text) return;
+        _instagramWaitingText = null;
+        InstagramAccountStatus = _instagramStatus;
+    }
+
+    /// <summary>İki listedeki Sayfa kimlikleri aynı sırada ve aynı mı (sıralı, <see cref="StringComparison.Ordinal"/>).</summary>
+    private static bool SamePageIds(IReadOnlyList<FacebookLinkedPage> a, IReadOnlyList<FacebookLinkedPage> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (var i = 0; i < a.Count; i++)
+        {
+            if (!string.Equals(a[i].PageId, b[i].PageId, StringComparison.Ordinal)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>Bağlı bir Sayfa ve hesap çözümlemesinin sonucu; <c>Account</c> yalnız
+    /// <see cref="InstagramResolveStatus.Found"/>'da doludur.</summary>
+    private readonly record struct ResolvedInstagramPage(
+        FacebookLinkedPage Page, InstagramAccount? Account, InstagramResolveStatus Status);
+
+    /// <summary>Facebook bağlı değil (ya da OAuth servisi yok): satır yok, izin uyarısı yok.</summary>
+    private void ShowInstagramNotConnected()
+    {
+        InstagramPages.Clear();
+        SetInstagramStatus(InstagramSettingsTexts.NotConnected);
+        InstagramNeedsReconnect = false;
+    }
+
+    /// <summary>
+    /// Çözümleme sonuçlarını karta yazar: hesap satırları ve durum satırı. İlk Sayfa birincildir. İçinde bekleme
+    /// yoktur: satırlar yerel listede kurulur ve koleksiyona tek seferde yerleşir, yarım ya da çift liste görünmez.
+    ///
+    /// <para>Tek Sayfada durum satırı çoklu hesaptan önceki tam metinlerdir. İki ve üzeri Sayfada durum satırı
+    /// hesabı ÇÖZÜLEN Sayfaları sayar ve hesapsız Sayfanın satırı uyarı rengindedir (birincil dahil): iki Sayfa
+    /// bağlayan ikisinden de yorum bekler. Çağrısı düşen Sayfanın satırı iki durumda da nötrdür: hesap var mı yok mu
+    /// bilinmiyor.</para>
+    /// </summary>
+    private void ShowInstagramPages(IReadOnlyList<ResolvedInstagramPage> resolved)
+    {
+        var multiplePages = resolved.Count >= 2;
+        var rows = new List<InstagramPageRow>(resolved.Count);
+        for (var i = 0; i < resolved.Count; i++)
+        {
+            var (page, account, status) = resolved[i];
+            var text = status switch
+            {
+                InstagramResolveStatus.Found => InstagramSettingsTexts.AccountLabel(
+                    account!.Value.IgUserId, account.Value.Username),
+                InstagramResolveStatus.NotLinked => InstagramSettingsTexts.RowNotLinked,
+                _ => InstagramSettingsTexts.RowUnreadable,
+            };
+            rows.Add(new InstagramPageRow(
+                page.PageId, page.PageName, text,
+                IsPrimary: i == 0,
+                CanRemove: i > 0,
+                IsWarning: multiplePages && status == InstagramResolveStatus.NotLinked));
+        }
+
+        InstagramPages.Clear();
+        foreach (var row in rows) InstagramPages.Add(row);
+
+        SetInstagramStatus(multiplePages
+            ? InstagramSettingsTexts.ConnectedAccountCount(
+                resolved.Count(r => r.Status == InstagramResolveStatus.Found))
+            : resolved[0].Status switch
+            {
+                InstagramResolveStatus.Found => InstagramSettingsTexts.SinglePageConnected(rows[0].InstagramText),
+                InstagramResolveStatus.NotLinked => InstagramSettingsTexts.SinglePageNotLinked,
+                _ => InstagramSettingsTexts.SinglePageUnreadable,
+            });
+    }
+
+    /// <summary>
+    /// "Kaldır": bir EK Sayfanın bağlantısını kaldırır. Yazımın ardından satır HEMEN kalkar (tazelemenin Graph
+    /// istekleri beklenmez), durum "Kontrol ediliyor..." olur ve sonuç satırı hesabı adıyla söyler; sonra kart
+    /// tazelenir. Yazım düşerse bağlantı değişmemiştir: satır kalır, sonuç satırı yeniden denemeyi söyler, sebep
+    /// günlüğe Warning olarak düşer. Birincil satırda hiçbir şey yapmaz: birincil ancak "Bağlantıyı Kaldır" ile, bütün
+    /// bağlantıyla birlikte kalkar.
+    /// </summary>
+    [RelayCommand]
+    private async System.Threading.Tasks.Task RemoveInstagramAccount(InstagramPageRow? row)
+    {
+        if (_facebookOAuth is null || row is not { CanRemove: true }) return;
+
+        try
+        {
+            // Dönüş değeri akışı değiştirmez: false, Sayfa zaten bağlı değil demektir; satır yine kalkmalı.
+            await _facebookOAuth.RemoveExtraPageAsync(row.PageId).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            // Sabit metin sebebi söylemez: sebep (dosya / şifreleme hatası; bu yolda Graph çağrısı yok) günlüğe düşer.
+            // Satır yalnız Sayfa kimliğini taşır.
+            _log.LogWarning(ex, "Instagram account removal failed for Page {PageId}", row.PageId);
+            InstagramNotice = InstagramSettingsTexts.RemoveFailed;
+            return;
+        }
+
+        InstagramPages.Remove(row);
+        // Durum satırı tazeleme sonucu yazana dek eski sayıyı söylemez.
+        SetInstagramStatus(InstagramSettingsTexts.Checking);
+        // Hesabı çözülememiş satırın metni bir ad değil, durumdur ("@" ile başlamaz): sonuç Sayfayı adıyla söyler.
+        InstagramNotice = InstagramSettingsTexts.AccountRemoved(
+            row.InstagramText.StartsWith('@') ? row.InstagramText : row.PageName);
+        await RefreshInstagramStatusAsync().ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    private void DismissInstagramNotice() => InstagramNotice = null;
+
+    /// <summary>"Instagram hesabı ekle" çekmecesi açıkken onun modeli; kapalıyken null. Testler akışı bunun üzerinden
+    /// sürer.</summary>
+    public InstagramAccountPickerViewModel? ActiveInstagramPicker { get; private set; }
+
+    /// <summary>
+    /// "Instagram hesabı ekle" (§8.6.1): saklı Facebook girişiyle, tarayıcı açmadan ve sunucu takası olmadan (TK5)
+    /// Sayfaları listeler, çekmecede seçileni ek hesap olarak bağlar ve kartı tazeler. İzin eksikse ya da oturum
+    /// yenilenmeliyse listeleme yapmadan "Facebook izinlerini güncelle"ye yönlendirir. Sonuç kart içi satıra yazılır.
+    /// Akış arayüz iş parçacığında kalır; baştan sona <see cref="IsInstagramAddBusy"/> kuruludur.
+    /// </summary>
+    [RelayCommand]
+    private async System.Threading.Tasks.Task AddInstagramAccount()
+    {
+        if (_facebookOAuth is null) return;
+
+        // Bayrak süren tazelemeyi beklemeden ÖNCE kurulur: bekleme sırasında da iki düğme pasiftir.
+        IsInstagramAddBusy = true;
+        try
+        {
+            await AddInstagramAccountCoreAsync(_facebookOAuth).ConfigureAwait(true);
+        }
+        finally
+        {
+            IsInstagramAddBusy = false;
+        }
+    }
+
+    /// <summary><see cref="AddInstagramAccount"/>'un gövdesi; yalnız oradan, bayrak kuruluyken çağrılır.</summary>
+    private async System.Threading.Tasks.Task AddInstagramAccountCoreAsync(FacebookOAuthService facebookOAuth)
+    {
+        // 0. adımdan önce süren tazeleme (ör. Ayarlar açılırken başlayan ilk izin sondası) beklenir: düğme Facebook
+        // durumuyla hemen etkinleşir, izin bayrağı ise sonda bitince yazılır. Sıra alınıp hemen bırakılır; listeleme
+        // ve çekmece sıranın dışındadır. Süren tazeleme yoksa bekleme hemen döner. Beklerken durum satırı değişmez.
+        await _instagramRefreshGate.WaitAsync().ConfigureAwait(true);
+        _instagramRefreshGate.Release();
+
+        // 0. adım: değer son tazelemede hesaplandı; yeni Graph isteği yok. İzin eksikken Graph Instagram alanını hata
+        // vermeden düşürür: listeleme bütün Sayfaları hesapsız gösterir ve kullanıcıyı yanlış yere yollardı.
+        if (InstagramNeedsReconnect)
+        {
+            InstagramNotice = InstagramSettingsTexts.SessionNeedsRenewal;
+            return;
+        }
+
+        ShowInstagramWaiting(InstagramSettingsTexts.ReadingPages);
+        FacebookPageListing listing;
+        try
+        {
+            listing = await facebookOAuth.ListAddablePagesAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            // Sabit metin sebebi söylemez: sebep (Graph kodu, HTTP durumu, ağ hatası) günlüğe düşer.
+            _log.LogWarning(ex, "Instagram account listing failed");
+            HideInstagramWaiting(InstagramSettingsTexts.ReadingPages);
+            InstagramNotice = InstagramSettingsTexts.PagesUnreadable;
+            return;
+        }
+        HideInstagramWaiting(InstagramSettingsTexts.ReadingPages);
+
+        if (listing.NeedsReauthorize)
+        {
+            InstagramNotice = InstagramSettingsTexts.SessionNeedsRenewal;
+            return;
+        }
+
+        // Instagram'sız aday tek başına çekmece açtırmaz: seçilebilecek bir şey yoktur.
+        var picker = new InstagramAccountPickerViewModel(listing.Pages);
+        if (!picker.Options.Any(option => option.CanSelect))
+        {
+            InstagramNotice = InstagramSettingsTexts.NoAddableAccount;
+            return;
+        }
+
+        if (_drawers is null) return;
+        bool confirmed;
+        ActiveInstagramPicker = picker;
+        try
+        {
+            confirmed = await _drawers.ShowAsync(InstagramSettingsTexts.AddAccountButton,
+                d => Views.Drawers.InstagramAccountAddDrawer.Create(d, picker)).ConfigureAwait(true);
+        }
+        finally
+        {
+            ActiveInstagramPicker = null;
+        }
+        if (!confirmed || picker.Selected is not { CanSelect: true } chosen) return;
+
+        var page = listing.Pages.First(p => string.Equals(p.PageId, chosen.PageId, StringComparison.Ordinal));
+        try
+        {
+            await facebookOAuth.AddExtraPageAsync(chosen.PageId, chosen.PageName).ConfigureAwait(true);
+        }
+        catch (FacebookPageLimitException)
+        {
+            // Metin sebebi tam söyler: günlük yok.
+            InstagramNotice = InstagramSettingsTexts.PageLimitReached(FacebookOAuthService.MaxInstagramPages);
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Satır yalnız Sayfa kimliğini taşır; sebep istisnadadır.
+            _log.LogWarning(ex, "Instagram account add failed for Page {PageId}", chosen.PageId);
+            InstagramNotice = ex is System.IO.IOException or UnauthorizedAccessException
+                    or System.Security.Cryptography.CryptographicException
+                ? InstagramSettingsTexts.AddFailed
+                : IsTransientAddFailure(ex)
+                    ? InstagramSettingsTexts.PagesUnreadable
+                    : InstagramSettingsTexts.AuthorizationFailed(chosen.PageName);
+            return;
+        }
+
+        InstagramNotice = InstagramSettingsTexts.AccountAdded(
+            InstagramSettingsTexts.AccountLabel(page.IgUserId!, page.IgUsername));
+        await RefreshInstagramStatusAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Eklemenin geçici hatası (yeniden denemek çözebilir): Graph'ın 5xx'i ya da kota kodu
+    /// (<see cref="InstagramGraphError.IsQuotaError"/>), Graph dışı ağ hatası, JSON olmayan yanıt (ör. ağ geçidinin
+    /// HTML sayfası), zaman aşımı. Geri kalan her hata (token türetilemedi, yetki, izin) Sayfa yetkisi sorunudur.
+    /// </summary>
+    private static bool IsTransientAddFailure(Exception ex) => ex switch
+    {
+        FacebookGraphException graph => (int?)graph.StatusCode >= 500
+            || InstagramGraphError.IsQuotaError(graph.Code, graph.Subcode),
+        System.Net.Http.HttpRequestException => true,
+        System.Text.Json.JsonException => true,
+        System.Threading.Tasks.TaskCanceledException => true,
+        TimeoutException => true,
+        _ => false,
+    };
+
+    /// <summary>Eksik Sayfa onay çekmecesi açıkken sorunun metni; kapalıyken null. Testler soruyu bunun üzerinden
+    /// okur.</summary>
+    public string? ActiveReauthorizeQuestion { get; private set; }
+
+    /// <summary>Süren "Facebook izinlerini güncelle" akışının iptal kaynağı; akış yokken null. "İptal" bunu tetikler.</summary>
+    private System.Threading.CancellationTokenSource? _reauthorizeCts;
+
+    /// <summary>
+    /// "Facebook izinlerini güncelle" (§8.6.1): bağlantıyı kaldırmadan tarayıcı onayıyla izinleri ve token'ları
+    /// yeniler; ek hesaplar korunur, birincil değişmez. Yeni girişte görünmeyen bağlı Sayfa varsa kaydetmeden önce
+    /// çekmecede onay sorulur. Beklerken durum satırı ne yapılacağını söyler, kartın düğmeleri ve "Facebook'a Bağlan"
+    /// pasiftir, "İptal" görünür. Sonuç kart içi satıra yazılır; başarıdan sonra kart tazelenir (izin uyarısı ve
+    /// eklemenin 0. adımı kalkar). Hiçbir hata yolunda diskteki bağlantı değişmez.
+    /// </summary>
+    [RelayCommand]
+    private async System.Threading.Tasks.Task ReauthorizeFacebook()
+    {
+        if (_facebookOAuth is null) return;
+
+        var cts = new System.Threading.CancellationTokenSource();
+        _reauthorizeCts = cts;
+        var declined = false;
+        IsFacebookBusy = true;
+        IsReauthorizePending = true;
+        ShowInstagramWaiting(InstagramSettingsTexts.WaitingForBrowser);
+        try
+        {
+            // Birincil, akış başlarken bağlı listenin ilk girdisidir: eksiklerden biri oysa soruya Facebook yorumları
+            // da girer.
+            var primaryId = (await _facebookOAuth.GetConnectedPagesAsync().ConfigureAwait(true))
+                .FirstOrDefault()?.PageId;
+            var result = await _facebookOAuth.ReauthorizeAsync(async (missing, _) =>
+            {
+                var confirmed = await ConfirmMissingPagesAsync(missing, primaryId).ConfigureAwait(false);
+                if (!confirmed) declined = true;
+                return confirmed;
+            }, cts.Token).ConfigureAwait(true);
+
+            InstagramNotice = InstagramSettingsTexts.PermissionsUpdated(
+                result.RefreshedPages, result.MissingPages.Select(page => page.PageName).ToList());
+            // Tarayıcı beklemesi bitti: tazeleme (1 + N Graph isteği) sürerken "İptal" ve bekleme metni görünmez.
+            // Bağlantı işlemi (IsFacebookBusy) tazeleme bitene dek sürer.
+            IsReauthorizePending = false;
+            HideInstagramWaiting(InstagramSettingsTexts.WaitingForBrowser);
+            await RefreshInstagramStatusAsync().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested || declined)
+        {
+            // Yalnız kullanıcının iptali: "İptal" ya da onayda "Vazgeç". Belirteç iptal edilmemişken gelen
+            // TaskCanceledException (HttpClient zaman aşımı) aşağıdaki genel dala düşer.
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeCanceled;
+        }
+        catch (TimeoutException)
+        {
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeTimedOut;
+        }
+        catch (FacebookGraphException ex)
+        {
+            // Ham Graph gövdesi operatöre yazılmaz; sebep günlüğe düşer.
+            _log.LogWarning(ex, "Facebook permission update failed");
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeGraphFailed(ex.Code, (int?)ex.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            // Facebook ekranındaki "İptal" (access_denied), bekleyen başka bir onay, beklerken değişen bağlantı ve ağ
+            // hataları buraya düşer.
+            _log.LogWarning(ex, "Facebook permission update failed");
+            InstagramNotice = InstagramSettingsTexts.ReauthorizeFailed(ex.Message.TrimEnd('.', ' '));
+        }
+        finally
+        {
+            IsFacebookBusy = false;
+            IsReauthorizePending = false;
+            if (ReferenceEquals(_reauthorizeCts, cts)) _reauthorizeCts = null;
+            cts.Dispose();
+            // Durum satırı o anki gerçek duruma döner (beklerken biten tazelemenin yazdığına); başarı dalında çoktan
+            // döndüyse etkisizdir.
+            HideInstagramWaiting(InstagramSettingsTexts.WaitingForBrowser);
+        }
+    }
+
+    /// <summary>"İptal": süren izin güncellemesinin beklemesini keser; akış yoksa etkisizdir.</summary>
+    [RelayCommand]
+    private void CancelReauthorize()
+    {
+        try
+        {
+            _reauthorizeCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Akış tam o anda bitti: iptal edilecek bir şey kalmadı.
+        }
+    }
+
+    /// <summary>
+    /// Eksik Sayfa onayı: çekmeceyi kurucunun yakaladığı bağlamda açar (OAuth servisi bunu kendi iş parçacığından
+    /// çağırır) ve yanıtı döner. Çekmece servisi yoksa onay verilmemiş sayılır.
+    /// </summary>
+    private System.Threading.Tasks.Task<bool> ConfirmMissingPagesAsync(
+        IReadOnlyList<FacebookLinkedPage> missing, string? primaryId)
+    {
+        if (_drawers is not { } drawers) return System.Threading.Tasks.Task.FromResult(false);
+
+        var question = InstagramSettingsTexts.MissingPagesQuestion(
+            missing.Select(page => page.PageName).ToList(),
+            includesPrimary: missing.Any(page => string.Equals(page.PageId, primaryId, StringComparison.Ordinal)));
+        if (_uiContext is null) return AskMissingPagesAsync(drawers, question);
+
+        var answer = new System.Threading.Tasks.TaskCompletionSource<System.Threading.Tasks.Task<bool>>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        _uiContext.Post(_ => answer.SetResult(AskMissingPagesAsync(drawers, question)), null);
+        return answer.Task.Unwrap();
+    }
+
+    private async System.Threading.Tasks.Task<bool> AskMissingPagesAsync(
+        Services.Drawers.IDrawerService drawers, string question)
+    {
+        ActiveReauthorizeQuestion = question;
+        try
+        {
+            return await drawers.ShowAsync(InstagramSettingsTexts.ReauthorizeButton,
+                d => Views.Drawers.MessageDrawer.ForConfirm(d, question)).ConfigureAwait(true);
+        }
+        finally
+        {
+            ActiveReauthorizeQuestion = null;
         }
     }
 
@@ -443,6 +940,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             }).ConfigureAwait(true);
 
             await RefreshFacebookConnectionStatusAsync().ConfigureAwait(true);
+            await RefreshInstagramStatusAsync().ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
@@ -469,6 +967,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             IsFacebookBusy = true;
             await _facebookOAuth.DisconnectAsync().ConfigureAwait(true);
             await RefreshFacebookConnectionStatusAsync().ConfigureAwait(true);
+            await RefreshInstagramStatusAsync().ConfigureAwait(true);
         }
         finally
         {

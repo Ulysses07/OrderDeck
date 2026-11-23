@@ -134,4 +134,73 @@ public class InstagramGraphErrorTests
         InstagramGraphError.TryGetRetryAfter(header, out var wait).Should().BeTrue();
         wait.Should().Be(TimeSpan.FromMinutes(9));
     }
+
+    // ── Kota kullanımı ───────────────────────────────────────────────────────
+
+    /// <summary>Depo PUBLIC: işletme kimliği literal yazılmaz, üretilir.</summary>
+    private static string NewBusinessId() => $"biz-{Guid.NewGuid():N}";
+
+    [Fact]
+    public void TryGetUsage_returns_one_entry_per_bucket_in_document_order()
+    {
+        var (first, second) = (NewBusinessId(), NewBusinessId());
+        var header =
+            $"{{\"{first}\":[{{\"type\":\"instagram\",\"call_count\":28,\"total_cputime\":25,\"total_time\":30,\"estimated_time_to_regain_access\":0}}," +
+            $"{{\"type\":\"pages\",\"call_count\":12.5,\"total_cputime\":0.25,\"total_time\":99.9,\"estimated_time_to_regain_access\":3.5}}]," +
+            $"\"{second}\":[{{\"type\":\"instagram\",\"call_count\":100,\"total_cputime\":7}}]}}";
+
+        InstagramGraphError.TryGetUsage(header, out var usage).Should().BeTrue();
+
+        usage.Should().Equal(
+            new InstagramBucUsage(first, 28, 25, 30, 0),         // süre alanı varsa aynen (0 dahil)
+            new InstagramBucUsage(first, 12.5, 0.25, 99.9, 3.5), // kesirli; yuvarlanmaz
+            new InstagramBucUsage(second, 100, 7, 0, null));     // eksik oran 0, eksik süre null
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not json")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    public void TryGetUsage_returns_false_and_an_empty_list_when_no_bucket_can_be_read(string? header)
+    {
+        InstagramGraphError.TryGetUsage(header, out var usage).Should().BeFalse();
+        usage.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryGetUsage_skips_what_is_not_a_bucket_or_a_number()
+    {
+        // Kova dizisi olmayan anahtar, nesne olmayan dizi öğesi ve sayı olmayan alan
+        // atlanır; istisna çıkmaz, yanındaki okunabilir kova yine gelir.
+        var (skipped, read) = (NewBusinessId(), NewBusinessId());
+        var header =
+            $"{{\"{skipped}\":7," +
+            $"\"{read}\":[1,\"x\",{{\"call_count\":\"28\",\"total_time\":5,\"estimated_time_to_regain_access\":null}}]}}";
+
+        InstagramGraphError.TryGetUsage(header, out var usage).Should().BeTrue();
+
+        usage.Should().Equal(new InstagramBucUsage(read, 0, 0, 5, null));
+    }
+
+    [Theory]
+    [InlineData(4, null, true)]
+    [InlineData(17, null, true)]
+    [InlineData(32, null, true)]
+    [InlineData(613, null, true)]
+    [InlineData(80002, null, true)]
+    [InlineData(1, 2446079, true)]
+    [InlineData(190, 2446079, true)]
+    [InlineData(null, 2446079, true)]
+    [InlineData(190, null, false)]
+    [InlineData(200, null, false)]
+    [InlineData(10, null, false)]
+    [InlineData(100, null, false)]
+    [InlineData(null, null, false)]
+    public void IsQuotaError_recognizes_the_quota_codes_and_the_quota_subcode(int? code, int? subcode, bool expected)
+    {
+        // Alt kod 2446079, kod ne olursa olsun kotadır; Classify'ın kota koşulu bu yöntemdir.
+        InstagramGraphError.IsQuotaError(code, subcode).Should().Be(expected);
+    }
 }

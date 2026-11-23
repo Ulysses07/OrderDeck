@@ -142,6 +142,11 @@ public class MainShellViewCompositionTests
                 d => FacebookPagePickerDrawer.Create(d, BuildPageCandidates()));
             Assert.IsType<FacebookPagePickerDrawer>(pagePicker.Top!.Content);
 
+            var instagramAdd = new DrawerStack();
+            instagramAdd.ShowAsync("Instagram hesabı ekle",
+                d => InstagramAccountAddDrawer.Create(d, BuildInstagramPicker()));
+            Assert.IsType<InstagramAccountAddDrawer>(instagramAdd.Top!.Content);
+
             // Faz 3d/4: yedek devri. Gerçekte iptal çekmecesinin üstüne
             // biniyor; burada tek başına, iki yedekle kuruluyor ki kart
             // şablonu (platform ikonu + fiyat + onay) gerçekten çizilsin.
@@ -320,6 +325,18 @@ public class MainShellViewCompositionTests
             new OrderDeck.Chat.Facebook.FacebookPageCandidate("p1", "Emar Mezat"),
             new OrderDeck.Chat.Facebook.FacebookPageCandidate("p2", "Emar Outlet"),
         };
+
+    /// <summary>Biri Instagram hesaplı, biri hesapsız iki aday; değerler üretilir.</summary>
+    private static InstagramAccountPickerViewModel BuildInstagramPicker()
+        => new(new[]
+        {
+            new OrderDeck.Chat.Facebook.FacebookAddablePage(
+                FacebookOAuthTestKit.NewId(), $"sayfa-{Guid.NewGuid():N}",
+                FacebookOAuthTestKit.NewId(), $"hesap-{Guid.NewGuid():N}", AlreadyConnected: false),
+            new OrderDeck.Chat.Facebook.FacebookAddablePage(
+                FacebookOAuthTestKit.NewId(), $"sayfa-{Guid.NewGuid():N}",
+                IgUserId: null, IgUsername: null, AlreadyConnected: false),
+        });
 
     private static StreamHistoryViewModel BuildStreamHistoryViewModel()
     {
