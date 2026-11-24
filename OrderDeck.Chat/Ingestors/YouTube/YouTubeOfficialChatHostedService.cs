@@ -24,6 +24,15 @@ namespace OrderDeck.Chat.Ingestors.YouTube;
 /// Başlat"tan sonra sohbet bir dakikaya kadar gecikiyor, platformda düşüp yeniden açılan yayına
 /// ancak uygulamadaki oturum bitirilip açılarak dönülebiliyordu.</para>
 ///
+/// <para><b>Kesme anında geçerlidir.</b> Olay dinleyicisi kesmeyi kilit altında verir ve turun
+/// belirteci o an iptal edilmiş görünür (<see cref="CancellationTokenSource.CancelAsync"/>; geri
+/// çağrılar havuzda koşar, çağıran beklemez). Tur her adımını (işe başlama, durum yazma, beklemeye
+/// geçme) aynı kilit altında belirtece bakarak atar: kesilmiş tur bundan sonra yayın aramaz, okuyucu
+/// kurmaz, durum yazmaz. Kesme havuzda gecikmeli işlenseydi kesilen tur önce bağlanır, sonra bir kez
+/// daha bağlanılırdı (fazladan arama ve akış bağlantısı; şeritte de bir an eski durum görünürdü).
+/// Tek istisna: oturum başlangıcı, o oturumu zaten görüp onun için çalışan turu kesmez
+/// (<see cref="OnSessionStarted"/>).</para>
+///
 /// <para><b>Yayının bulunması.</b> Ayardaki metin doğrudan video bağlantısı/kimliği ise
 /// <see cref="YouTubeVideoIdExtractor"/> (yetki gerekmez, arama yapılmaz); kanal adıysa
 /// <c>broadcastLookup</c> → <c>liveBroadcasts.list?broadcastStatus=active</c> (hesap bağlı olmalı;
@@ -75,6 +84,12 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
     // Aşağıdakiler hem döngüden hem olay dinleyicilerinden (arayüz iş parçacığı) okunur/yazılır.
     private readonly Lock _gate = new();
     private CancellationTokenSource? _turn;
+
+    /// <summary>
+    /// Süren tur bu yayın oturumu için ÇALIŞIYOR (yayını arıyor ya da okuyor). Tur kapılardayken ve
+    /// beklerken null: o hâllerde gelen her olay turu keser.
+    /// </summary>
+    private string? _turnSession;
     private DateTimeOffset _fastUntil;
     private bool _freshNext;
     private int _consecutiveCrashes;
@@ -146,17 +161,28 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
 
     private void OnSessionStarted(object? sender, SessionStartedEventArgs e)
     {
-        // "Yayın Başlat": operatör çoğu zaman önce uygulamada oturumu açar, sonra platformda yayını
-        // başlatır. Tek uyandırma yetmez; pencere boyunca yayın sık aranır.
-        lock (_gate) _fastUntil = _time.GetUtcNow() + _timings.FastResolveWindow;
-        InterruptTurn();
+        lock (_gate)
+        {
+            // "Yayın Başlat": operatör çoğu zaman önce uygulamada oturumu açar, sonra platformda yayını
+            // başlatır. Tek uyandırma yetmez; pencere boyunca yayın sık aranır.
+            _fastUntil = _time.GetUtcNow() + _timings.FastResolveWindow;
+
+            // Oturum satırı bu olaydan ÖNCE yazılır: o arada başlayan tur oturumu görüp olayı beklemeden
+            // bağlanmış olabilir. Bu oturum için çalışan tur kesilmez; kesmek az önce kurulan okuyucuyu
+            // durdurup bir kez daha kurdururdu. Çalışması bitip beklemeye geçerken pencereye aynı kilit
+            // altında bakar (RestAsync), yani pencere açılışını kaçırmaz.
+            if (_turnSession != e.SessionId) InterruptTurnLocked();
+        }
     }
 
-    private void OnSessionEnded(object? sender, SessionEndedEventArgs e) => InterruptTurn();
+    private void OnSessionEnded(object? sender, SessionEndedEventArgs e)
+    {
+        lock (_gate) InterruptTurnLocked();
+    }
 
     private void OnReconnectRequested(object? sender, EventArgs e)
     {
-        if (!IsRunnable(_settingsProvider()))
+        if (!IsRunnable(_settingsProvider(), out _))
         {
             _log.LogInformation(
                 "[ChatReconnect] youtube: kaynak çalışmıyor (oturum yok ya da YouTube kurulu değil); yapılacak iş yok");
@@ -170,10 +196,12 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
             _freshNext = true;        // yayın az önce yeniden açılmış olabilir: önbelleği atla
             _consecutiveCrashes = 0;  // operatör "şimdi dene" dedi: geri çekilme baştan başlar
             wasReading = _reading;
-        }
 
-        Report(ChatSourceState.Connecting);
-        InterruptTurn();
+            // Kesme ile "bağlanıyor" aynı kilit altında: kesilen tur bundan sonra durum yazamaz, yerine
+            // gelen tur ise sonucunu "bağlanıyor"un ardından yazar.
+            InterruptTurnLocked();
+            ReportLocked(ChatSourceState.Connecting);
+        }
 
         if (wasReading)
             _log.LogInformation("[ChatReconnect] youtube: okuyucu kesildi, yayın yeniden aranıyor");
@@ -182,21 +210,21 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
     }
 
     /// <summary>
-    /// Süren turu keser; döngü beklemeden baştan değerlendirir. İptal havuzda yapılır: iptalin geri
-    /// çağrıları (ve onlara bağlı devam kodu) çağıranın iş parçacığında koşmasın.
+    /// Süren turu keser; döngü beklemeden baştan değerlendirir. <see cref="_gate"/> altında çağrılır.
+    /// Belirteç bu çağrıyla birlikte iptal edilmiş görünür; iptalin geri çağrıları (ve onlara bağlı
+    /// devam kodu) havuzda koşar, çağıranın (arayüz) iş parçacığında değil.
     /// </summary>
-    private void InterruptTurn()
+    private void InterruptTurnLocked()
     {
-        CancellationTokenSource? turn;
-        lock (_gate) turn = _turn;
-        if (turn is null) return; // iki tur arası: sıradaki tur zaten baştan değerlendirir
-
-        _ = Task.Run(() =>
-        {
-            try { turn.Cancel(); }
-            catch (ObjectDisposedException) { /* tur bu arada bitti */ }
-            catch (AggregateException ex) { _log.LogDebug(ex, "[YouTube Official] tur iptali sırasında hata"); }
-        });
+        // Tur yoksa (iki tur arası) yapılacak iş yok: sıradaki tur zaten baştan değerlendirir. Kayıtlı
+        // tur henüz bırakılmamıştır: döngü kaydı bu kilit altında siler, belirteci ondan sonra bırakır.
+        _ = _turn?.CancelAsync().ContinueWith(
+            static (cancel, log) => ((ILogger)log!).LogDebug(
+                cancel.Exception, "[YouTube Official] tur iptali sırasında hata"),
+            _log,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     // ── Yaşam döngüsü ───────────────────────────────────────────────────────────────────────────
@@ -241,17 +269,25 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
             catch (Exception ex)
             {
                 _log.LogError(ex, "[YouTube Official] outer loop error; sleeping before retry");
+                lock (_gate) _turnSession = null; // tur artık çalışmıyor, bekliyor: her olay bu beklemeyi keser
                 try { await IdleAsync(_timings.IdleAfterExit, turn.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { /* döngü koşulu karar verir */ }
             }
             finally
             {
-                lock (_gate) _turn = null;
+                // Önce kayıt silinir (kilit altında), sonra belirteç bırakılır: dinleyiciler kayıtlı
+                // turu keserken bırakılmış bir belirteçle karşılaşmaz.
+                lock (_gate)
+                {
+                    _turn = null;
+                    _turnSession = null;
+                }
+
                 turn.Dispose();
             }
         }
 
-        Report(ChatSourceState.Stopped);
+        lock (_gate) ReportLocked(ChatSourceState.Stopped);
     }
 
     /// <summary>Bir tur: kapılar → yayını bul → okuyucu → çıkışa göre bekle. İptalle kesilebilir.</summary>
@@ -260,10 +296,9 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         var settings = _settingsProvider();
 
         // Kapılar: kaynak çalışmıyor, şeritte satırı yok.
-        if (!IsRunnable(settings))
+        if (!IsRunnable(settings, out var sessionId))
         {
-            Report(ChatSourceState.Stopped);
-            await IdleAsync(_timings.IdleWhenOffline, turn).ConfigureAwait(false);
+            await RestAsync(turn, ChatSourceState.Stopped, _timings.IdleWhenOffline).ConfigureAwait(false);
             return;
         }
 
@@ -280,16 +315,16 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
                 _warnedNoKey = true;
             }
 
-            Report(ChatSourceState.NeedsAttention, YouTubeStatusMessages.NoApiKey);
-            await IdleAsync(_timings.IdleWhenOffline, turn).ConfigureAwait(false);
+            await RestAsync(
+                turn, ChatSourceState.NeedsAttention, _timings.IdleWhenOffline, YouTubeStatusMessages.NoApiKey)
+                .ConfigureAwait(false);
             return;
         }
 
         _warnedNoKey = false;
 
-        // Kapılar yeni açıldı: "bağlanıyor". Sorun durumundan yapılan rutin yeniden denemeler satırı
-        // çevirmez (her 5 sn'de bir "bağlanıyor" yanıp sönmesin); sonuç değişirse yeni durum yazılır.
-        if (ReportedIsStoppedOrUnknown()) Report(ChatSourceState.Connecting);
+        // Kapılar geçildi: tur bu oturum için çalışmaya başlıyor.
+        var fresh = BeginWork(turn, sessionId);
 
         // Ayarda tam video bağlantısı/kimliği varsa arama yapılmaz, yetki de gerekmez.
         var videoId = YouTubeVideoIdExtractor.TryExtract(settings.YouTubeChannelHandle);
@@ -298,12 +333,13 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         {
             if (_broadcastLookup is null)
             {
-                Report(ChatSourceState.NeedsAttention, YouTubeStatusMessages.NotConnected);
-                await IdleAsync(_timings.IdleWhenOffline, turn).ConfigureAwait(false);
+                await RestAsync(
+                    turn, ChatSourceState.NeedsAttention, _timings.IdleWhenOffline, YouTubeStatusMessages.NotConnected)
+                    .ConfigureAwait(false);
                 return;
             }
 
-            var lookup = await _broadcastLookup(TakeFresh(), turn).ConfigureAwait(false);
+            var lookup = await _broadcastLookup(fresh, turn).ConfigureAwait(false);
             switch (lookup.Status)
             {
                 case BroadcastLookupStatus.Found when !string.IsNullOrEmpty(lookup.VideoId):
@@ -314,24 +350,25 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
                 case BroadcastLookupStatus.NotConnected:
                 case BroadcastLookupStatus.NeedsAttention:
                     // Hesap ya da yetki sorunu: beklemek düzeltmez, hızlı arama da boşuna olurdu.
-                    Report(ChatSourceState.NeedsAttention, lookup.Message ?? YouTubeStatusMessages.NotConnected);
-                    await IdleAsync(_timings.IdleWhenOffline, turn).ConfigureAwait(false);
+                    await RestAsync(
+                        turn, ChatSourceState.NeedsAttention, _timings.IdleWhenOffline,
+                        lookup.Message ?? YouTubeStatusMessages.NotConnected)
+                        .ConfigureAwait(false);
                     return;
 
                 case BroadcastLookupStatus.Failed:
-                    Report(ChatSourceState.Retrying, retryAt: _time.GetUtcNow() + _timings.IdleWhenOffline);
-                    await IdleAsync(_timings.IdleWhenOffline, turn).ConfigureAwait(false);
+                    await RestAsync(turn, ChatSourceState.Retrying, _timings.IdleWhenOffline).ConfigureAwait(false);
                     return;
 
                 default:
                     // Etkin yayın yok. Pencere içindeyse (oturum yeni başladı ya da yenilendi) sık ara.
-                    Report(ChatSourceState.NoBroadcast);
-                    await IdleAsync(
-                        InFastWindow() ? _timings.FastResolveInterval : _timings.IdleWhenOffline, turn)
-                        .ConfigureAwait(false);
+                    await RestAsync(turn, ChatSourceState.NoBroadcast).ConfigureAwait(false);
                     return;
             }
         }
+
+        // Arama sürerken kesilmiş tur okuyucu kurmaz (akış bağlantısı boşuna açılıp kapanmasın).
+        turn.ThrowIfCancellationRequested();
 
         _log.LogInformation("[YouTube Official] ingestor başlatılıyor, video {VideoId}", videoId);
         using var ingestor = _ingestorFactory(new YouTubeIngestorRequest(videoId, apiKey, liveChatId, _seen));
@@ -342,8 +379,13 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         {
             lock (_gate) _reading = true;
             await ingestor.StartAsync(turn).ConfigureAwait(false);
-            lock (_gate) _consecutiveCrashes = 0;
-            Report(ChatSourceState.Live);
+            lock (_gate)
+            {
+                turn.ThrowIfCancellationRequested(); // kesilmiş tur "bağlı" yazamaz
+                _consecutiveCrashes = 0;
+                ReportLocked(ChatSourceState.Live);
+            }
+
             await ingestor.Completion.WaitAsync(turn).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (turn.IsCancellationRequested)
@@ -369,9 +411,8 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         {
             // Ayardaki sabit video canlı değil. Çökme değil: geri çekilme büyütülmez; operatör yeni
             // yayının bağlantısını yazınca (ya da o video canlıya geçince) bağlanılır.
-            Report(ChatSourceState.NeedsAttention, YouTubeStatusMessages.FixedVideoNotLive);
-            await IdleAsync(
-                InFastWindow() ? _timings.FastResolveInterval : _timings.IdleWhenOffline, turn)
+            await RestAsync(
+                turn, ChatSourceState.NeedsAttention, detail: YouTubeStatusMessages.FixedVideoNotLive)
                 .ConfigureAwait(false);
             return;
         }
@@ -379,66 +420,101 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         if (crashed || ingestor.EndReason == YouTubeIngestorEnd.Failed)
         {
             int crashes;
-            lock (_gate) crashes = ++_consecutiveCrashes;
+            lock (_gate)
+            {
+                turn.ThrowIfCancellationRequested(); // yenileme sayacı sıfırladıysa kesilen tur artırmaz
+                crashes = ++_consecutiveCrashes;
+            }
+
             var backoff = ComputeBackoff(crashes);
             _log.LogInformation(
                 "[YouTube Official] okuyucu hatayla çıktı (#{Count}); {Seconds} sn sonra yeniden denenecek",
                 crashes, backoff.TotalSeconds);
-            Report(ChatSourceState.Retrying, retryAt: _time.GetUtcNow() + backoff);
-            await IdleAsync(backoff, turn).ConfigureAwait(false);
+            await RestAsync(turn, ChatSourceState.Retrying, backoff).ConfigureAwait(false);
             return;
         }
 
         // Platform yayının bittiğini bildirdi (ya da sohbet kapandı).
-        Report(ChatSourceState.NoBroadcast);
-        await IdleAsync(_timings.IdleAfterExit, turn).ConfigureAwait(false);
+        await RestAsync(turn, ChatSourceState.NoBroadcast, _timings.IdleAfterExit).ConfigureAwait(false);
     }
 
-    // ── Yardımcılar ─────────────────────────────────────────────────────────────────────────────
+    // ── Turun adımları: her biri tek kilit altında, kesilmiş tur hiçbirini atamaz ───────────────
 
-    /// <summary>Kaynak çalışabilir mi: deneme sürümü değil, kanal/video yazılı, yayın oturumu açık.</summary>
-    private bool IsRunnable(AppSettings settings) =>
-        _trialProbe?.IsTrialMode != true
-        && !string.IsNullOrWhiteSpace(settings.YouTubeChannelHandle)
-        && (_sessions is null || _sessions.GetActive() is not null);
-
-    private Task IdleAsync(TimeSpan delay, CancellationToken turn) => Task.Delay(delay, _time, turn);
-
-    private bool InFastWindow()
-    {
-        lock (_gate) return _time.GetUtcNow() < _fastUntil;
-    }
-
-    /// <summary>"Önbelleği atla" bayrağını okur ve indirir.</summary>
-    private bool TakeFresh()
+    /// <summary>
+    /// Kapılar geçildi: tur <paramref name="sessionId"/> oturumu için çalışmaya başlıyor. "Önbelleği
+    /// atla" bayrağı burada okunup indirilir: yenileme bu adımdan önce geldiyse tur zaten kesilmiştir
+    /// (bayrak sıradaki tura kalır), sonra geldiyse bu tur kesilir ve bayrağı sıradaki tur alır.
+    /// Kaynak durmuş hâlden çıkıyorsa "bağlanıyor" yazılır; sorun durumundan yapılan rutin yeniden
+    /// denemeler satırı çevirmez (her 5 sn'de bir "bağlanıyor" yanıp sönmesin), sonuç değişirse yeni
+    /// durum yazılır.
+    /// </summary>
+    /// <returns>Yayın araması önbelleği atlasın mı.</returns>
+    private bool BeginWork(CancellationToken turn, string? sessionId)
     {
         lock (_gate)
         {
+            turn.ThrowIfCancellationRequested();
+            _turnSession = sessionId;
             var fresh = _freshNext;
             _freshNext = false;
+            if (_reported is null or ChatSourceState.Stopped) ReportLocked(ChatSourceState.Connecting);
             return fresh;
         }
     }
 
-    private bool ReportedIsStoppedOrUnknown()
-    {
-        lock (_gate) return _reported is null or ChatSourceState.Stopped;
-    }
-
     /// <summary>
-    /// Durumu izleyiciye yazar; DEĞİŞTİYSE günlüğe de bir satır düşer. İkisi de kilit altında: döngü
-    /// ile yenileme dinleyicisi aynı anda bildirirse izleyicideki son durum ile günlükteki sıra
-    /// birbirini tutar.
+    /// Turun sonu: durumu yazar ve bekler. <paramref name="delay"/> verilmemişse süre hızlı arama
+    /// penceresine göre seçilir. Tur artık "çalışmıyor" sayılır ve süre aynı kilit altında seçilir:
+    /// oturum başlangıcı bundan önce geldiyse pencere açıktır, sonra gelirse bu beklemeyi keser.
+    /// "Yeniden deneniyor" durumunda deneme saati (şimdi + süre) da yazılır.
     /// </summary>
-    private void Report(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
+    private Task RestAsync(
+        CancellationToken turn, ChatSourceState state, TimeSpan? delay = null, string? detail = null)
     {
+        TimeSpan wait;
         lock (_gate)
         {
-            var changed = _reported != state;
-            _reported = state;
-            _sources?.Report(Platform, state, detail, retryAt);
-            if (changed) _log.LogInformation("[YouTube Official] durum: {State}", state);
+            turn.ThrowIfCancellationRequested();
+            _turnSession = null;
+            var now = _time.GetUtcNow();
+            wait = delay ?? (now < _fastUntil ? _timings.FastResolveInterval : _timings.IdleWhenOffline);
+            ReportLocked(state, detail, state == ChatSourceState.Retrying ? now + wait : null);
         }
+
+        return IdleAsync(wait, turn);
+    }
+
+    // ── Yardımcılar ─────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Kaynak çalışabilir mi: deneme sürümü değil, kanal/video yazılı, yayın oturumu açık.
+    /// </summary>
+    /// <param name="settings">Güncel ayarlar.</param>
+    /// <param name="sessionId">Açık yayın oturumu; oturum servisi yoksa ya da kaynak çalışamıyorsa null.</param>
+    private bool IsRunnable(AppSettings settings, out string? sessionId)
+    {
+        sessionId = null;
+        if (_trialProbe?.IsTrialMode == true || string.IsNullOrWhiteSpace(settings.YouTubeChannelHandle))
+            return false;
+        if (_sessions is null) return true;
+
+        sessionId = _sessions.GetActive()?.Id;
+        return sessionId is not null;
+    }
+
+    private Task IdleAsync(TimeSpan delay, CancellationToken turn) => Task.Delay(delay, _time, turn);
+
+    /// <summary>
+    /// Durumu izleyiciye yazar; DEĞİŞTİYSE günlüğe de bir satır düşer. <see cref="_gate"/> altında
+    /// çağrılır: döngü ile dinleyiciler aynı anda bildirirse izleyicideki son durum ile günlükteki
+    /// sıra birbirini tutar.
+    /// </summary>
+    private void ReportLocked(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
+    {
+        var changed = _reported != state;
+        _reported = state;
+        _sources?.Report(Platform, state, detail, retryAt);
+        if (changed) _log.LogInformation("[YouTube Official] durum: {State}", state);
     }
 
     private IYouTubeChatIngestor CreateIngestor(YouTubeIngestorRequest request)

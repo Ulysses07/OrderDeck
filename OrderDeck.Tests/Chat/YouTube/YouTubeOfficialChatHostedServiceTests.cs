@@ -58,6 +58,12 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
     /// <summary>Kurulan her okuyucunun <c>StartAsync</c>'te fırlatacağı istisna; null ise başlar.</summary>
     private volatile Func<Exception?> _startError = () => null;
 
+    /// <summary>
+    /// Servis ayarları bir SONRAKİ okuyuşunda (her turun ilk işi, döngünün iş parçacığında) bir kez
+    /// çalışır. "Olay tam tur başlarken geldi" sıralarını zamana güvenmeden kurmak için.
+    /// </summary>
+    private Action? _onNextSettingsRead;
+
     private YouTubeOfficialChatHostedService? _service;
 
     public YouTubeOfficialChatHostedServiceTests()
@@ -214,16 +220,52 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
     private async Task RunAsync(YouTubeChatTimings? timings = null)
     {
         _service = new YouTubeOfficialChatHostedService(
-            () => _settings, new ChatBus(ringBufferSize: 10), _logs, _trial, spamFilter: null, _sessions,
+            ReadSettings, new ChatBus(ringBufferSize: 10), _logs, _trial, spamFilter: null, _sessions,
             httpFactory: null, viewers: null, _lookups.Run, _reconnect, _sources, _time,
             timings ?? Fast, Create);
         await _service.StartAsync(CancellationToken.None);
     }
 
-    /// <summary>Servisi başlatır, sonra oturumu açar (oturum başlangıcı hızlı arama penceresini açar).</summary>
+    private AppSettings ReadSettings()
+    {
+        Interlocked.Exchange(ref _onNextSettingsRead, null)?.Invoke();
+        return _settings;
+    }
+
+    /// <summary>
+    /// "Oturum satırı yazıldı ama servis olayı henüz görmedi" aralığını kurar: ilk tur ayarları okurken
+    /// tutulur, oturum satırı yazılınca bırakılır; servisin dinleyicisi ancak <paramref name="turnDid"/>
+    /// sağlandıktan sonra çalışır. Servis kurulmadan ÖNCE çağrılır: buradaki dinleyici önce abone olur,
+    /// olayda servisinkinden önce çalışır.
+    /// </summary>
+    /// <returns>İlk tur ayarları okumaya başladığında tamamlanan görev.</returns>
+    private Task TurnSeesTheSessionBeforeTheServiceHearsOfIt(Func<bool> turnDid)
+    {
+        var turnStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessionWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _onNextSettingsRead = () =>
+        {
+            turnStarted.TrySetResult();
+            sessionWritten.Task.Wait(TestPatience.Upper);
+        };
+        _sessions.SessionStarted += (_, _) =>
+        {
+            sessionWritten.TrySetResult();
+            SpinWait.SpinUntil(turnDid, TestPatience.Upper);
+        };
+        return turnStarted.Task;
+    }
+
+    /// <summary>
+    /// Servisi başlatır, döngü oturumsuz beklemeye girince oturumu açar (oturum başlangıcı hızlı arama
+    /// penceresini açar). Beklemek şart: sahada da operatör "Yayın Başlat"a bastığında döngü uykudadır.
+    /// Beklenmezse ilk tur ile oturum başlangıcı yarışır ve ilk bildirimin "Stopped" olacağı kesin olmaz.
+    /// O yarışın kendisi ayrıca, sırası zorlanarak sınanır ("Olay, turla aynı anda gelirse").
+    /// </summary>
     private async Task<string> RunInSessionAsync(YouTubeChatTimings? timings = null)
     {
         await RunAsync(timings);
+        await Until(() => State == Stopped);
         return StartSession();
     }
 
@@ -332,6 +374,65 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
         await Until(() => State == Retrying);
         Health!.Should().Match<ChatSourceHealth>(h =>
             h.Detail == null && h.RetryAt == _time.GetUtcNow() + Fast.IdleWhenOffline);
+    }
+
+    // ── Olay, turla aynı anda gelirse ───────────────────────────────────────────────────────────
+    //
+    // Oturum satırı, oturum olayından ÖNCE yazılır; yenileme isteği de her an gelebilir. Bu testler
+    // sırayı zorlar, zamana güvenmez: tur ayarları okuduğu anda tutulur ya da olay tam o anda gönderilir.
+
+    [Fact]
+    public async Task Session_start_leaves_alone_a_turn_that_already_connected_for_that_session()
+    {
+        // Tur oturumu olaydan önce görüp bağlandı. Olay sonradan geldiğinde o turu kesmemeli: kesseydi
+        // az önce kurulan okuyucu durdurulup bir kez daha kurulurdu (fazladan arama ve akış bağlantısı).
+        var turnStarted = TurnSeesTheSessionBeforeTheServiceHearsOfIt(() => State == Live);
+        await RunAsync();
+        await turnStarted.WaitAsync(TestPatience.Upper);
+
+        StartSession();
+
+        State.Should().Be(Live, "ön koşul: tur, servis oturum olayını görmeden bağlandı");
+        await Settle();
+        _ingestors.Should().ContainSingle("bu oturum için çalışan tur kesilmez");
+        _lookups.Calls.Should().Equal(false);
+        Transitions().Should().Equal("Connecting", "Live");
+    }
+
+    [Fact]
+    public async Task Session_start_still_opens_fast_retries_for_a_turn_that_already_found_no_broadcast()
+    {
+        // Aynı sıranın öbür yüzü: tur oturumu olaydan önce görüp aradı, yayın yoktu ve hızlı arama
+        // penceresi henüz açılmadığı için UZUN beklemeye girdi. Olay o beklemeyi kesmeli; kesmezse
+        // "Yayın Başlat"tan sonra yayın bir dakika boyunca aranmaz.
+        _lookups.Result = new BroadcastLookup(BroadcastLookupStatus.NoBroadcast);
+        var turnStarted = TurnSeesTheSessionBeforeTheServiceHearsOfIt(() => State == NoBroadcast);
+        await RunAsync();
+        await turnStarted.WaitAsync(TestPatience.Upper);
+
+        StartSession();
+
+        State.Should().Be(NoBroadcast, "ön koşul: tur, servis oturum olayını görmeden aradı");
+        await Until(() => _lookups.Calls.Count >= 4); // uzun aralıkla ikinci aramaya bile varılamazdı
+    }
+
+    [Fact]
+    public async Task A_refresh_that_arrives_as_a_turn_starts_reconnects_exactly_once()
+    {
+        // Yenileme, yeni başlayan tur henüz kapılardayken geliyor. O tur kesilmiştir: yayın aramaz,
+        // okuyucu kurmaz; yerine gelen tur bir kez, önbelleği atlayarak bağlanır. Kesme gecikmeli
+        // işlenseydi kesilen tur da bağlanır, ardından bir kez daha bağlanılırdı (iki arama, iki okuyucu).
+        await RunInSessionAsync();
+        await Until(() => State == Live);
+
+        _onNextSettingsRead = _reconnect.Request; // sıradaki turun başında, döngünün iş parçacığında
+        _ingestors.Single().End(YouTubeIngestorEnd.BroadcastEnded); // tur biter, kısa beklemeden sonra yenisi başlar
+
+        await Until(() => _ingestors.Count >= 2 && State == Live);
+        await Settle();
+        _ingestors.Should().HaveCount(2);
+        _lookups.Calls.Should().Equal(false, true);
+        Lines(ReconnectPrefix).Should().ContainSingle();
     }
 
     // ── Yenileme ────────────────────────────────────────────────────────────────────────────────

@@ -55,10 +55,12 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
     private readonly ChatSourceMonitor _sources;
     private readonly ChatReconnectSignal _reconnect = new();
     private readonly LiveScript _live = new();
+    private readonly HookedHttpFactory _http;
     private FacebookChatHostedService? _service;
 
     public FacebookChatHostedServiceLoopTests()
     {
+        _http = new HookedHttpFactory(_kit.HttpFactory);
         _bus.Subscribe(_received.Enqueue);
 
         new MigrationRunner(_db).Run();
@@ -194,6 +196,29 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Düzeneğin HTTP fabrikasını sarar: servis okuyucunun istemcisini istediği anda (yayın bulundu,
+    /// okuyucu kurulmak üzere) bir kez araya girilebilir. "Olay tam o anda geldi" sırasını zamana
+    /// güvenmeden kurmak için.
+    /// </summary>
+    private sealed class HookedHttpFactory(IHttpClientFactory inner) : IHttpClientFactory
+    {
+        private Action? _onNextStreamClient;
+
+        /// <summary>Okuyucunun istemcisi bir SONRAKİ istenişinde, servisin iş parçacığında bir kez çalışır.</summary>
+        public Action? OnNextStreamClient
+        {
+            set => Volatile.Write(ref _onNextStreamClient, value);
+        }
+
+        public HttpClient CreateClient(string name)
+        {
+            if (name == FacebookChatHostedService.StreamClientName)
+                Interlocked.Exchange(ref _onNextStreamClient, null)?.Invoke();
+            return inner.CreateClient(name);
+        }
+    }
+
     // ── Düzenek ─────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>Bağlı tek Sayfa tohumlar ve canlı yayın betiğini ona bağlar.</summary>
@@ -208,14 +233,21 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
     {
         _service = new FacebookChatHostedService(
             () => _kit.Settings, _kit.CreateService(), _bus, _logs, trialProbe: null, spamFilter: null,
-            _sessions, _kit.HttpFactory, _reconnect, _sources, _time, Fast);
+            _sessions, _http, _reconnect, _sources, _time, Fast);
         await _service.StartAsync(CancellationToken.None);
     }
 
-    /// <summary>Servisi başlatır, sonra oturumu açar (oturum başlangıcı hızlı arama penceresini açar).</summary>
+    /// <summary>
+    /// Servisi başlatır, döngü oturumsuz beklemeye girince oturumu açar (oturum başlangıcı hızlı arama
+    /// penceresini açar). Beklemek şart: sahada da operatör "Yayın Başlat"a bastığında döngü uykudadır.
+    /// Beklenmezse ilk tur ile oturum başlangıcı yarışır: döngü oturumu olaydan önce görürse olayın
+    /// "uyan" sinyali bir sonraki beklemeyi keser ve fazladan bir arama yapılır (zararsız, ama istek
+    /// sayısını birebir doğrulayan testi yük altında düşürür).
+    /// </summary>
     private async Task<string> RunInSessionAsync()
     {
         await RunAsync();
+        await Until(() => State == Stopped);
         return StartSession();
     }
 
@@ -346,6 +378,25 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
         _reconnect.Request();
 
         await Until(() => PollerStarts == 3 && State == Live);
+    }
+
+    [Fact]
+    public async Task A_refresh_that_arrives_after_the_broadcast_was_found_binds_exactly_once()
+    {
+        // Yenileme, yayın bulunduktan hemen sonra, okuyucu kurulmak üzereyken geliyor. O iş kesilmiştir:
+        // okuyucu kurmaz, durum yazmaz; yerine gelen iş bir kez bağlanır. Kesme gecikmeli işlenseydi
+        // kesilen iş de okuyucu kurar, hemen ardından kesilir ve bir kez daha bağlanılırdı (iki okuyucu;
+        // şeritte bir an "bağlı", sonra yine "bağlanıyor"). Sıra zorlanır: istek, servis okuyucunun
+        // HTTP istemcisini istediği anda (aramadan sonraki ilk adım) gönderilir.
+        await SeedPageAsync();
+        _http.OnNextStreamClient = _reconnect.Request;
+
+        await RunInSessionAsync();
+
+        await Until(() => PollerStarts >= 1 && State == Live);
+        await Settle();
+        PollerStarts.Should().Be(1);
+        Lines(ReconnectPrefix).Should().ContainSingle();
     }
 
     [Fact]

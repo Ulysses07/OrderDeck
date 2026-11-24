@@ -39,6 +39,10 @@ namespace OrderDeck.Chat.Ingestors.Facebook;
 /// döngüyü uyandırır: kaynak "oturum yeni başlamış gibi" baştan bağlanır. Yayımlanmış yorum
 /// belleği korunur (aynı yorum ikinci kez yayımlanmaz).</para>
 ///
+/// <para><b>Kesme anında geçerlidir.</b> Oturum bitişi ve yenileme işi kilit altında keser
+/// (<see cref="CutWorkLocked"/>): iş o andan sonra okuyucu kuramaz, durum yazamaz; döngü beklemeden
+/// baştan değerlendirir. İptalin geri çağrıları havuzda koşar, çağıran (arayüz) beklemez.</para>
+///
 /// <para><b>Durum.</b> Servis durumunu <see cref="ChatSourceMonitor"/>'a kendisi yazar (sohbet
 /// şeridindeki Facebook satırı); her durum DEĞİŞİMİ günlüğe bir satır düşer.</para>
 /// </summary>
@@ -80,6 +84,13 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
 
     // Kesilebilir iş (yayın araması + okuyucu): oturum bitişi ve yenileme bunu keser.
     private CancellationTokenSource? _workCts;
+
+    /// <summary>
+    /// Kayıtlı iş bir OLAYLA (oturum bitişi, yenileme) kesildi: bundan sonra okuyucu kuramaz, durum
+    /// yazamaz (<see cref="ThrowIfWorkCutLocked"/>). Bekçinin kesmesi bunu açmaz: o yolda iş, çıkışını
+    /// kendisi bildirir.
+    /// </summary>
+    private bool _workCut;
     private DateTimeOffset _fastUntil;
     private string? _staleVideoId;
     private DateTimeOffset _staleUntil;
@@ -159,9 +170,7 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
         // Operator pressed "Yayını Bitir" → drop the poller (ya da süren yayın
         // aramasını) so the next start re-resolves immediately rather than
         // waiting for Meta to time out.
-        CancellationTokenSource? work;
-        lock (_gate) work = _workCts;
-        CancelOnPool(work);
+        lock (_gate) CutWorkLocked();
     }
 
     private void OnSessionStarted(object? sender, SessionStartedEventArgs e)
@@ -182,44 +191,55 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
         }
 
         bool pageBound;
-        CancellationTokenSource? work;
+        bool hadWork;
         lock (_gate)
         {
             _fastUntil = _time.GetUtcNow() + _timings.FastResolveWindow;
             _staleVideoId = null;     // az önce biten yayın yeniden açılmış olabilir: kara liste kalkar
             _consecutiveCrashes = 0;  // operatör "şimdi dene" dedi: geri çekilme baştan başlar
             pageBound = _pageBound;
-            work = _workCts;
+
+            // Kesme ile "bağlanıyor" aynı kilit altında: kesilen iş bundan sonra durum yazamaz, yerine
+            // gelen iş ise sonucunu "bağlanıyor"un ardından yazar. Sayfa bağlı değilse şeritte Facebook
+            // satırı yoktur; "bağlanıyor" da yazılmaz.
+            hadWork = CutWorkLocked();
+            if (pageBound) ReportLocked(ChatSourceState.Connecting);
         }
 
-        // Sayfa bağlı değilse şeritte Facebook satırı yoktur; "bağlanıyor" da yazılmaz. Döngü yine
-        // uyandırılır: Sayfa az önce bağlanmış olabilir.
-        if (pageBound) Report(ChatSourceState.Connecting);
-        CancelOnPool(work);
+        // Sayfa bağlı görünmese de döngü uyandırılır: Sayfa az önce bağlanmış olabilir.
         Wake();
 
         if (!pageBound)
             _log.LogInformation("[ChatReconnect] facebook: bağlı Sayfa görünmüyor; yeniden denetleniyor");
-        else if (work is not null)
+        else if (hadWork)
             _log.LogInformation("[ChatReconnect] facebook: okuyucu ya da yayın araması kesildi, yeniden bağlanılıyor");
         else
             _log.LogInformation("[ChatReconnect] facebook: bekleme kesildi, yeniden bağlanılıyor");
     }
 
     /// <summary>
-    /// İptali havuzda yapar: iptalin geri çağrıları (ve onlara bağlı devam kodu) çağıranın iş
-    /// parçacığında koşmasın.
+    /// Kayıtlı işi (yayın araması ya da okuyucu) keser. <see cref="_gate"/> altında çağrılır. İş o an
+    /// "kesildi" sayılır: bundan sonra okuyucu kuramaz, durum yazamaz. Kesme havuzda gecikmeli işlenseydi
+    /// kesilen iş önce bağlanır, hemen ardından bir kez daha bağlanılırdı. Belirtecin iptali de bu
+    /// çağrıyla görünür olur (<see cref="CancellationTokenSource.CancelAsync"/>); geri çağrılar (ve
+    /// onlara bağlı devam kodu) havuzda koşar, çağıranın (arayüz) iş parçacığında değil.
     /// </summary>
-    private void CancelOnPool(CancellationTokenSource? cts)
+    /// <returns>Kesilecek iş var mıydı.</returns>
+    private bool CutWorkLocked()
     {
-        if (cts is null) return;
+        // Kayıtlı iş henüz bırakılmamıştır: döngü kaydı bu kilit altında siler, belirteci ondan sonra bırakır.
+        var work = _workCts;
+        if (work is null) return false;
 
-        _ = Task.Run(() =>
-        {
-            try { cts.Cancel(); }
-            catch (ObjectDisposedException) { /* iş bu arada bitti */ }
-            catch (AggregateException ex) { _log.LogDebug(ex, "[FacebookChatHostedService] iptal sırasında hata"); }
-        });
+        _workCut = true;
+        _ = work.CancelAsync().ContinueWith(
+            static (cancel, log) => ((ILogger)log!).LogDebug(
+                cancel.Exception, "[FacebookChatHostedService] iptal sırasında hata"),
+            _log,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return true;
     }
 
     private void Wake()
@@ -325,7 +345,12 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                 TimeSpan? idle;
                 using (var work = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
-                    lock (_gate) _workCts = work;
+                    lock (_gate)
+                    {
+                        _workCts = work;
+                        _workCut = false;
+                    }
+
                     try
                     {
                         idle = await BindAndReadAsync(
@@ -334,11 +359,17 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                     }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
-                        idle = null; // arama kesildi (oturum bitti ya da yenileme istendi)
+                        idle = null; // iş kesildi (oturum bitti ya da yenileme istendi): beklemeden baştan
                     }
                     finally
                     {
-                        lock (_gate) _workCts = null;
+                        // Önce kayıt silinir (kilit altında), sonra belirteç bırakılır (using):
+                        // dinleyiciler kayıtlı işi keserken bırakılmış bir belirteçle karşılaşmaz.
+                        lock (_gate)
+                        {
+                            _workCts = null;
+                            _workCut = false;
+                        }
                     }
                 }
 
@@ -371,7 +402,11 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
 
         // Kapılar yeni açıldı: "bağlanıyor". Sorun durumundan yapılan rutin yeniden aramalar satırı
         // çevirmez (her 5 sn'de bir "bağlanıyor" yanıp sönmesin); sonuç değişirse yeni durum yazılır.
-        if (ReportedIsStoppedOrUnknown()) Report(ChatSourceState.Connecting);
+        lock (_gate)
+        {
+            ThrowIfWorkCutLocked();
+            if (_reported is null or ChatSourceState.Stopped) ReportLocked(ChatSourceState.Connecting);
+        }
 
         var lookup = await resolver.ResolveDetailedAsync(pageId, pageAccessToken, work.Token)
             .ConfigureAwait(false);
@@ -379,7 +414,7 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
         if (lookup.Status == FacebookLiveLookupStatus.AuthProblem)
         {
             // Sayfa token'ı geçersiz ya da izin eksik: beklemek düzeltmez, hızlı arama da boşuna olurdu.
-            Report(ChatSourceState.NeedsAttention, FacebookStatusMessages.AuthProblem);
+            ReportFromWork(ChatSourceState.NeedsAttention, FacebookStatusMessages.AuthProblem);
             return _timings.IdleWhenOffline;
         }
 
@@ -399,7 +434,7 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
 
         if (string.IsNullOrEmpty(videoId))
         {
-            Report(ChatSourceState.NoBroadcast);
+            ReportFromWork(ChatSourceState.NoBroadcast);
             var notLiveIdle = InFastWindow() ? _timings.FastResolveInterval : _timings.IdleWhenOffline;
             _log.LogDebug(
                 "[FacebookChatHostedService] page {PageId} not currently live; retry in {Idle}s",
@@ -430,13 +465,16 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
             _spamFilter,
             _seen);
 
+        // Yayın aranırken kesilmiş iş okuyucu kurmaz: kesen olayın ardından zaten baştan bağlanılacak.
+        lock (_gate) ThrowIfWorkCutLocked();
+
         bool crashed = false;
         bool cancelled = false;
         Task? watchdog = null;
         try
         {
             await stream.StartAsync(work.Token);
-            Report(ChatSourceState.Live);
+            ReportFromWork(ChatSourceState.Live);
             // R10-CHAT01: sayaç artık burada SIFIRLANMAZ (StartAsync
             // hep başarılı — reset backoff eskalasyonunu öldürüyordu);
             // sağlıklı çıkışta (FastRebind) sıfırlanır.
@@ -485,7 +523,7 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                 }
 
                 var backoff = ComputeBackoff(crashes);
-                Report(ChatSourceState.Retrying, retryAt: _time.GetUtcNow() + backoff);
+                ReportFromWork(ChatSourceState.Retrying, retryAt: _time.GetUtcNow() + backoff);
                 return backoff;
             }
 
@@ -499,16 +537,21 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                     _staleUntil = _time.GetUtcNow() + _timings.StaleWindow;
                 }
 
-                Report(ChatSourceState.NoBroadcast);
+                // Pencere ve sayaç durum bildiriminden ÖNCE: iş bir olayla kesildiyse bildirim işi
+                // bitirir (aşağıdaki FastRebind'de de öyle), bunlar yine de yapılmış olmalı.
                 OpenFastWindowAndResetCrashes();
+                ReportFromWork(ChatSourceState.NoBroadcast);
                 return _timings.FastResolveInterval;
 
             case StreamExitAction.FastRebind:
             default:
                 // Okuyucu kesildi (oturum bitişi, yenileme, bekçi). Yayıncı
                 // büyük olasılıkla yeniden yayın açacak → hızlı arama penceresi.
-                Report(SessionActive() ? ChatSourceState.Connecting : ChatSourceState.Stopped);
+                // Bekçi kestiyse iş durumu kendisi yazar; olay kestiyse durumu olay yazmıştır
+                // (yenileme "bağlanıyor"; oturum bitişinde kapılar "durdu" der) ve döngü beklemeden
+                // baştan değerlendirir.
                 OpenFastWindowAndResetCrashes();
+                ReportFromWork(SessionActive() ? ChatSourceState.Connecting : ChatSourceState.Stopped);
                 return _timings.FastResolveInterval;
         }
     }
@@ -574,25 +617,43 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
         }
     }
 
-    private bool ReportedIsStoppedOrUnknown()
+    /// <summary>Döngünün iş DIŞINDAKİ durum bildirimi (kapılar, kapanış).</summary>
+    private void Report(ChatSourceState state)
     {
-        lock (_gate) return _reported is null or ChatSourceState.Stopped;
+        lock (_gate) ReportLocked(state);
     }
 
     /// <summary>
-    /// Durumu izleyiciye yazar; DEĞİŞTİYSE günlüğe de bir satır düşer. İkisi de kilit altında: döngü
-    /// ile yenileme dinleyicisi aynı anda bildirirse izleyicideki son durum ile günlükteki sıra
-    /// birbirini tutar.
+    /// İşin (yayın araması + okuyucu) durum bildirimi. İş bir olayla kesildiyse yazmaz ve işi bitirir:
+    /// kesen olay kendi durumunu yazdı, döngü beklemeden baştan değerlendirecek.
     /// </summary>
-    private void Report(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
+    private void ReportFromWork(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
     {
         lock (_gate)
         {
-            var changed = _reported != state;
-            _reported = state;
-            _sources?.Report(Platform, state, detail, retryAt);
-            if (changed) _log.LogInformation("[FacebookChatHostedService] durum: {State}", state);
+            ThrowIfWorkCutLocked();
+            ReportLocked(state, detail, retryAt);
         }
+    }
+
+    /// <summary><see cref="_gate"/> altında çağrılır. İş bir olayla kesildiyse iptal istisnası fırlatır.</summary>
+    private void ThrowIfWorkCutLocked()
+    {
+        if (_workCut)
+            throw new OperationCanceledException("Facebook sohbet işi oturum bitişi ya da yenilemeyle kesildi.");
+    }
+
+    /// <summary>
+    /// Durumu izleyiciye yazar; DEĞİŞTİYSE günlüğe de bir satır düşer. <see cref="_gate"/> altında
+    /// çağrılır: döngü ile dinleyiciler aynı anda bildirirse izleyicideki son durum ile günlükteki
+    /// sıra birbirini tutar.
+    /// </summary>
+    private void ReportLocked(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
+    {
+        var changed = _reported != state;
+        _reported = state;
+        _sources?.Report(Platform, state, detail, retryAt);
+        if (changed) _log.LogInformation("[FacebookChatHostedService] durum: {State}", state);
     }
 
     /// <summary>
