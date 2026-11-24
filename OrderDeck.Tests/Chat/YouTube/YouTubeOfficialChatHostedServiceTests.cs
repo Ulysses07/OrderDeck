@@ -156,6 +156,8 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
         private readonly object _gate = new();
         private readonly List<bool> _calls = new();
         private volatile bool _hang;
+        private volatile Func<Exception>? _throw;
+        private int _hanging;
         private int _cancelled;
         private BroadcastLookup _result = Found();
 
@@ -173,6 +175,16 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
             set => _hang = value;
         }
 
+        /// <summary>Doluysa her arama bu istisnayı fırlatır (beklenmeyen hata kurguları).</summary>
+        public Func<Exception>? Throw
+        {
+            get => _throw;
+            set => _throw = value;
+        }
+
+        /// <summary>Asılı kalmaya başlamış (iptali bekleyen) arama sayısı.</summary>
+        public int Hanging => Volatile.Read(ref _hanging);
+
         /// <summary>İptalle kesilen arama sayısı.</summary>
         public int Cancelled => Volatile.Read(ref _cancelled);
 
@@ -185,8 +197,10 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
         public async Task<BroadcastLookup> Run(bool fresh, CancellationToken ct)
         {
             lock (_gate) _calls.Add(fresh);
+            if (Throw is { } error) throw error();
             if (Hang)
             {
+                Interlocked.Increment(ref _hanging);
                 try
                 {
                     await Task.Delay(Timeout.Infinite, ct);
@@ -328,14 +342,16 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
         await Until(() => _lookups.Calls.Count >= 4); // uzun aralıkla dördüncü aramaya varılamazdı
         State.Should().Be(NoBroadcast);
 
-        var beforeClose = _lookups.Calls.Count;
+        // Önce pencere kapatılır, sayı SONRA okunur: tersi olsaydı iki satır arasına sığan hızlı aramalar
+        // (test iş parçacığı yük altında bekletilirse) sınırı aşardı.
         _time.Advance(Fast.FastResolveWindow + TimeSpan.FromSeconds(1)); // pencere kapandı
+        var afterClose = _lookups.Calls.Count;
         await Task.Delay(1000); // hızlı aralık sürseydi bu sürede otuz kadar arama daha olurdu
 
         // Sınır zamana bağlı değil: sayı okunurken süren bir arama ile o an beklenen kısa aralığın
         // sonundaki arama, en çok iki arama daha getirir; ondan sonraki bekleme uzun aralıktır.
         _lookups.Calls.Count.Should().BeLessThanOrEqualTo(
-            beforeClose + 2, "pencere dışında arama uzun aralığa döner");
+            afterClose + 2, "pencere dışında arama uzun aralığa döner");
         // Rutin aramalar satırı "bağlanıyor"a çevirip durmaz: tek geçiş.
         Transitions().Should().Equal("Stopped", "Connecting", "NoBroadcast");
         _ingestors.Should().BeEmpty();
@@ -461,7 +477,7 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
     {
         _lookups.Hang = true;
         await RunInSessionAsync();
-        await Until(() => _lookups.Calls.Count == 1);
+        await Until(() => _lookups.Hanging == 1); // arama asılı kaldı (yalnız "çağrıldı" değil)
 
         _lookups.Hang = false; // sıradaki arama hemen dönsün
         _reconnect.Request();
@@ -514,6 +530,39 @@ public sealed class YouTubeOfficialChatHostedServiceTests : IAsyncLifetime
 
         await Until(() => _ingestors.Count == 2 && State == Live);
         _ingestors.Select(i => i.Request.Seen).Distinct().Should().ContainSingle();
+    }
+
+    // ── Beklenmeyen hata ────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task An_unexpected_loop_error_reports_retrying_and_waits_before_the_next_try()
+    {
+        // Döngüde beklenmeyen bir hata (burada: yayın araması fırlatıyor). Satır "bağlanıyor"da asılı
+        // kalmamalı: "yeniden deneniyor" olur, saatiyle; döngü de beklemeden yeniden denememeli.
+        _lookups.Throw = () => new InvalidOperationException("beklenmeyen hata");
+        var timings = Fast with { IdleAfterExit = Long };
+        await RunInSessionAsync(timings);
+
+        await Until(() => State == Retrying);
+        Health!.RetryAt.Should().Be(_time.GetUtcNow() + timings.IdleAfterExit);
+        await Settle();
+        _lookups.Calls.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task A_stray_cancellation_does_not_spin_the_loop()
+    {
+        // Tur kesilmediği hâlde gelen bir iptal istisnası (ör. iç zaman aşımı) "tur kesildi" sayılıp
+        // beklemeden yeniden denenirse döngü saniyede binlerce arama yapar: günlük kota dakikalar
+        // içinde biter. Kesilmemiş turdaki iptal, beklenmeyen hata gibi ele alınır.
+        _lookups.Throw = () => new OperationCanceledException("iç zaman aşımı");
+        var timings = Fast with { IdleAfterExit = Long };
+        await RunInSessionAsync(timings);
+
+        await Until(() => _lookups.Calls.Count >= 1);
+        await Settle();
+        _lookups.Calls.Should().HaveCount(1);
+        State.Should().Be(Retrying);
     }
 
     // ── Okuyucunun çıkışı ───────────────────────────────────────────────────────────────────────

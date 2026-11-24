@@ -248,12 +248,13 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
             _activeSources.Clear();
         }
 
+        // Önek öbür sohbet servisleriyle aynı: sahada tek "[ChatReconnect]" araması dört kaynağı gösterir.
         if (released > 0)
             _log.LogInformation(
-                "Sohbet yenileme: köprüde etkin kaynak kilidi bırakıldı ({Count} platform); " +
+                "[ChatReconnect] tiktok: köprüde etkin kaynak kilidi bırakıldı ({Count} platform); " +
                 "sıradaki mesajını ulaştıran sekme devralır", released);
         else
-            _log.LogInformation("Sohbet yenileme: köprüde bırakılacak etkin kaynak kilidi yoktu");
+            _log.LogInformation("[ChatReconnect] tiktok: köprüde bırakılacak etkin kaynak kilidi yoktu");
     }
 
     private void OnReconnectRequested(object? sender, EventArgs e) => ReleaseActiveSources();

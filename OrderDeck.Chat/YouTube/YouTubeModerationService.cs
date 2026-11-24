@@ -140,18 +140,16 @@ public sealed class YouTubeModerationService
     private async Task<(string VideoId, string LiveChatId)?> FetchActiveBroadcastAsync(
         bool fresh, CancellationToken ct)
     {
-        if (!fresh && _cachedLiveChatId is not null && _cachedVideoId is not null
-            && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
-            return (_cachedVideoId, _cachedLiveChatId);
+        // Alanlar yerel değişkene BİR KEZ okunur: bu yol kilitsizdir ve "etkin yayın yok" cevabı
+        // alanları aynı anda null'a çekebilir; denetimden sonra yeniden okumak null kimlik döndürürdü.
+        if (!fresh && TryReadCache() is { } cached) return cached;
 
         await _liveChatIdLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             // Double-check under the lock — an earlier concurrent call may
             // have populated the cache while we were waiting.
-            if (!fresh && _cachedLiveChatId is not null && _cachedVideoId is not null
-                && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
-                return (_cachedVideoId, _cachedLiveChatId);
+            if (!fresh && TryReadCache() is { } populated) return populated;
 
             using var youtube = await _oauth.CreateAuthorizedServiceAsync(ct).ConfigureAwait(false);
             // NOTE: broadcastStatus and mine are mutually exclusive filters —
@@ -174,15 +172,27 @@ public sealed class YouTubeModerationService
                 return null;
             }
 
-            _cachedVideoId = broadcast.Id;
-            _cachedLiveChatId = broadcast.Snippet!.LiveChatId;
+            var videoId = broadcast.Id;
+            var liveChatId = broadcast.Snippet!.LiveChatId;
+            _cachedVideoId = videoId;
+            _cachedLiveChatId = liveChatId;
             _cachedLiveChatIdExpiresAt = DateTimeOffset.UtcNow + LiveChatIdTtl;
-            return (_cachedVideoId, _cachedLiveChatId);
+            return (videoId, liveChatId);
         }
         finally
         {
             _liveChatIdLock.Release();
         }
+    }
+
+    /// <summary>Önbellekteki yayın, süresi dolmadıysa; alanlar bir kez okunur (kilitsiz yoldan da çağrılır).</summary>
+    private (string VideoId, string LiveChatId)? TryReadCache()
+    {
+        var videoId = _cachedVideoId;
+        var liveChatId = _cachedLiveChatId;
+        return videoId is not null && liveChatId is not null && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt
+            ? (videoId, liveChatId)
+            : null;
     }
 
     /// <summary>

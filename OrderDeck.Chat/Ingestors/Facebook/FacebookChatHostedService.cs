@@ -171,6 +171,10 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
         // aramasını) so the next start re-resolves immediately rather than
         // waiting for Meta to time out.
         lock (_gate) CutWorkLocked();
+
+        // Döngü beklemedeyse (kesilecek iş yoksa) de uyanır: kapılara bakıp "durdu" der. Uyanmasaydı
+        // satır, bekleme dolana dek (60 sn, geri çekilmede 5 dakikaya kadar) eski durumunda kalırdı.
+        Wake();
     }
 
     private void OnSessionStarted(object? sender, SessionStartedEventArgs e)
@@ -381,7 +385,21 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
             {
                 _log.LogError(ex,
                     "[FacebookChatHostedService] outer loop error; sleeping before retry");
-                try { await Task.Delay(_timings.IdleAfterStreamExit, _time, ct); } catch { break; }
+
+                // Şeritte satırı olan kaynak "bağlanıyor"da asılı kalmasın: bu da bir "yeniden
+                // deneniyor"dur. Bekleme uyandırılabilir: "Sohbeti yenile" onu da keser.
+                lock (_gate)
+                {
+                    if (_reported is not (null or ChatSourceState.Stopped))
+                    {
+                        ReportLocked(
+                            ChatSourceState.Retrying,
+                            retryAt: _time.GetUtcNow() + _timings.IdleAfterStreamExit);
+                    }
+                }
+
+                try { await IdleAsync(_timings.IdleAfterStreamExit, ct); }
+                catch (OperationCanceledException) { break; }
             }
         }
 
@@ -418,7 +436,16 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
             return _timings.IdleWhenOffline;
         }
 
-        // Canlı değil ve geçici hata aynı yoldan gider: yayın yok sayılır, yeniden aranır.
+        if (lookup.Status == FacebookLiveLookupStatus.Failed)
+        {
+            // Geçici hata (ağ, Graph 5xx, hız sınırı): yayının kapandığına kanıt değil. "Yayın yok"
+            // sayılsaydı yayın sürerken ağ gidince satır "yayın kesildi" der, operatörü açık yayını
+            // yeniden açmaya yollardı. Arama aynı aralıkla yeniden denenir.
+            var retryIn = InFastWindow() ? _timings.FastResolveInterval : _timings.IdleWhenOffline;
+            ReportFromWork(ChatSourceState.Retrying, retryAt: _time.GetUtcNow() + retryIn);
+            return retryIn;
+        }
+
         var videoId = lookup.Status == FacebookLiveLookupStatus.Live ? lookup.VideoId : null;
 
         // Bayat-kimlik koruması: az önce kendi kendine biten yayın
@@ -646,14 +673,15 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
     /// <summary>
     /// Durumu izleyiciye yazar; DEĞİŞTİYSE günlüğe de bir satır düşer. <see cref="_gate"/> altında
     /// çağrılır: döngü ile dinleyiciler aynı anda bildirirse izleyicideki son durum ile günlükteki
-    /// sıra birbirini tutar.
+    /// sıra birbirini tutar. Günlük satırı ÖNCE yazılır: izleyicide görünen her durumun satırı
+    /// günlükte hazırdır.
     /// </summary>
     private void ReportLocked(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
     {
         var changed = _reported != state;
         _reported = state;
-        _sources?.Report(Platform, state, detail, retryAt);
         if (changed) _log.LogInformation("[FacebookChatHostedService] durum: {State}", state);
+        _sources?.Report(Platform, state, detail, retryAt);
     }
 
     /// <summary>

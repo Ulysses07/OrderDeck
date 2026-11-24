@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -229,11 +230,11 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
     }
 
     /// <summary>Servisi iç kurucuyla (kısa süreler) kurup başlatır. Oturum AÇMAZ.</summary>
-    private async Task RunAsync()
+    private async Task RunAsync(FacebookChatTimings? timings = null)
     {
         _service = new FacebookChatHostedService(
             () => _kit.Settings, _kit.CreateService(), _bus, _logs, trialProbe: null, spamFilter: null,
-            _sessions, _http, _reconnect, _sources, _time, Fast);
+            _sessions, _http, _reconnect, _sources, _time, timings ?? Fast);
         await _service.StartAsync(CancellationToken.None);
     }
 
@@ -244,9 +245,9 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
     /// "uyan" sinyali bir sonraki beklemeyi keser ve fazladan bir arama yapılır (zararsız, ama istek
     /// sayısını birebir doğrulayan testi yük altında düşürür).
     /// </summary>
-    private async Task<string> RunInSessionAsync()
+    private async Task<string> RunInSessionAsync(FacebookChatTimings? timings = null)
     {
-        await RunAsync();
+        await RunAsync(timings);
         await Until(() => State == Stopped);
         return StartSession();
     }
@@ -327,6 +328,60 @@ public sealed class FacebookChatHostedServiceLoopTests : IAsyncLifetime
             "Facebook oturumu ya da izni geçersiz. Ayarlar > Facebook > \"Facebook izinlerini güncelle\".");
         await Settle();
         _live.LiveVideoRequests.Should().Be(1, "oturum sorunu hızlı aranmaz: beklemek düzeltmez");
+    }
+
+    [Fact]
+    public async Task A_failed_lookup_reports_retrying_instead_of_a_closed_broadcast()
+    {
+        // Ağ ya da Graph hatası yayının kapandığına kanıt değildir. Eskiden bu da "canlı değil" sayılıyordu:
+        // yayın sürerken ağ gidince satır "Facebook yayın kesildi" diyor, ipucu "Facebook yayını kapandı"
+        // yazıyor ve operatörü açık yayını yeniden açmaya yolluyordu.
+        await SeedPageAsync();
+        _live.LiveVideosOverride = () => FakeGraph.Error(1, HttpStatusCode.InternalServerError);
+
+        await RunInSessionAsync(); // hızlı arama penceresi açık
+
+        await Until(() => _live.LiveVideoRequests >= 2); // hızlı aralıkla yeniden deneniyor
+        Health!.Should().Match<ChatSourceHealth>(h =>
+            h.State == Retrying && h.Detail == null && h.RetryAt == _time.GetUtcNow() + Fast.FastResolveInterval);
+
+        // Ağ düzelince kendiliğinden bağlanır.
+        _live.LiveVideosOverride = null;
+        await Until(() => State == Live);
+    }
+
+    [Fact]
+    public async Task Session_end_while_the_loop_waits_reports_stopped_at_once()
+    {
+        // Oturum, döngü beklerken (kesilecek iş yokken) bitiyor. Satır bekleme dolana dek eski durumunda
+        // kalmamalı: döngü uyanır, kapılara bakar ve "durdu" der. (Uzun bekleme: oturum sorunu.)
+        await SeedPageAsync();
+        _live.LiveVideosOverride = () => FakeGraph.Error(190);
+        var session = await RunInSessionAsync();
+        await Until(() => State == NeedsAttention);
+
+        EndSession(session);
+
+        await Until(() => State == Stopped);
+    }
+
+    [Fact]
+    public async Task An_unexpected_loop_error_reports_retrying_and_a_refresh_still_reconnects()
+    {
+        // Döngüde beklenmeyen bir hata (burada: okuyucunun istemcisi kurulamıyor). Satır "bağlanıyor"da
+        // asılı kalmamalı: "yeniden deneniyor" olur, saatiyle. O beklemeyi "Sohbeti yenile" kesebilmeli.
+        var timings = Fast with { IdleAfterStreamExit = Long };
+        await SeedPageAsync();
+        _http.OnNextStreamClient = () => throw new InvalidOperationException("beklenmeyen hata");
+
+        await RunInSessionAsync(timings);
+
+        await Until(() => State == Retrying);
+        Health!.RetryAt.Should().Be(_time.GetUtcNow() + timings.IdleAfterStreamExit);
+
+        _reconnect.Request();
+
+        await Until(() => State == Live); // uzun bekleme dolmadan
     }
 
     [Fact]

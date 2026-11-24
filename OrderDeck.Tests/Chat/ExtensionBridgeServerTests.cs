@@ -1084,7 +1084,9 @@ public class ExtensionBridgeServerTests
         await Eventually(() => Count(received) == 2, "yenileme sinyali kilidi bıraktı");
 
         // Tasarım §5.7: her yenileme isteği ve kaynağın karşılığı günlüğe bir satır yazar.
-        log.Entries.Should().ContainSingle(e => e.Message.Contains("Sohbet yenileme"));
+        // Öbür servislerle aynı önek: sahada tek "[ChatReconnect]" araması dört kaynağı da gösterir.
+        log.Entries.Should().ContainSingle(
+            e => e.Message.StartsWith("[ChatReconnect] tiktok: ", StringComparison.Ordinal));
 
         await active.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
         await standby.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
@@ -1100,7 +1102,9 @@ public class ExtensionBridgeServerTests
 
         server.ReleaseActiveSources();
 
-        log.Entries.Should().ContainSingle(e => e.Message.Contains("Sohbet yenileme"));
+        // Öbür servislerle aynı önek: sahada tek "[ChatReconnect]" araması dört kaynağı da gösterir.
+        log.Entries.Should().ContainSingle(
+            e => e.Message.StartsWith("[ChatReconnect] tiktok: ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1114,6 +1118,6 @@ public class ExtensionBridgeServerTests
 
         reconnect.Request();
 
-        log.Entries.Should().NotContain(e => e.Message.Contains("Sohbet yenileme"));
+        log.Entries.Should().NotContain(e => e.Message.Contains("[ChatReconnect]"));
     }
 }

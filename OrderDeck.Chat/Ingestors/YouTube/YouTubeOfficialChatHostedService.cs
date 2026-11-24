@@ -262,14 +262,29 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
             {
                 break;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (turn.IsCancellationRequested)
             {
                 // Tur kesildi (oturum başladı ya da bitti, yenileme istendi): beklemeden baştan.
             }
             catch (Exception ex)
             {
+                // Beklenmeyen hata. Tur kesilmediği hâlde gelen iptal istisnası da (ör. iç zaman aşımı)
+                // buraya düşer: "tur kesildi" sayılıp beklemeden yeniden denenseydi döngü saniyede
+                // binlerce arama yapar, günlük kotayı dakikalar içinde bitirirdi.
                 _log.LogError(ex, "[YouTube Official] outer loop error; sleeping before retry");
-                lock (_gate) _turnSession = null; // tur artık çalışmıyor, bekliyor: her olay bu beklemeyi keser
+                lock (_gate)
+                {
+                    _turnSession = null; // tur artık çalışmıyor, bekliyor: her olay bu beklemeyi keser
+
+                    // Şeritte satırı olan kaynak "bağlanıyor"da asılı kalmasın: bu da bir "yeniden
+                    // deneniyor"dur. Kesilmiş tur yazmaz (kesen olay kendi durumunu yazdı).
+                    if (!turn.IsCancellationRequested && _reported is not (null or ChatSourceState.Stopped))
+                    {
+                        ReportLocked(
+                            ChatSourceState.Retrying, retryAt: _time.GetUtcNow() + _timings.IdleAfterExit);
+                    }
+                }
+
                 try { await IdleAsync(_timings.IdleAfterExit, turn.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { /* döngü koşulu karar verir */ }
             }
@@ -507,14 +522,15 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
     /// <summary>
     /// Durumu izleyiciye yazar; DEĞİŞTİYSE günlüğe de bir satır düşer. <see cref="_gate"/> altında
     /// çağrılır: döngü ile dinleyiciler aynı anda bildirirse izleyicideki son durum ile günlükteki
-    /// sıra birbirini tutar.
+    /// sıra birbirini tutar. Günlük satırı ÖNCE yazılır: izleyicide görünen her durumun satırı
+    /// günlükte hazırdır.
     /// </summary>
     private void ReportLocked(ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
     {
         var changed = _reported != state;
         _reported = state;
-        _sources?.Report(Platform, state, detail, retryAt);
         if (changed) _log.LogInformation("[YouTube Official] durum: {State}", state);
+        _sources?.Report(Platform, state, detail, retryAt);
     }
 
     private IYouTubeChatIngestor CreateIngestor(YouTubeIngestorRequest request)
