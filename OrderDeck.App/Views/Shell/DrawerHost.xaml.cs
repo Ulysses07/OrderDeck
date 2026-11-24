@@ -28,12 +28,12 @@ public partial class DrawerHost : UserControl
     /// <summary>
     /// Sağdan içeri kaydırır. XAML'daki EventTrigger yerine kod: Motion.xaml'ın
     /// notu gereği azaltılmış hareket açıkken animasyon ATLANMALI ve bu koşul
-    /// XAML'dan sorulamıyor.
+    /// XAML'dan sorulamıyor. Karar <see cref="Controls.MotionPolicy"/>'de.
     /// </summary>
     private void OnDrawerLoaded(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement panel) return;
-        if (!SystemParameters.ClientAreaAnimation) return;
+        if (!Controls.MotionPolicy.IsEnabled) return;
 
         var transform = new TranslateTransform();
         panel.RenderTransform = transform;
