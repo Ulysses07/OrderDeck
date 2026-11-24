@@ -6,9 +6,11 @@ using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 using Google;
+using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.YouTube.v3;
 using Google.Apis.YouTube.v3.Data;
 using Microsoft.Extensions.Logging;
+using OrderDeck.Chat.Ingestors.YouTube;
 
 namespace OrderDeck.Chat.YouTube;
 
@@ -80,7 +82,65 @@ public sealed class YouTubeModerationService
     public async Task<(string VideoId, string LiveChatId)> GetActiveBroadcastAsync(
         CancellationToken ct = default)
     {
-        if (_cachedLiveChatId is not null && _cachedVideoId is not null
+        (string VideoId, string LiveChatId)? broadcast;
+        try
+        {
+            broadcast = await FetchActiveBroadcastAsync(fresh: false, ct).ConfigureAwait(false);
+        }
+        catch (GoogleApiException ex)
+        {
+            throw MapException(ex);
+        }
+
+        return broadcast ?? throw new ModerationException(
+            "Aktif YouTube yayını bulunamadı. Önce YouTube Studio'dan canlı yayını başlat.");
+    }
+
+    /// <summary>
+    /// Sohbet döngüsünün yayın araması: <see cref="GetActiveBroadcastAsync"/> ile aynı çağrı, ama
+    /// sonucu istisna yerine <see cref="BroadcastLookup"/> olarak verir ve <b>etkileşimli
+    /// yetkilendirme başlatmaz</b>.
+    ///
+    /// <para>Önce hesabın bağlı olup olmadığına tarayıcı açmadan bakılır. Diskte yetki yokken
+    /// yetkili servis istemek Google izin sayfasını açar ve operatör cevap verene dek bekler; arka
+    /// planda dönen bir döngü bunu yapmamalı (hızlı arama ve yenileme her denemede bir izin sayfası
+    /// açardı). Hesap bağlı değilse arama orada durur.</para>
+    /// </summary>
+    /// <param name="fresh">Doğruysa önbellek atlanır (yenileme: yayın az önce yeniden açılmış
+    /// olabilir, 60 sn'lik önbellek eskisini gösterirdi).</param>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> iptal edildi.</exception>
+    public async Task<BroadcastLookup> LookupActiveBroadcastAsync(bool fresh, CancellationToken ct = default)
+    {
+        if (!await _oauth.IsConnectedAsync(ct).ConfigureAwait(false))
+            return new BroadcastLookup(BroadcastLookupStatus.NotConnected, Message: YouTubeStatusMessages.NotConnected);
+
+        try
+        {
+            return await FetchActiveBroadcastAsync(fresh, ct).ConfigureAwait(false) is { } broadcast
+                ? new BroadcastLookup(BroadcastLookupStatus.Found, broadcast.VideoId, broadcast.LiveChatId)
+                : new BroadcastLookup(BroadcastLookupStatus.NoBroadcast);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var result = ClassifyFailure(ex);
+            // İstisnanın kendisi günlüğe: şeride yalnız sınıflandırılmış ipucu çıkar.
+            _log.LogWarning(ex, "YouTube etkin yayın araması başarısız ({Status})", result.Status);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Etkin yayını sorar (önbellekli). Etkin yayın yoksa null döner; Google hatası olduğu gibi
+    /// fırlatılır, çevirisi çağırana aittir.
+    /// </summary>
+    private async Task<(string VideoId, string LiveChatId)?> FetchActiveBroadcastAsync(
+        bool fresh, CancellationToken ct)
+    {
+        if (!fresh && _cachedLiveChatId is not null && _cachedVideoId is not null
             && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
             return (_cachedVideoId, _cachedLiveChatId);
 
@@ -89,7 +149,7 @@ public sealed class YouTubeModerationService
         {
             // Double-check under the lock — an earlier concurrent call may
             // have populated the cache while we were waiting.
-            if (_cachedLiveChatId is not null && _cachedVideoId is not null
+            if (!fresh && _cachedLiveChatId is not null && _cachedVideoId is not null
                 && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
                 return (_cachedVideoId, _cachedLiveChatId);
 
@@ -101,22 +161,18 @@ public sealed class YouTubeModerationService
             var req = youtube.LiveBroadcasts.List("snippet");
             req.BroadcastStatus = LiveBroadcastsResource.ListRequest.BroadcastStatusEnum.Active;
 
-            LiveBroadcastListResponse resp;
-            try
-            {
-                resp = await req.ExecuteAsync(ct).ConfigureAwait(false);
-            }
-            catch (GoogleApiException ex)
-            {
-                throw MapException(ex);
-            }
+            var resp = await req.ExecuteAsync(ct).ConfigureAwait(false);
 
             var broadcast = resp?.Items?.FirstOrDefault(i =>
                 !string.IsNullOrEmpty(i.Id) && !string.IsNullOrEmpty(i.Snippet?.LiveChatId));
 
             if (broadcast is null)
-                throw new ModerationException(
-                    "Aktif YouTube yayını bulunamadı. Önce YouTube Studio'dan canlı yayını başlat.");
+            {
+                // Yayın bitti: eski sohbet kimliği moderasyon çağrılarına da sızmasın.
+                _cachedVideoId = null;
+                _cachedLiveChatId = null;
+                return null;
+            }
 
             _cachedVideoId = broadcast.Id;
             _cachedLiveChatId = broadcast.Snippet!.LiveChatId;
@@ -243,6 +299,36 @@ public sealed class YouTubeModerationService
             _ => new ModerationException($"YouTube API hatası: {ex.Message}", ex),
         };
     }
+
+    /// <summary>
+    /// Yayın aramasının hatasını sohbet döngüsünün anlayacağı sonuca çevirir: operatörün düzeltmesi
+    /// gereken sorun (<see cref="BroadcastLookupStatus.NeedsAttention"/> + ipucu) ya da geçici hata
+    /// (<see cref="BroadcastLookupStatus.Failed"/>, ipucu yok: ayrıntı günlüğe yazılır).
+    ///
+    /// <para><b>403'te sebebe bakılır.</b> YouTube kota aşımını 429 ile değil 403
+    /// <c>quotaExceeded</c> ile bildirir (resmî hata tablosu, 24.11.2026); 403'ün öbür sebepleri
+    /// (<c>insufficientLivePermissions</c>, <c>liveStreamingNotEnabled</c>) yetkidir. Ayırt
+    /// edilmezse kotası dolan operatöre "yanlış hesap" denir. Geçici hız sınırı (429 ya da
+    /// <c>rateLimitExceeded</c>) bekleyince geçer, o yüzden geçici hata sayılır.</para>
+    /// </summary>
+    internal static BroadcastLookup ClassifyFailure(Exception ex) => ex switch
+    {
+        // Erişim anahtarı yenilenemedi: yetki geri alınmış ya da süresi dolmuş.
+        TokenResponseException => NeedsAttention(YouTubeStatusMessages.SessionExpired),
+        GoogleApiException { HttpStatusCode: HttpStatusCode.Unauthorized } =>
+            NeedsAttention(YouTubeStatusMessages.SessionExpired),
+        GoogleApiException { HttpStatusCode: HttpStatusCode.Forbidden } api =>
+            HasReason(api, "quotaExceeded", "dailyLimitExceeded") ? NeedsAttention(YouTubeStatusMessages.QuotaExhausted)
+            : HasReason(api, "rateLimitExceeded", "userRateLimitExceeded") ? new BroadcastLookup(BroadcastLookupStatus.Failed)
+            : NeedsAttention(YouTubeStatusMessages.NoPermission),
+        _ => new BroadcastLookup(BroadcastLookupStatus.Failed),
+    };
+
+    private static BroadcastLookup NeedsAttention(string message) =>
+        new(BroadcastLookupStatus.NeedsAttention, Message: message);
+
+    private static bool HasReason(GoogleApiException ex, params string[] reasons) =>
+        ex.Error?.Errors?.Any(e => reasons.Contains(e.Reason, StringComparer.OrdinalIgnoreCase)) == true;
 }
 
 /// <summary>UI-friendly moderation error — its message is suitable for direct
