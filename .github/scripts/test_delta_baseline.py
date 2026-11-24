@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """delta-baseline.py testleri (build-test.yml → script-tests).
 
-Çalıştırma (repo kökünden):
-  python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+Çalıştırma (repo kökünden; Windows'ta `python`, CI'da `python3`):
+  python -m unittest discover -s .github/scripts -p "test_*.py" -v
 
 Sağlama değerleri dosyaya yazılmaz, her koşuda üretilir (repo public; tarayıcı
 uzun onaltılık dizgiyi sırdan ayıramaz).
@@ -75,6 +75,12 @@ class SurumSirasi(unittest.TestCase):
     def test_derleme_eki_sirayi_etkilemez(self):
         self.assertEqual(db.version_key("1.2.3+abc.5"), db.version_key("1.2.3"))
 
+    def test_on_surum_etiketi_buyuk_kucuk_harf_ayirmaz(self):
+        # Tabanı asıl seçen vpk (NuGet sıralaması) harfli etiketleri büyük/küçük
+        # harf ayırmadan karşılaştırır; düz ASCII sırası "RC"yi "beta"nın önüne atardı.
+        self.assertLess(db.version_key("1.0.0-beta.1"), db.version_key("1.0.0-RC.1"))
+        self.assertEqual(db.version_key("1.0.0-RC.1"), db.version_key("1.0.0-rc.1"))
+
     def test_bozuk_bicim_reddedilir(self):
         for bad in ["", "1.2", "1.2.3.4", "v1.2.3", "1.2.x", "1..3", "01.2.3x", None]:
             with self.subTest(bad=bad):
@@ -121,39 +127,55 @@ class TabanSecimi(unittest.TestCase):
         sel = db.select_baseline(manifest("0.9.13", deltas=False), "0.9.14", 80)
         self.assertEqual(names(sel), ["OrderDeck-0.9.13-full.nupkg"])
 
-    def test_ayni_surum_yeniden_kosarsa_kendi_kaydini_taban_almaz(self):
-        # Yarım kalan yayının tümden yeniden koşması: manifestte 0.9.13 zaten var.
-        sel = db.select_baseline(manifest("0.9.13", "0.9.12"), "0.9.13", 80)
-        self.assertEqual(sel["version"], "0.9.12")
+    def test_surum_feedde_zaten_yayinlanmissa_durur(self):
+        # Manifest en son yüklenir: sürüm manifestteyse yayın tamamlanmıştır.
+        # Yeniden derlemek aynı sürüm numarasıyla FARKLI paket yayınlar; ilk
+        # paketi almış kurulumlarda sonraki delta'lar tutmaz.
+        with self.assertRaisesRegex(db.FeedError, "zaten"):
+            db.select_baseline(manifest("0.9.13", "0.9.12"), "0.9.13", 80)
+        with self.assertRaisesRegex(db.FeedError, "zaten"):
+            db.select_baseline(manifest("0.5.0", deltas=False), "0.5.0", 1, allow_no_baseline=True)
 
     def test_feedde_daha_yeni_surum_varsa_durur(self):
         with self.assertRaisesRegex(db.FeedError, "0.9.13"):
             db.select_baseline(manifest("0.9.13", "0.9.12"), "0.9.12", 80)
 
-    def test_ilk_surum_manifest_yok_paket_yok(self):
-        sel = db.select_baseline(None, "0.5.0", 0)
-        self.assertEqual(sel, {"version": None, "files": []})
+    def test_yeni_surum_yalniz_delta_kaydiyla_gorunse_de_sayilir(self):
+        m = {"Assets": [asset("0.9.13", "Full"), asset("0.9.15", "Delta")]}
+        with self.assertRaisesRegex(db.FeedError, "0.9.15"):
+            db.select_baseline(m, "0.9.14", 3)
 
-    def test_manifest_yok_ama_paket_varsa_durur(self):
-        with self.assertRaises(db.FeedError):
-            db.select_baseline(None, "0.9.14", 80)
+    def test_feed_bos_gorunuyorsa_varsayilan_olarak_durur(self):
+        # 40 sürümden sonra "paket yok, manifest yok" ilk sürüm değil, bozuk ya
+        # da ulaşılamayan feed demektir; sessizce deltasız sürüm çıkmasın.
+        for empty in (None, {"Assets": []}):
+            with self.subTest(manifest=empty):
+                with self.assertRaisesRegex(db.FeedError, "boş"):
+                    db.select_baseline(empty, "0.9.14", 0)
 
-    def test_bos_manifest_paket_yoksa_ilk_surum(self):
-        self.assertEqual(db.select_baseline({"Assets": []}, "0.5.0", 0), {"version": None, "files": []})
+    def test_ilk_surume_acikca_izin_verilirse_taban_yok(self):
+        for empty in (None, {"Assets": []}):
+            with self.subTest(manifest=empty):
+                sel = db.select_baseline(empty, "0.5.0", 0, allow_no_baseline=True)
+                self.assertEqual(sel, {"version": None, "files": []})
 
-    def test_bos_manifest_ama_paket_varsa_durur(self):
-        with self.assertRaises(db.FeedError):
-            db.select_baseline({"Assets": []}, "0.9.14", 80)
-
-    def test_manifestte_yalniz_yeni_surum_varsa_taban_yok(self):
-        # İlk sürümün yeniden koşması: öncesi olmayan tek sürüm.
-        sel = db.select_baseline(manifest("0.5.0", deltas=False), "0.5.0", 1)
-        self.assertEqual(sel, {"version": None, "files": []})
+    def test_manifest_yok_ama_paket_varsa_izinle_bile_durur(self):
+        for empty in (None, {"Assets": []}):
+            with self.subTest(manifest=empty):
+                with self.assertRaisesRegex(db.FeedError, "80 paket"):
+                    db.select_baseline(empty, "0.9.14", 80, allow_no_baseline=True)
 
     def test_eski_surumun_yalniz_deltasi_varsa_durur(self):
         m = {"Assets": [asset("0.9.13", "Delta")]}
         with self.assertRaises(db.FeedError):
             db.select_baseline(m, "0.9.14", 80)
+
+    def test_on_surumlu_secim(self):
+        m = {"Assets": [asset("1.0.0-rc.1", "Full"), asset("0.9.13", "Full")]}
+        self.assertEqual(db.select_baseline(m, "1.0.0", 4)["version"], "1.0.0-rc.1")
+        self.assertEqual(db.select_baseline(m, "1.0.0-rc.2", 4)["version"], "1.0.0-rc.1")
+        with self.assertRaisesRegex(db.FeedError, "1.0.0"):  # sürüm, kendi ön sürümünden yenidir
+            db.select_baseline({"Assets": [asset("1.0.0", "Full")]}, "1.0.0-rc.2", 2)
 
     def test_ayni_surume_iki_full_kaydi_varsa_durur(self):
         m = {"Assets": [asset("0.9.13", "Full"), asset("0.9.13", "Full")]}
@@ -179,16 +201,70 @@ class TabanSecimi(unittest.TestCase):
                 with self.assertRaises(db.FeedError):
                     db.select_baseline({"Assets": [entry]}, "0.9.14", 80)
 
+    def test_tabanin_delta_kaydi_da_dogrulanir(self):
+        for field, value in [("FileName", "../x.nupkg"), ("SHA256", "abc"), ("Size", 0)]:
+            with self.subTest(field=field):
+                delta = asset("0.9.13", "Delta")
+                delta[field] = value
+                with self.assertRaises(db.FeedError):
+                    db.select_baseline({"Assets": [asset("0.9.13", "Full"), delta]}, "0.9.14", 2)
+
     def test_bozuk_manifest_sekli_reddedilir(self):
+        # Paket adedi 0 ve ilk sürüme izin açıkken: bozuk manifest "yok/boş"
+        # sayılıp tabansız sürüme dönüşmemeli, her durumda hata olmalı.
         for bad in [{}, {"Assets": None}, {"Assets": {}}, [], "x", {"Assets": ["x"]},
                     {"Assets": [{"Type": "Full"}]}, {"Assets": [{"Version": "0.9.13"}]}]:
-            with self.subTest(bad=bad):
-                with self.assertRaises(db.FeedError):
-                    db.select_baseline(bad, "0.9.14", 80)
+            for count in (0, 80):
+                with self.subTest(bad=bad, count=count):
+                    with self.assertRaises(db.FeedError) as caught:
+                        db.select_baseline(bad, "0.9.14", count, allow_no_baseline=True)
+                    self.assertNotIn("paket var ama", str(caught.exception))
 
     def test_yeni_surum_bicimi_bozuksa_durur(self):
         with self.assertRaises(db.FeedError):
             db.select_baseline(manifest("0.9.13"), "v0.9.14", 80)
+
+
+class YayinOncesiDenetim(unittest.TestCase):
+    """publish, feed'e yazmadan hemen önce: taban seçildiğinden beri feed değişti mi?"""
+
+    def test_feed_degismediyse_gecer(self):
+        db.recheck_baseline(manifest("0.9.13", "0.9.9"), "0.9.14", "0.9.13")
+
+    def test_arada_baska_surum_yayinlandiysa_durur(self):
+        # Üst üste iki etiket: 0.9.15 koşusu tabanını (0.9.13) seçtikten sonra
+        # 0.9.14 yayınlandı. 0.9.15'in delta'sı artık yanlış tabana göre.
+        with self.assertRaisesRegex(db.FeedError, "0.9.13.*0.9.14|0.9.14.*0.9.13"):
+            db.recheck_baseline(manifest("0.9.14", "0.9.13"), "0.9.15", "0.9.13")
+
+    def test_feedde_daha_yeni_surum_varsa_durur(self):
+        # Eski bir koşunun yalnız publish işi yeniden çalıştırılırsa feed geri gider.
+        with self.assertRaisesRegex(db.FeedError, "0.9.15"):
+            db.recheck_baseline(manifest("0.9.15", "0.9.14"), "0.9.14", "0.9.13")
+
+    def test_bu_surumun_kendi_kaydi_sayilmaz(self):
+        # Manifest yüklendikten sonra düşen publish (ör. GitHub Release adımı)
+        # yeniden koşabilmeli: aynı paketleri yeniden yükler.
+        db.recheck_baseline(manifest("0.9.14", "0.9.13"), "0.9.14", "0.9.13")
+
+    def test_ilk_surumde_manifest_yoksa_gecer(self):
+        db.recheck_baseline(None, "0.5.0", "")
+        db.recheck_baseline({"Assets": []}, "0.5.0", None)
+        db.recheck_baseline(manifest("0.5.0", deltas=False), "0.5.0", "")
+
+    def test_taban_varken_manifest_kaybolduysa_durur(self):
+        for gone in (None, {"Assets": []}):
+            with self.subTest(manifest=gone):
+                with self.assertRaisesRegex(db.FeedError, "0.9.13"):
+                    db.recheck_baseline(gone, "0.9.14", "0.9.13")
+
+    def test_tabansiz_uretildiyse_ama_feedde_surum_varsa_durur(self):
+        with self.assertRaisesRegex(db.FeedError, "0.9.13"):
+            db.recheck_baseline(manifest("0.9.13"), "0.9.14", "")
+
+    def test_bozuk_manifestte_durur(self):
+        with self.assertRaises(db.FeedError):
+            db.recheck_baseline({"Assets": ["x"]}, "0.9.14", "0.9.13")
 
 
 class IndirilenDogrulama(unittest.TestCase):
@@ -231,6 +307,26 @@ class IndirilenDogrulama(unittest.TestCase):
     def test_taban_yoksa_dogrulanacak_sey_yok(self):
         db.verify_files({"version": None, "files": []}, str(self.dir))
 
+    def test_her_dosya_dogrulanir(self):
+        good, bad = b"a" * 100, b"b" * 100
+        for corrupt in (0, 1):
+            with self.subTest(bozuk=corrupt):
+                files = []
+                for index, name in enumerate(("p-full.nupkg", "p-delta.nupkg")):
+                    (self.dir / name).write_bytes(bad if index == corrupt else good)
+                    files.append({"type": "x", "fileName": name, "sha256": sha_of(good), "size": 100})
+                with self.assertRaises(db.FeedError):
+                    db.verify_files({"version": "1.0.0", "files": files}, str(self.dir))
+
+    def test_saglama_dosyanin_tamamini_kapsar(self):
+        # Okuma 1 MiB'lık parçalarla: ilk parçadan sonrası da sağlamaya girmeli.
+        data = bytes(range(256)) * 4100  # ~1,05 MiB
+        entry = self.put("buyuk-full.nupkg", data)
+        db.verify_files({"version": "1.0.0", "files": [entry]}, str(self.dir))
+        (self.dir / "buyuk-full.nupkg").write_bytes(data[:-1] + b"X")
+        with self.assertRaisesRegex(db.FeedError, "SHA256"):
+            db.verify_files({"version": "1.0.0", "files": [entry]}, str(self.dir))
+
 
 class KomutSatiri(unittest.TestCase):
     def setUp(self):
@@ -266,12 +362,30 @@ class KomutSatiri(unittest.TestCase):
     def test_select_ilk_surumde_bos_cikti_ve_bos_surum(self):
         out_json, gh_out = self.dir / "secim.json", self.dir / "gh-output.txt"
         code, out, err = self.run_main(
-            "select", "--version", "0.5.0", "--remote-nupkg-count", "0",
+            "select", "--version", "0.5.0", "--remote-nupkg-count", "0", "--allow-no-baseline",
             "--out", str(out_json), "--github-output", str(gh_out))
         self.assertEqual(code, 0, err)
         self.assertEqual(out, "")
         self.assertEqual(json.loads(out_json.read_text(encoding="utf-8")), {"version": None, "files": []})
         self.assertEqual(gh_out.read_text(encoding="utf-8"), "baseline_version=\n")
+
+    def test_select_bos_feedde_izin_verilmediyse_durur(self):
+        out_json, gh_out = self.dir / "secim.json", self.dir / "gh-output.txt"
+        code, out, err = self.run_main(
+            "select", "--version", "0.9.14", "--remote-nupkg-count", "0",
+            "--out", str(out_json), "--github-output", str(gh_out))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("::error::", err)
+        self.assertFalse(out_json.exists())
+        self.assertFalse(gh_out.exists())
+
+    def test_select_paket_adedini_kurala_tasir(self):
+        # Manifest yok ama feed'de paket var: izin açık olsa da durmalı.
+        code, out, err = self.run_main(
+            "select", "--version", "0.9.14", "--remote-nupkg-count", "80", "--allow-no-baseline",
+            "--out", str(self.dir / "secim.json"))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("80 paket", err)
 
     def test_select_kural_ihlalinde_1_doner_stdout_bos_secim_yazilmaz(self):
         m = self.write_manifest(manifest("0.9.13", "0.9.12"))
@@ -285,10 +399,12 @@ class KomutSatiri(unittest.TestCase):
         self.assertFalse(out_json.exists())
 
     def test_select_json_olmayan_manifestte_durur(self):
+        # Paket adedi 0 ve izin açık: bozuk manifest "yok" sayılıp tabansız
+        # sürüme dönüşmemeli.
         path = self.dir / "releases.win.json"
         path.write_text("<html>502 Bad Gateway</html>", encoding="utf-8")
         code, out, err = self.run_main(
-            "select", "--version", "0.9.14", "--remote-nupkg-count", "80",
+            "select", "--version", "0.9.14", "--remote-nupkg-count", "0", "--allow-no-baseline",
             "--manifest", str(path), "--out", str(self.dir / "secim.json"))
         self.assertEqual((code, out), (1, ""))
         self.assertIn("::error::", err)
@@ -297,9 +413,43 @@ class KomutSatiri(unittest.TestCase):
         # "Manifest yok" yalnız --manifest verilmeyince geçerli; verilen yol
         # yoksa bu bir indirme hatasıdır, ilk sürüm sayılmamalı.
         code, out, err = self.run_main(
-            "select", "--version", "0.5.0", "--remote-nupkg-count", "0",
+            "select", "--version", "0.5.0", "--remote-nupkg-count", "0", "--allow-no-baseline",
             "--manifest", str(self.dir / "yok.json"), "--out", str(self.dir / "secim.json"))
         self.assertEqual((code, out), (1, ""))
+
+    def test_recheck_gecer_ve_degisen_feedde_1_doner(self):
+        m = self.write_manifest(manifest("0.9.13", "0.9.9"))
+        code, out, err = self.run_main(
+            "recheck", "--version", "0.9.14", "--expect-baseline", "0.9.13", "--manifest", m)
+        self.assertEqual((code, out), (0, ""), err)
+
+        m = self.write_manifest(manifest("0.9.14", "0.9.13"))
+        code, out, err = self.run_main(
+            "recheck", "--version", "0.9.15", "--expect-baseline", "0.9.13", "--manifest", m)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("::error::", err)
+
+    def test_recheck_manifestsiz_ilk_surum_ve_kaybolan_manifest(self):
+        code, _, err = self.run_main("recheck", "--version", "0.5.0", "--expect-baseline", "")
+        self.assertEqual(code, 0, err)
+        code, _, err = self.run_main("recheck", "--version", "0.9.14", "--expect-baseline", "0.9.13")
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", err)
+
+    def test_recheck_json_olmayan_manifestte_durur(self):
+        path = self.dir / "sunucu.json"
+        path.write_text("Welcome to the server\n", encoding="utf-8")
+        code, _, err = self.run_main(
+            "recheck", "--version", "0.5.0", "--expect-baseline", "", "--manifest", str(path))
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", err)
+
+    def test_verify_bozuk_secim_dosyasinda_durur(self):
+        sel = self.dir / "secim.json"
+        sel.write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+        code, _, err = self.run_main("verify", "--selection", str(sel), "--dir", str(self.dir))
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", err)
 
     def test_verify_gecer_ve_bozuk_dosyada_1_doner(self):
         data = b"paket-icerigi" * 50

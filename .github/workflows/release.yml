@@ -32,6 +32,12 @@ jobs:
       # Seçilen tabanın sürümü; ilk sürümde boş. build işi tabanın gerçekten
       # geldiğini ve delta'nın bu sürüm için üretildiğini buna bakarak denetler.
       baseline_version: ${{ steps.pull.outputs.baseline_version }}
+    env:
+      # Feed boş görünüyorsa (paket yok, manifest yok) taban seçilemez ve sürüm
+      # DURUR: onlarca sürümden sonra bu "ilk sürüm" değil, yanlış ya da
+      # okunamayan klasördür ve sessizce deltasız sürüm çıkarırdı. Gerçekten
+      # ilk sürümse (yeni bir feed) bunu bir PR ile 'true' yapın.
+      ALLOW_NO_BASELINE: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,16 +115,22 @@ jobs:
             MANIFEST_ARGS=(--manifest baseline/releases.win.json)
           fi
 
-          # stdout: indirilecek dosya adları (taban yoksa boş = ilk release);
-          # baseline_version çıktısını betik yazar.
+          ALLOW_ARGS=()
+          if [ "$ALLOW_NO_BASELINE" = "true" ]; then
+            ALLOW_ARGS=(--allow-no-baseline)
+          fi
+
+          # stdout: indirilecek dosya adları (yalnız ALLOW_NO_BASELINE açıkken
+          # ve feed boşken boş kalır); baseline_version çıktısını betik yazar.
           python3 .github/scripts/delta-baseline.py select \
-            --version "$VERSION" --remote-nupkg-count "$NUPKG_COUNT" "${MANIFEST_ARGS[@]}" \
+            --version "$VERSION" --remote-nupkg-count "$NUPKG_COUNT" \
+            "${MANIFEST_ARGS[@]}" "${ALLOW_ARGS[@]}" \
             --out "$WORK/secim.json" --github-output "$GITHUB_OUTPUT" > "$WORK/dosyalar.txt" \
             || { echo "::error::Delta tabanı seçilemedi — release durduruldu."; exit 1; }
 
           mapfile -t FILES < "$WORK/dosyalar.txt"
           if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "::notice::Feed'de önceki sürüm yok — yalnız full paket üretilecek (ilk release)."
+            echo "::notice::Feed boş ve ALLOW_NO_BASELINE açık — yalnız full paket üretilecek (ilk release)."
           fi
           for f in "${FILES[@]}"; do
             echo "Baseline indiriliyor: $f"
@@ -196,6 +208,9 @@ jobs:
       # continue-on-error; artifact inmezse eskiden "baseline yok" sayılıp
       # sessizce deltasız sürüm çıkardı. Tersi de hata: taban bildirilmemişken
       # paket varsa çıktı bağlantısı kopmuştur ve aşağıdaki delta denetimi atlanır.
+      # Tabandan BAŞKA tam paket de olmamalı: vpk delta'yı klasördeki en büyük
+      # eski sürüme göre üretir ve delta paketi hangi tabana göre üretildiğini
+      # taşımaz; tek aday kalınca taban kuşkuya yer bırakmaz.
       - name: Baseline durumu
         shell: bash
         env:
@@ -213,9 +228,15 @@ jobs:
           fi
           full="Releases/OrderDeck-${BASELINE_VERSION}-full.nupkg"
           if [ ! -f "$full" ]; then
-            echo "::error::Taban paketi yok: $full (feed-baseline artifact'i inmedi?). Deltasız sürüm çıkmasın diye duruldu; re-run deneyin."
+            echo "::error::Taban paketi yok: $full (feed-baseline artifact'i inmedi?). Deltasız sürüm çıkmasın diye duruldu; bu işi yeniden çalıştırın, artifact'in süresi dolduysa (1 gün) tüm işleri."
             exit 1
           fi
+          for other in Releases/*-full.nupkg; do
+            if [ "$other" != "$full" ]; then
+              echo "::error::Releases/ altında tabandan (${BASELINE_VERSION}) başka tam paket var: $other — vpk delta'yı ona göre üretebilir."
+              exit 1
+            fi
+          done
           echo "Delta tabanı: ${BASELINE_VERSION}"
           ls -la "${pkgs[@]}"
 
@@ -256,12 +277,20 @@ jobs:
 
   # ── 3) Ubuntu: feed'i VPS'e yükle + GitHub Release'e Setup.exe ──
   publish:
-    needs: build
+    # feed-baseline: yayın öncesi denetim, seçilen tabanı onun çıktısından okur.
+    needs: [feed-baseline, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write # GitHub Release oluşturmak için (yalnız bu job)
     steps:
+      # .github/scripts (yayın öncesi feed denetimi). Artifact'ten ÖNCE:
+      # checkout çalışma klasörünü temizler.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-out
@@ -281,11 +310,19 @@ jobs:
       # yüklemek hem ~130 MB boşa gider hem de değişiklik zamanlarını yeniler
       # (v0.9.11–v0.9.13'teki yanlış tabanın kaynağı buydu). Manifest EN SON
       # gider: istemci, paketleri henüz yüklenmemiş bir sürümü görmesin.
+      #
+      # Yüklemeden hemen önce feed yeniden okunur: taban seçildikten sonra feed
+      # değiştiyse (üst üste atılan iki etiket aynı manifesti okur; eski bir
+      # koşuda yalnız bu iş yeniden çalıştırılırsa feed-baseline yeniden koşmaz)
+      # delta yanlış tabana göredir ya da feed geri gider. İkisi de yeşil
+      # biterdi; artık feed'e dokunmadan duruyor. Kalan pencere yüklemenin
+      # süresi kadardır (yaklaşık bir dakika).
       - name: Upload feed to VPS
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           VERSION: ${{ needs.build.outputs.version }}
+          BASELINE_VERSION: ${{ needs.feed-baseline.outputs.baseline_version }}
         run: |
           set -uo pipefail
           FEED=/opt/orderdeck/web-out/downloads/velopack
@@ -301,6 +338,22 @@ jobs:
               exit 1
             fi
           done
+
+          # Sunucudaki güncel manifest (yoksa boş çıktı; ssh'ın kendi çıkış
+          # kodu bağlantı hatasını gösterir).
+          WORK="$RUNNER_TEMP/delta-baseline"
+          mkdir -p "$WORK"
+          if ! ssh $SSHOPTS "$REMOTE" "cat ${FEED}/releases.win.json 2>/dev/null || true" > "$WORK/sunucu.json"; then
+            echo "::error::Feed okunamadı — feed'e dokunulmadı. Bu işi yeniden çalıştırın."
+            exit 1
+          fi
+          NOW_ARGS=()
+          if [ -s "$WORK/sunucu.json" ]; then
+            NOW_ARGS=(--manifest "$WORK/sunucu.json")
+          fi
+          python3 .github/scripts/delta-baseline.py recheck \
+            --version "$VERSION" --expect-baseline "$BASELINE_VERSION" "${NOW_ARGS[@]}" \
+            || { echo "::error::Feed'e dokunulmadı."; exit 1; }
 
           upload=()
           for f in Releases/*; do

@@ -58,11 +58,13 @@ Both live next to this one under `source/repos/`.
   concurrency semantics — a fix that hinges on a row-level race can't be proven
   there. **Docker must be running** or those tests fail
 - `dotnet build OrderDeck.App/OrderDeck.App.csproj` — WPF (Windows-only)
-- `python3 -m unittest discover -s .github/scripts -p 'test_*.py'` — tests for
-  the workflow helper scripts (CI job `script-tests`). `release.yml` can't be
-  exercised without cutting a real release, so its decision logic (which
-  package the Velopack delta is built against) lives in
-  `.github/scripts/delta-baseline.py` and is covered there
+- `python -m unittest discover -s .github/scripts -p "test_*.py"` — tests for
+  the workflow helper scripts (CI job `script-tests`; there the command is
+  `python3`, which on this Windows box is a broken Store alias). `release.yml`
+  can't be exercised without cutting a real release, so its decision logic
+  (which package the Velopack delta is built against, and whether the feed
+  changed before publishing) lives in `.github/scripts/delta-baseline.py` and
+  is covered there
 - CI runs both via `.github/workflows/build-test.yml`; server deploy via
   `license-server-deploy.yml`. Server tests run on **ubuntu** — the Windows
   runner can't start Linux containers — as a matrix (`license-server-shard`:

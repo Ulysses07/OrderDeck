@@ -73,3 +73,6 @@ orderdeck-chat-bridge-*/
 # Denetim/analiz raporları: doğrulanmış açık listesi içerirler ve bu repo
 # PUBLIC. Yerelde dursunlar, asla commit'lenmesinler.
 *.docx
+
+# Python bytecode (.github/scripts testleri yerelde çalışınca oluşur)
+__pycache__/

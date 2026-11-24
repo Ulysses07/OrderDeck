@@ -14,29 +14,48 @@ sonra yine 0.9.9'da kalıyordu. Üç sürümün delta'sı 24–26 MB çıktı ve
 dışındaki hiçbir kurulumda uygulanamadı; iş akışındaki "delta üretildi mi"
 denetimi yine de yeşildi.
 
-select kuralları:
+select kuralları (feed-baseline, taban seçilirken):
   - Doğruluk kaynağı sunucudaki releases.win.json'dur: istemcinin gördüğü odur.
     Dosya tarihine ve ad sırasına bakılmaz.
-  - Taban = manifestteki, yeni sürümden KÜÇÜK en büyük Full sürüm (SemVer 2.0
-    sırası). Aynı sürümün Delta kaydı varsa o da indirilir: yeni manifestte yer
-    alır ve bir sürüm geriden gelen kurulum iki delta'yı zincirleyebilir.
+  - Taban = manifestteki, yeni sürümden KÜÇÜK en büyük Full sürüm. Aynı sürümün
+    Delta kaydı varsa o da indirilir: yeni manifestte yer alır ve bir sürüm
+    geriden gelen kurulum iki delta'yı zincirleyebilir.
   - Manifestte yeni sürümden BÜYÜK bir sürüm varsa dur: yayın feed'i geri götürür.
-  - Manifest yok ve feed'de paket yok → ilk sürüm; taban yok, delta üretilmez.
-  - Manifest yok ya da boş ama feed'de paket var → dur. Tutarsız feed'de
-    sessizce deltasız sürüm çıkmasın.
+  - Yeni sürüm manifestte ZATEN varsa dur. Manifest en son yüklenir; sürüm
+    oradaysa yayın tamamlanmıştır. Yeniden derlemek aynı numarayla farklı paket
+    yayınlar ve ilk paketi almış kurulumlarda sonraki delta'lar tutmaz. (Yalnız
+    publish'in yeniden koşması bu kurala girmez, o recheck'ten geçer.)
+  - Feed boş görünüyorsa (paket yok, manifest yok ya da boş) dur. Onlarca
+    sürümden sonra bu "ilk sürüm" değil, bozuk ya da yanlış klasördür; sessizce
+    deltasız sürüm çıkmasın. Gerçekten ilk sürümse --allow-no-baseline.
+  - Manifest yok ya da boş ama feed'de paket var → izin açık olsa da dur.
   - Seçilen kaydın dosya adı, SHA256'sı ya da boyutu bozuksa dur.
 
 verify: indirilen her dosyanın boyutu ve SHA256'sı manifesttekiyle aynı olmalı
 (yarım inen ya da başka bir dosyayla değişmiş taban, yanlış delta üretir).
 
+recheck (publish, feed'e yazmadan hemen önce): feed, bu koşu tabanını seçtikten
+sonra değişmiş mi? Sunucudaki manifestten taban yeniden hesaplanır; seçilmiş
+olandan farklıysa ya da feed'de daha yeni bir sürüm varsa dur. İki durumu
+kapatır: üst üste atılan iki etiket (ikisi de aynı manifesti okur) ve eski bir
+koşuda yalnız publish'in yeniden çalıştırılması (feed-baseline yeniden koşmaz).
+Bu sürümün kendi kayıtları sayılmaz: manifest yüklendikten sonra düşen publish
+aynı paketlerle yeniden koşabilir.
+
+Sürüm sırası: SemVer 2.0 önceliği; harfli ön sürüm etiketleri vpk'nın (NuGet)
+yaptığı gibi büyük/küçük harf ayırmadan karşılaştırılır, çünkü Releases/
+altındaki paketlerden "bir önceki"ni asıl seçen odur.
+
 Kullanım:
   delta-baseline.py select --version 0.9.14 --remote-nupkg-count 80 \\
       [--manifest baseline/releases.win.json] --out secim.json \\
-      [--github-output "$GITHUB_OUTPUT"]
+      [--github-output "$GITHUB_OUTPUT"] [--allow-no-baseline]
     stdout: indirilecek dosya adları, satır başına bir (taban yoksa boş).
     Gerekçe stderr'e. --github-output verilirse `baseline_version=<sürüm>` eklenir
     (taban yoksa değer boş).
   delta-baseline.py verify --selection secim.json --dir baseline
+  delta-baseline.py recheck --version 0.9.14 --expect-baseline 0.9.13 \\
+      [--manifest sunucu.json]
 
 Çıkış kodu 0 = tamam, 1 = kural ihlali (stderr'de `::error::` satırı).
 Testler: test_delta_baseline.py (build-test.yml → script-tests).
@@ -66,7 +85,7 @@ class FeedError(Exception):
 
 
 def version_key(text):
-    """Sürümü SemVer 2.0 önceliğine göre sıralanabilir bir anahtara çevirir."""
+    """Sürümü, vpk'nın (NuGet) sıraladığı gibi sıralanabilir bir anahtara çevirir."""
     match = VERSION.fullmatch(text) if isinstance(text, str) else None
     if match is None:
         raise FeedError(f"desteklenmeyen sürüm biçimi: {text!r} (beklenen: 1.2.3 ya da 1.2.3-rc.1)")
@@ -74,9 +93,10 @@ def version_key(text):
     prerelease = match.group(4)
     if prerelease is None:
         return core + ((1,),)  # ön sürümü olmayan, aynı çekirdeğin ön sürümlerinden büyüktür
-    # Sayısal kimlik < harfli kimlik; sayısallar sayı, harfliler ASCII sırasıyla.
+    # Sayısal kimlik < harfli kimlik; sayısallar sayı olarak, harfliler
+    # büyük/küçük harf ayırmadan (NuGet: OrdinalIgnoreCase) karşılaştırılır.
     identifiers = tuple(
-        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        (0, int(part), "") if part.isdigit() else (1, 0, part.upper())
         for part in prerelease.split("."))
     return core + ((0, identifiers),)
 
@@ -115,46 +135,67 @@ def _single(entries, version, kind):
     return found[0] if found else None
 
 
-def select_baseline(manifest, new_version, remote_nupkg_count):
-    """Tabanı seçer. Dönüş: {"version": sürüm | None, "files": [Full, (Delta)]}."""
+def _latest_older_full(entries, new_version, allow_published):
+    """Manifestteki, yeni sürümden küçük en büyük Full'un sürümü; yoksa None."""
     new_key = version_key(new_version)
-    none = {"version": None, "files": []}
-
-    if manifest is None:
-        if remote_nupkg_count > 0:
-            raise FeedError(
-                f"feed'de {remote_nupkg_count} paket var ama releases.win.json yok; "
-                "taban güvenle seçilemez")
-        return none
-
-    entries = _entries(manifest)
-    if not entries:
-        if remote_nupkg_count > 0:
-            raise FeedError(
-                f"feed'de {remote_nupkg_count} paket var ama releases.win.json boş; "
-                "taban güvenle seçilemez")
-        return none
-
     newer = sorted({e["version"] for e in entries if e["key"] > new_key}, key=version_key)
     if newer:
         raise FeedError(
             f"feed'de {new_version} sürümünden yeni sürüm var ({', '.join(newer)}); "
             "bu sürüm yayınlanırsa feed geri gider")
+    if not allow_published and any(e["key"] == new_key for e in entries):
+        raise FeedError(
+            f"{new_version} feed'de zaten yayınlanmış; yeniden derlemek aynı sürüm numarasıyla "
+            "farklı paket yayınlar. Yarım kalan yayında yalnız düşen işi yeniden çalıştırın, "
+            "değişiklik varsa yeni sürüm numarası verin")
 
     older = [e for e in entries if e["key"] < new_key]
     if not older:
-        return none  # manifestte yalnız bu sürümün kendisi var: öncesi olmayan sürüm yeniden koşuyor
-
+        return None
     fulls = [e for e in older if e["kind"] == "Full"]
     if not fulls:
         raise FeedError("manifestte eski sürüm kaydı var ama hiçbiri Full değil; taban seçilemez")
+    return max(fulls, key=lambda e: e["key"])["version"]
 
-    version = max(fulls, key=lambda e: e["key"])["version"]
+
+def select_baseline(manifest, new_version, remote_nupkg_count, allow_no_baseline=False):
+    """Tabanı seçer. Dönüş: {"version": sürüm | None, "files": [Full, (Delta)]}."""
+    version_key(new_version)  # biçim hatası, feed'in durumundan önce söylensin
+    entries = [] if manifest is None else _entries(manifest)
+
+    if not entries:
+        state = "yok" if manifest is None else "boş"
+        if remote_nupkg_count > 0:
+            raise FeedError(
+                f"feed'de {remote_nupkg_count} paket var ama releases.win.json {state}; "
+                "taban güvenle seçilemez")
+        if not allow_no_baseline:
+            raise FeedError(
+                f"feed boş görünüyor (paket yok, releases.win.json {state}); bu bir ilk sürüm "
+                "değilse feed klasörü yanlış ya da okunamıyor. Gerçekten ilk sürümse "
+                "release.yml'de ALLOW_NO_BASELINE'ı 'true' yapın")
+        return {"version": None, "files": []}
+
+    # Kayıt varsa ve bu sürüm yayınlanmamışsa hepsi eskidir: ya bir Full bulunur ya da hata.
+    version = _latest_older_full(entries, new_version, allow_published=False)
     files = [_file(_single(entries, version, "Full"))]
     delta = _single(entries, version, "Delta")
     if delta is not None:
         files.append(_file(delta))
     return {"version": version, "files": files}
+
+
+def recheck_baseline(manifest, new_version, expected_version):
+    """publish öncesi: feed, bu koşu tabanını (expected_version) seçtiğinden beri değişmiş mi?"""
+    entries = [] if manifest is None else _entries(manifest)
+    current = _latest_older_full(entries, new_version, allow_published=True) if entries else None
+    expected = expected_version or None
+    if (current is None) != (expected is None) or (
+            current is not None and version_key(current) != version_key(expected)):
+        raise FeedError(
+            f"feed bu koşu başladıktan sonra değişti: {new_version} delta'sı "
+            f"{expected or 'tabansız'} için üretildi, feed'deki önceki sürüm şimdi "
+            f"{current or 'yok'}. Tüm işleri yeniden çalıştırın (taban yeniden seçilsin)")
 
 
 def verify_files(selection, directory):
@@ -187,7 +228,8 @@ def _load_json(path, what):
 
 def _select(args):
     manifest = None if args.manifest is None else _load_json(args.manifest, "releases.win.json")
-    selection = select_baseline(manifest, args.version, args.remote_nupkg_count)
+    selection = select_baseline(manifest, args.version, args.remote_nupkg_count,
+                                allow_no_baseline=args.allow_no_baseline)
 
     # Satır sonu her platformda "\n": çıktıları bash ve GitHub satır satır okur.
     with open(args.out, "w", encoding="utf-8", newline="\n") as stream:
@@ -217,6 +259,12 @@ def _verify(args):
         print(f"doğrulandı: {item['fileName']} ({item['size']} B)", file=sys.stderr)
 
 
+def _recheck(args):
+    manifest = None if args.manifest is None else _load_json(args.manifest, "sunucudaki releases.win.json")
+    recheck_baseline(manifest, args.version, args.expect_baseline)
+    print(f"Feed değişmemiş: {args.version} için taban hâlâ {args.expect_baseline or 'yok'}.", file=sys.stderr)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Velopack delta tabanını seç ve doğrula.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -228,12 +276,21 @@ def main(argv=None):
     select.add_argument("--manifest", help="sunucudan indirilen releases.win.json (sunucuda yoksa verme)")
     select.add_argument("--out", required=True, help="seçimin yazılacağı JSON dosyası")
     select.add_argument("--github-output", help="baseline_version satırının ekleneceği dosya")
+    select.add_argument("--allow-no-baseline", action="store_true",
+                        help="feed boşsa (ilk sürüm) tabansız devam et; verilmezse boş feed hatadır")
     select.set_defaults(run=_select)
 
     verify = commands.add_parser("verify", help="indirilen dosyaları seçimle karşılaştır")
     verify.add_argument("--selection", required=True, help="select'in yazdığı JSON dosyası")
     verify.add_argument("--dir", required=True, help="dosyaların indirildiği klasör")
     verify.set_defaults(run=_verify)
+
+    recheck = commands.add_parser("recheck", help="yayın öncesi: feed, taban seçildiğinden beri değişmiş mi")
+    recheck.add_argument("--version", required=True, help="yayınlanan sürüm (baştaki v olmadan)")
+    recheck.add_argument("--expect-baseline", required=True,
+                         help="feed-baseline'ın seçtiği taban sürümü (tabansız üretildiyse boş)")
+    recheck.add_argument("--manifest", help="sunucudaki güncel releases.win.json (sunucuda yoksa verme)")
+    recheck.set_defaults(run=_recheck)
 
     args = parser.parse_args(argv)
     try:
