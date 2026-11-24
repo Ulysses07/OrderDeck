@@ -25,7 +25,11 @@
                              OD.Button.Primary'deki not. Üzerine gelme dolgusu
                              ("Hover") çerçeveli Border'ın ARKASINDA: seçili
                              satırın zemini ve sol şeridi (stilden gelir) onun
-                             üstünde aynen durur. Küçülme yok: satır oynamasın. -->
+                             üstünde aynen durur. Dolgu sol şeridin 2 px'lik
+                             yerine taşmaz (Margin = kenarlık kalınlığı): eski
+                             görünümde dolgu Bd'nin zeminiydi ve WPF zemini
+                             kenarlığın altına boyamaz. Küçülme yok: satır
+                             oynamasın. -->
                         <Grid x:Name="Root">
                             <VisualStateManager.CustomVisualStateManager>
                                 <controls:MotionAwareVisualStateManager/>
@@ -58,6 +62,7 @@
                                 </VisualStateGroup>
                             </VisualStateManager.VisualStateGroups>
                             <Border x:Name="Hover" Opacity="0"
+                                    Margin="{TemplateBinding BorderThickness}"
                                     Background="{StaticResource OD.Brush.Surface2}"
                                     CornerRadius="{StaticResource OD.Radius.Md}"/>
                             <Border x:Name="Bd" Background="{TemplateBinding Background}"

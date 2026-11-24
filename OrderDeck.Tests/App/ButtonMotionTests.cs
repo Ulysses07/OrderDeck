@@ -135,15 +135,21 @@ public class ButtonMotionTests
         Assert.Null(error);
     }
 
-    [Fact]
-    public void Disabling_a_hovered_button_clears_the_hover_overlay()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Disabling_a_hovered_button_clears_the_hover_overlay(bool motion)
     {
         var error = ThemeTestHost.RunOnSta(() =>
         {
+            // Düğme devre dışı kalınca durumu kendisi, geçişli ister; hangi dalın koştuğu
+            // makinenin Windows ayarına kalmasın diye hareket kararı sabitlenir.
+            var before = MotionPolicy.Override;
             var button = Unrealized("OD.Button.Primary");
             var window = WpfWait.OffScreenWindow(button);
             try
             {
+                MotionPolicy.Override = motion;
                 WpfWait.For(50);
                 Assert.True(VisualStateManager.GoToState(button, "MouseOver", false));
                 Assert.True(WpfWait.Until(() => Math.Abs(Part(button, "Hover").Opacity - 0.14) < 0.001));
@@ -155,7 +161,105 @@ public class ButtonMotionTests
             finally
             {
                 window.Close();
+                MotionPolicy.Override = before;
             }
+        });
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void With_motion_reduced_a_requested_transition_lands_at_once()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var before = MotionPolicy.Override;
+            var button = Unrealized("OD.Button.Primary");
+            var window = WpfWait.OffScreenWindow(button);
+            try
+            {
+                MotionPolicy.Override = false;
+                WpfWait.For(50);
+                var settled = false;
+                CommonStates(button).CurrentStateChanged += (_, _) => settled = true;
+
+                // Düğmenin kendisi durum değişimini hep geçişli ister; yönetici kararı çevirir.
+                Assert.True(VisualStateManager.GoToState(button, "Pressed", useTransitions: true));
+
+                // WPF "durum değişti"yi geçiş oynatmadıysa çağrı dönmeden, oynattıysa ancak geçiş
+                // bitince bildirir. Beklemeden bakılır: sonuç zamana bağlı değil.
+                Assert.True(settled, "hareket azaltılmışken geçiş oynatılmamalı");
+            }
+            finally
+            {
+                window.Close();
+                MotionPolicy.Override = before;
+            }
+        });
+
+        Assert.Null(error);
+    }
+
+    [Theory, MemberData(nameof(Expected))]
+    public void With_motion_on_the_transition_plays_and_settles_both_ways(string style, string[] _, string[] pressed)
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var before = MotionPolicy.Override;
+            var button = Unrealized(style);
+            var window = WpfWait.OffScreenWindow(button);
+            try
+            {
+                MotionPolicy.Override = true;
+                WpfWait.For(50);
+                var settled = false;
+                CommonStates(button).CurrentStateChanged += (_, _) => settled = true;
+
+                Assert.True(VisualStateManager.GoToState(button, "Pressed", useTransitions: true));
+                Assert.False(settled, "hareket açıkken geçiş oynatılmalı: durum çağrı dönmeden yerleşmemeli");
+
+                Assert.True(WpfWait.Until(() => settled), "geçiş bitmeli");
+                foreach (var (key, value) in Parse(pressed))
+                    Assert.True(WpfWait.Until(() => Math.Abs(Actual(button, key) - value) < 0.001), key);
+
+                // Dönüş: takılı kalan örtü ya da %98'de kalan düğme her ekranda görünürdü.
+                settled = false;
+                Assert.True(VisualStateManager.GoToState(button, "Normal", useTransitions: true));
+
+                Assert.True(WpfWait.Until(() => settled), "dönüş geçişi bitmeli");
+                foreach (var key in Parse(pressed).Keys)
+                {
+                    var rest = key.EndsWith(".Opacity", StringComparison.Ordinal) ? 0 : 1;
+                    Assert.True(WpfWait.Until(() => Math.Abs(Actual(button, key) - rest) < 0.001), key + " durağana dönmeli");
+                }
+            }
+            finally
+            {
+                window.Close();
+                MotionPolicy.Override = before;
+            }
+        });
+
+        Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData("OD.Button.Secondary")]
+    [InlineData("OD.Button.Ghost")]
+    [InlineData("NavButton")]
+    public void Hover_fill_stays_inside_the_frame(string style)
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            // Eski görünümde dolgu, çerçeveli Border'ın kendi zeminiydi ve WPF zemini çerçevenin
+            // ALTINA boyamaz. Arkaya alınan dolgu çerçeve kalınlığı kadar içeriden başlamazsa yarı
+            // saydam çerçevenin rengi vurguda değişir; kenar çubuğunda dolgu, seçim şeridinin 2 px'lik
+            // yerine taşar.
+            var button = Realized(style);
+            var frame = Assert.IsType<Border>(Part(button, "Bd"));
+            var hover = Assert.IsAssignableFrom<FrameworkElement>(Part(button, "Hover"));
+
+            Assert.Equal(frame.BorderThickness, hover.Margin);
         });
 
         Assert.Null(error);

@@ -35,6 +35,8 @@ public class BusyRingTests
                 Assert.True(WpfWait.Until(() => ring.IsSpinning == expected));
                 WpfWait.For(60);
                 Assert.Equal(expected, ring.IsSpinning);
+                // Bayrak değil, dönüşün kendisi: animasyon gerçekten bağlı mı.
+                Assert.Equal(expected, ring.RenderTransform.HasAnimatedProperties);
             }
             finally
             {
@@ -59,10 +61,12 @@ public class BusyRingTests
                 var ring = new BusyRing { Width = 16, Height = 16 };
                 window = WpfWait.OffScreenWindow(ring);
                 Assert.True(WpfWait.Until(() => ring.IsSpinning));
+                Assert.True(ring.RenderTransform.HasAnimatedProperties);
 
                 ring.Visibility = Visibility.Collapsed;
 
                 Assert.True(WpfWait.Until(() => !ring.IsSpinning));
+                Assert.False(ring.RenderTransform.HasAnimatedProperties, "gizli halkanın animasyonu kalkmalı");
             }
             finally
             {

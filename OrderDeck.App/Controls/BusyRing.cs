@@ -10,7 +10,9 @@ namespace OrderDeck.App.Controls;
 ///
 /// <para><b>Kendi kendini yönetir.</b> Yalnız görünürken ve <see cref="MotionPolicy"/> izin verirken
 /// döner; gizlenince animasyon durur. Şablonların her birinde hazır beklediği için (yaklaşık 150
-/// düğme) gizliyken dönmemesi şart. Hareket azaltmada yay yine çizilir, dönmez.</para>
+/// düğme) gizliyken dönmemesi şart. Hareket azaltmada yay yine çizilir, dönmez. Karar halka
+/// göründüğü anda verilir: Windows ayarı halka görünürken değişirse yeni değer bir sonraki
+/// görünüşünde geçerli olur.</para>
 ///
 /// <para>Ölçüsünü <c>Width</c>/<c>Height</c> verir; yay kısa kenara sığdırılır. Fare almaz.</para>
 /// </summary>

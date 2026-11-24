@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using OrderDeck.Tests.TestHelpers;
 
 namespace OrderDeck.Tests.App;
 
@@ -36,11 +37,13 @@ internal static class WpfWait
     /// <summary>
     /// Koşul doğru olana dek ileti döngüsünü 20 ms'lik adımlarla çalıştırır. Süre sabit beklenmez:
     /// yük altındaki makinede de koşul sağlanır sağlanmaz döner (zamana bağlı kırmızı olmasın).
+    /// Üst sınır <see cref="TestPatience.Upper"/>: "olması gereken bir şeyi bekle" sınırıdır,
+    /// bekleme süresi değil; tam pakette kısa sınırlar aralıklı kırmızı veriyordu.
     /// </summary>
     /// <returns>Koşul süre dolmadan sağlandıysa true.</returns>
-    internal static bool Until(Func<bool> condition, int timeoutMilliseconds = 3000)
+    internal static bool Until(Func<bool> condition, TimeSpan? timeout = null)
     {
-        var deadline = Environment.TickCount64 + timeoutMilliseconds;
+        var deadline = Environment.TickCount64 + (long)(timeout ?? TestPatience.Upper).TotalMilliseconds;
         while (true)
         {
             if (condition()) return true;

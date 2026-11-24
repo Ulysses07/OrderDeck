@@ -167,8 +167,12 @@
                 <ControlTemplate TargetType="Button">
                     <!-- Hareket kalıbı: OD.Button.Primary'deki not. Burada
                          üzerine gelme dolgusu ("Hover") çerçeveli Border'ın
-                         ARKASINDA durur: bugünkü görünümle (çerçevenin altını
-                         da dolduran Surface2) birebir aynı sonucu verir.
+                         ARKASINDA durur ve çerçeve kalınlığı kadar içeriden
+                         başlar (Margin = Bd'nin BorderThickness'i; testi
+                         ButtonMotionTests.Hover_fill_stays_inside_the_frame).
+                         Eski görünümde dolgu Bd'nin kendi zeminiydi ve WPF
+                         zemini çerçevenin ALTINA boyamaz; içeriden başlamasa
+                         yarı saydam çerçevenin rengi vurguda değişirdi.
                          Basılı ton AÇILIR: koyu zeminde koyulaşacak pay yok
                          (Bg neredeyse siyah), koyu örtü basılı hâli durağana
                          eşitlerdi. -->
@@ -212,7 +216,7 @@
                                 <VisualState x:Name="Disabled"/>
                             </VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
-                        <Border x:Name="Hover" Opacity="0"
+                        <Border x:Name="Hover" Opacity="0" Margin="1"
                                 Background="{StaticResource OD.Brush.Surface2}"
                                 CornerRadius="{StaticResource OD.Radius.Md}"/>
                         <Border x:Name="Bd" Background="Transparent"
