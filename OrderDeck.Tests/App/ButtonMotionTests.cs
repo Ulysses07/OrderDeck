@@ -25,6 +25,10 @@ public class ButtonMotionTests
     {
         { "OD.Button.Primary",   ["Hover.Opacity=0.14"], ["Press.Opacity=0.12", "Root.ScaleX=0.98", "Root.ScaleY=0.98"] },
         { "OD.Button.Secondary", ["Hover.Opacity=1"],    ["Hover.Opacity=1", "Press.Opacity=0.06", "Root.ScaleX=0.98", "Root.ScaleY=0.98"] },
+        // Çoğu yerde tam genişlikte satır ya da sekme: küçülme satırı oynatır, yalnız ton değişir.
+        { "OD.Button.Ghost",     ["Hover.Opacity=1"],    ["Hover.Opacity=1", "Press.Opacity=0.06"] },
+        { "OD.Chip",             [],                     ["Press.Opacity=0.06"] },
+        { "NavButton",           ["Hover.Opacity=1"],    ["Hover.Opacity=1", "Press.Opacity=0.06"] },
     };
 
     /// <summary>Basınca küçülen stiller; öbürlerinde kökte dönüşüm yoktur.</summary>
@@ -171,6 +175,49 @@ public class ButtonMotionTests
 
             Assert.IsType<MotionAwareVisualStateManager>(VisualStateManager.GetCustomVisualStateManager(Root(button)));
             Assert.Equal(StateTargets(Realized("OD.Button.Secondary"), "Pressed"), StateTargets(button, "Pressed"));
+        });
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void Radio_button_tab_based_on_chip_inherits_the_template()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            // PrintQueuePanel'deki "PanelTab" ve çekmecelerdeki seçenek listeleri böyle türüyor.
+            var tab = new RadioButton
+            {
+                Style = new Style(typeof(RadioButton), (Style)Application.Current!.Resources["OD.Chip"]),
+                Content = "Kuyruk",
+            };
+            Realize(tab);
+
+            Assert.IsType<MotionAwareVisualStateManager>(VisualStateManager.GetCustomVisualStateManager(Root(tab)));
+            Assert.True(VisualStateManager.GoToState(tab, "Pressed", false));
+        });
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void Selected_nav_button_keeps_its_accent_border_under_the_overlays()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            // Seçili sayfada stil, düğmenin zeminini ve sol kenarlığını verir; şablon bunları
+            // çerçeveli Border'a taşımalı (seçim vurgusu örtülerin altında kaybolmasın).
+            var accent = (Brush)Application.Current!.Resources["OD.Brush.Accent"];
+            var surface = (Brush)Application.Current.Resources["OD.Brush.Surface2"];
+            var button = Unrealized("NavButton");
+            button.BorderBrush = accent;
+            button.Background = surface;
+            Realize(button);
+
+            var frame = Assert.IsType<Border>(Part(button, "Bd"));
+            Assert.Same(accent, frame.BorderBrush);
+            Assert.Same(surface, frame.Background);
+            Assert.Equal(new Thickness(2, 0, 0, 0), frame.BorderThickness);
         });
 
         Assert.Null(error);

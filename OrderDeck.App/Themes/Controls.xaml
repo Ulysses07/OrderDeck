@@ -226,22 +226,63 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="Transparent"
-                            CornerRadius="{StaticResource OD.Radius.Md}"
-                            Padding="{TemplateBinding Padding}">
-                        <ContentPresenter
-                            HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                            VerticalAlignment="Center"/>
-                    </Border>
+                    <!-- Hareket kalıbı: OD.Button.Primary'deki not. KÜÇÜLME YOK:
+                         bu stil çoğu yerde tam genişlikte satır ya da bağlantı
+                         olarak duruyor, küçülme satırı oynatırdı; yalnız ton
+                         değişir. Yazı rengi bugünkü gibi tetikleyiciyle, anlık
+                         değişir (20 kadar kullanım yeri rengini kendisi veriyor). -->
+                    <Grid x:Name="Root">
+                        <VisualStateManager.CustomVisualStateManager>
+                            <controls:MotionAwareVisualStateManager/>
+                        </VisualStateManager.CustomVisualStateManager>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualStateGroup.Transitions>
+                                    <VisualTransition GeneratedDuration="{StaticResource OD.Dur.Fast}"
+                                                      GeneratedEasingFunction="{StaticResource OD.Ease.Out}"/>
+                                </VisualStateGroup.Transitions>
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="MouseOver">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Hover"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Hover"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0"/>
+                                        <DoubleAnimation Storyboard.TargetName="Press"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="{StaticResource OD.Opacity.PressLight}" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Disabled"/>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="Hover" Opacity="0"
+                                Background="{StaticResource OD.Brush.Surface2}"
+                                CornerRadius="{StaticResource OD.Radius.Md}"/>
+                        <Border x:Name="Bd" Background="Transparent"
+                                CornerRadius="{StaticResource OD.Radius.Md}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter x:Name="Content"
+                                HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                VerticalAlignment="Center"/>
+                        </Border>
+                        <Border x:Name="Press" Opacity="0" IsHitTestVisible="False"
+                                Background="{StaticResource OD.Brush.OnAccent}"
+                                CornerRadius="{StaticResource OD.Radius.Md}"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource OD.Brush.Surface2}"/>
                             <Setter Property="Foreground"
                                     Value="{StaticResource OD.Brush.Text}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -261,14 +302,44 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Bd"
-                            Background="{StaticResource OD.Brush.Surface2}"
-                            BorderBrush="{StaticResource OD.Brush.Border}"
-                            BorderThickness="1"
-                            CornerRadius="{StaticResource OD.Radius.Sm}"
-                            Padding="{TemplateBinding Padding}">
-                        <ContentPresenter VerticalAlignment="Center"/>
-                    </Border>
+                    <!-- Hareket kalıbı: OD.Button.Primary'deki not. Çipin
+                         üzerine gelme dolgusu yok (zemini zaten Surface2);
+                         yalnız basılı ton var. Sekme ve seçenek olarak
+                         kullanılan RadioButton stilleri de bunu miras alır. -->
+                    <Grid x:Name="Root">
+                        <VisualStateManager.CustomVisualStateManager>
+                            <controls:MotionAwareVisualStateManager/>
+                        </VisualStateManager.CustomVisualStateManager>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualStateGroup.Transitions>
+                                    <VisualTransition GeneratedDuration="{StaticResource OD.Dur.Fast}"
+                                                      GeneratedEasingFunction="{StaticResource OD.Ease.Out}"/>
+                                </VisualStateGroup.Transitions>
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="MouseOver"/>
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Press"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="{StaticResource OD.Opacity.PressLight}" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Disabled"/>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="Bd"
+                                Background="{StaticResource OD.Brush.Surface2}"
+                                BorderBrush="{StaticResource OD.Brush.Border}"
+                                BorderThickness="1"
+                                CornerRadius="{StaticResource OD.Radius.Sm}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter x:Name="Content" VerticalAlignment="Center"/>
+                        </Border>
+                        <Border x:Name="Press" Opacity="0" IsHitTestVisible="False"
+                                Background="{StaticResource OD.Brush.OnAccent}"
+                                CornerRadius="{StaticResource OD.Radius.Sm}"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter Property="Foreground"
