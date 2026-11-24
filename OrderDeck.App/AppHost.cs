@@ -161,13 +161,32 @@ public sealed class AppHost : IDisposable
         // Tüm platformların canlı izleyici sayısını toplayan tek nokta;
         // köprü (IG/TT/FB) ve YouTube scraper yazar, WPF üst barı okur.
         services.AddSingleton<ViewerCountTracker>();
+
+        // "Sohbeti yenile" (tasarım 2026-11-24 §5.2, §5.4). İkisi de TEKİL olmalı ve
+        // köprü, üç sohbet servisi ve kabuk AYNI örnekleri almalı (hepsinde isteğe
+        // bağlı parametre: kayıt eksikse sessizce null düşer, düğme "çalışır" ama
+        // kimse dinlemez, şerit boş kalır; testi ChatStatusDiTests).
+        //   - ChatReconnectSignal: kabuk basar, servisler dinler.
+        //   - ChatSourceMonitor: YouTube, Facebook ve köprü (TikTok) yazar, kabuk okur.
+        //     Yeni yayın oturumunda "bu oturumda bağlıydı" bilgisi sıfırlanır; yoksa dün
+        //     gece yayın yapılan platform bu gece hiç açılmadan "yayın kesildi" görünür.
+        services.AddSingleton<ChatReconnectSignal>();
+        services.AddSingleton(sp =>
+        {
+            var monitor = new ChatSourceMonitor();
+            sp.GetRequiredService<StreamSessionService>().SessionStarted += (_, _) => monitor.ResetSession();
+            return monitor;
+        });
+
         services.AddSingleton(sp => new ExtensionBridgeServer(
             sp.GetRequiredService<IChatBus>(),
             port: 4748,
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>(),
             trialProbe: sp.GetRequiredService<LicenseService>(),
             spamFilter: sp.GetRequiredService<SpamFilter>(),
-            viewers: sp.GetRequiredService<ViewerCountTracker>()));
+            viewers: sp.GetRequiredService<ViewerCountTracker>(),
+            sources: sp.GetRequiredService<ChatSourceMonitor>(),
+            reconnect: sp.GetRequiredService<ChatReconnectSignal>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
         // Phase 5c — YouTube canlı sohbet. Tek yol: resmi gRPC streamList
@@ -205,7 +224,9 @@ public sealed class AppHost : IDisposable
                 // bağlı olup olmadığına tarayıcı açmadan bakar.
                 broadcastLookup: (fresh, ct) => sp
                     .GetRequiredService<OrderDeck.Chat.YouTube.YouTubeModerationService>()
-                    .LookupActiveBroadcastAsync(fresh, ct)));
+                    .LookupActiveBroadcastAsync(fresh, ct),
+                reconnect: sp.GetRequiredService<ChatReconnectSignal>(),
+                sources: sp.GetRequiredService<ChatSourceMonitor>()));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without
@@ -296,7 +317,9 @@ public sealed class AppHost : IDisposable
                 trialProbe: sp.GetRequiredService<LicenseService>(),
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
                 sessions: sp.GetRequiredService<StreamSessionService>(),
-                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
+                reconnect: sp.GetRequiredService<ChatReconnectSignal>(),
+                sources: sp.GetRequiredService<ChatSourceMonitor>()));
 
         // Instagram canlı yorumları — resmi Graph API. Facebook OAuth
         // servisini paylaşıyor (IG erişimi Sayfa token'ı üzerinden gidiyor;
@@ -313,7 +336,8 @@ public sealed class AppHost : IDisposable
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
                 sessions: sp.GetRequiredService<StreamSessionService>(),
                 httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
-                health: sp.GetRequiredService<OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor>()));
+                health: sp.GetRequiredService<OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor>(),
+                reconnect: sp.GetRequiredService<ChatReconnectSignal>()));
 
         // Overlay
         services.AddSingleton(sp => new OverlayHost(
