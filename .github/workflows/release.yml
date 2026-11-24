@@ -21,11 +21,23 @@ on:
 permissions: {}
 
 jobs:
-  # ── 1) Delta için mevcut feed'i (nupkg + manifest) indir, artifact yap ──
+  # ── 1) Delta için bir önceki yayınlanmış sürümü (nupkg + manifest) indir, artifact yap ──
   feed-baseline:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Yalnız .github/scripts için checkout (workflow düzeyi permissions: {}).
+    permissions:
+      contents: read
+    outputs:
+      # Seçilen tabanın sürümü; ilk sürümde boş. build işi tabanın gerçekten
+      # geldiğini ve delta'nın bu sürüm için üretildiğini buna bakarak denetler.
+      baseline_version: ${{ steps.pull.outputs.baseline_version }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - name: Setup SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -39,49 +51,83 @@ jobs:
       # biri ~133 sn), stderr `2>/dev/null` ile yutuldu ve `|| echo` "first
       # release" diyerek job'ı yeşil bıraktı. Sonuç: baseline yok → delta yok →
       # 0.5.0 kullanıcıları 102 MB'ın tamamını indirdi. Artık "feed boş" ile
-      # "bağlanamadım" ayrı ele alınıyor: önce ucuz bir ssh ile listeleniyor
-      # (3 deneme), bağlantı kurulamazsa release DURUYOR.
+      # "bağlanamadım" ayrı ele alınıyor: önce ucuz bir ssh ile feed'in durumu
+      # okunuyor (3 deneme), bağlantı kurulamazsa release DURUYOR.
+      #
+      # v0.9.11–v0.9.13'te taban sessizce yanlış seçildi: adım feed klasöründe
+      # değişiklik zamanı en yeni iki pakete bakıyordu (`ls -1t | head -n 2`),
+      # publish taban paketlerini de yeniden yüklediği için en yeni zaman her
+      # sürümden sonra 0.9.9'da kalıyordu. Üç sürümün delta'sı 0.9.9'a göre
+      # üretildi ve hiçbir kurulumda uygulanamadı. Artık taban, istemcinin de
+      # gördüğü manifestten SÜRÜM SIRASINA göre seçiliyor ve indirilen paket
+      # manifestteki SHA256 ile doğrulanıyor; kurallar ve testleri
+      # .github/scripts/delta-baseline.py'de.
       - name: Pull existing feed
+        id: pull
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -uo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p baseline
+          # Ara dosyalar baseline/ DIŞINDA: baseline/ artifact olur, build'de
+          # Releases/ altına iner; oraya giren her şey feed'e yüklenebilir.
+          WORK="$RUNNER_TEMP/delta-baseline"
+          mkdir -p "$WORK"
           FEED=/opt/orderdeck/web-out/downloads/velopack
+          REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
           SSHOPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
 
+          # Feed'in durumu tek satır: "<paket adedi> <manifest var mı: 0|1>".
+          # Uzaktaki ls'in "dosya yok" çıkışı adedi 0 yapar; ssh'ın KENDİ çıkış
+          # kodu (bağlantı hatası) korunur.
           ok=0
           for i in 1 2 3; do
-            # `|| true` uzaktaki ls'in "dosya yok" çıkışını yutar; ssh'ın KENDİ
-            # çıkış kodu (bağlantı hatası) korunur.
-            if LIST=$(ssh $SSHOPTS "${DEPLOY_USER}@${DEPLOY_HOST}" \
-                        "ls -1t ${FEED}/*.nupkg 2>/dev/null || true"); then
+            if STATE=$(ssh $SSHOPTS "$REMOTE" \
+                         "n=\$(ls -1 ${FEED}/*.nupkg 2>/dev/null | wc -l); m=0; [ -f ${FEED}/releases.win.json ] && m=1; echo \"\$n \$m\""); then
               ok=1; break
             fi
-            echo "::warning::VPS feed'i listelenemedi (deneme $i/3)"
+            echo "::warning::VPS feed'i okunamadı (deneme $i/3)"
             sleep $((i * 20))
           done
           if [ "$ok" -ne 1 ]; then
             echo "::error::VPS'e bağlanılamadı — delta üretilemez, release durduruldu. Re-run deneyin."
             exit 1
           fi
+          read -r NUPKG_COUNT HAS_MANIFEST <<< "$(echo "$STATE" | tail -n 1)"
+          if ! [[ "$NUPKG_COUNT" =~ ^[0-9]+$ && "$HAS_MANIFEST" =~ ^[01]$ ]]; then
+            echo "::error::Feed durumu okunamadı (beklenmeyen çıktı) — release durduruldu."
+            exit 1
+          fi
+          echo "Feed: $NUPKG_COUNT paket, manifest: $HAS_MANIFEST"
 
-          if [ -z "$LIST" ]; then
-            echo "::notice::Feed'de önceki sürüm yok — yalnız full paket üretilecek (ilk release)."
-            exit 0
+          MANIFEST_ARGS=()
+          if [ "$HAS_MANIFEST" = "1" ]; then
+            scp $SSHOPTS "${REMOTE}:${FEED}/releases.win.json" baseline/ \
+              || { echo "::error::releases.win.json indirilemedi"; exit 1; }
+            MANIFEST_ARGS=(--manifest baseline/releases.win.json)
           fi
 
-          # Delta yalnız önceki sürüm(ler)e göre üretiliyor; en yeni 2 full paket
-          # yeter. `ls -1t` mtime'a göre sıralar — isim sıralaması 0.10.0'ı
-          # 0.5.0'ın önüne atardı.
-          for f in $(echo "$LIST" | head -n 2); do
+          # stdout: indirilecek dosya adları (taban yoksa boş = ilk release);
+          # baseline_version çıktısını betik yazar.
+          python3 .github/scripts/delta-baseline.py select \
+            --version "$VERSION" --remote-nupkg-count "$NUPKG_COUNT" "${MANIFEST_ARGS[@]}" \
+            --out "$WORK/secim.json" --github-output "$GITHUB_OUTPUT" > "$WORK/dosyalar.txt" \
+            || { echo "::error::Delta tabanı seçilemedi — release durduruldu."; exit 1; }
+
+          mapfile -t FILES < "$WORK/dosyalar.txt"
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::notice::Feed'de önceki sürüm yok — yalnız full paket üretilecek (ilk release)."
+          fi
+          for f in "${FILES[@]}"; do
             echo "Baseline indiriliyor: $f"
-            scp $SSHOPTS "${DEPLOY_USER}@${DEPLOY_HOST}:$f" baseline/ \
+            scp $SSHOPTS "${REMOTE}:${FEED}/$f" baseline/ \
               || { echo "::error::$f indirilemedi"; exit 1; }
           done
-          scp $SSHOPTS "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/releases.win.json" baseline/ \
-            || echo "::warning::releases.win.json yok (manifest olmadan da delta üretilebilir)"
+
+          python3 .github/scripts/delta-baseline.py verify --selection "$WORK/secim.json" --dir baseline \
+            || { echo "::error::İndirilen taban manifestle uyuşmuyor — release durduruldu."; exit 1; }
           ls -la baseline
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -145,31 +191,55 @@ jobs:
           path: Releases
         continue-on-error: true
 
-      # İlk release'te baseline yoktur (delta beklenmez); varsa delta ZORUNLU.
+      # İlk release'te baseline yoktur (delta beklenmez). feed-baseline bir taban
+      # seçtiyse o paket burada OLMAK ZORUNDA: yukarıdaki indirme
+      # continue-on-error; artifact inmezse eskiden "baseline yok" sayılıp
+      # sessizce deltasız sürüm çıkardı. Tersi de hata: taban bildirilmemişken
+      # paket varsa çıktı bağlantısı kopmuştur ve aşağıdaki delta denetimi atlanır.
       - name: Baseline durumu
-        id: baseline
         shell: bash
+        env:
+          BASELINE_VERSION: ${{ needs.feed-baseline.outputs.baseline_version }}
         run: |
-          n=$(ls Releases/*.nupkg 2>/dev/null | wc -l)
-          echo "count=$n" >> "$GITHUB_OUTPUT"
-          if [ "$n" -eq 0 ]; then
+          shopt -s nullglob
+          pkgs=(Releases/*.nupkg)
+          if [ -z "$BASELINE_VERSION" ]; then
+            if [ "${#pkgs[@]}" -ne 0 ]; then
+              echo "::error::feed-baseline taban bildirmedi ama Releases/ altında ${#pkgs[@]} paket var."
+              exit 1
+            fi
             echo "::warning::Baseline yok — delta üretilmeyecek, herkes tam paketi indirir."
-          else
-            echo "Baseline paket sayısı: $n"
+            exit 0
           fi
+          full="Releases/OrderDeck-${BASELINE_VERSION}-full.nupkg"
+          if [ ! -f "$full" ]; then
+            echo "::error::Taban paketi yok: $full (feed-baseline artifact'i inmedi?). Deltasız sürüm çıkmasın diye duruldu; re-run deneyin."
+            exit 1
+          fi
+          echo "Delta tabanı: ${BASELINE_VERSION}"
+          ls -la "${pkgs[@]}"
 
       - name: Build Velopack release
         shell: pwsh
         run: installer\build.ps1 -Version ${{ steps.ver.outputs.version }}
 
-      # Sessiz bozulmaya karşı son bariyer: baseline vardıysa delta da çıkmalı.
+      # Sessiz bozulmaya karşı son bariyer: taban vardıysa BU SÜRÜMÜN delta'sı
+      # da çıkmalı. (Eski denetim `*delta*` arıyordu; taban kendi delta'sıyla
+      # geldiği için yeni delta üretilmese de geçiyordu.)
       - name: Delta üretildi mi
-        if: steps.baseline.outputs.count != '0'
+        if: needs.feed-baseline.outputs.baseline_version != ''
         shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          BASELINE_VERSION: ${{ needs.feed-baseline.outputs.baseline_version }}
         run: |
-          ls Releases/*delta*.nupkg >/dev/null 2>&1 \
-            || { echo "::error::Baseline vardı ama delta paketi üretilmedi."; exit 1; }
-          ls -la Releases/*delta*.nupkg
+          delta="Releases/OrderDeck-${VERSION}-delta.nupkg"
+          if [ ! -f "$delta" ]; then
+            echo "::error::Taban (${BASELINE_VERSION}) vardı ama bu sürümün delta paketi üretilmedi: $delta"
+            exit 1
+          fi
+          echo "Delta: ${BASELINE_VERSION} -> ${VERSION}"
+          ls -la "$delta"
 
       # Portable.zip feed'e gerekmiyor (~97 MB) — artifact'e koyma.
       - name: Trim artifact
@@ -206,16 +276,46 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
+      # Yalnız BU sürümün paketleri yüklenir. Releases/ altında taban paketleri
+      # de durur (delta onlardan üretildi) ama sunucuda zaten varlar; yeniden
+      # yüklemek hem ~130 MB boşa gider hem de değişiklik zamanlarını yeniler
+      # (v0.9.11–v0.9.13'teki yanlış tabanın kaynağı buydu). Manifest EN SON
+      # gider: istemci, paketleri henüz yüklenmemiş bir sürümü görmesin.
       - name: Upload feed to VPS
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
+          set -uo pipefail
           FEED=/opt/orderdeck/web-out/downloads/velopack
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p ${FEED}"
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            Releases/* "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/"
+          REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+          SSHOPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new"
+
+          FULL="Releases/OrderDeck-${VERSION}-full.nupkg"
+          DELTA="Releases/OrderDeck-${VERSION}-delta.nupkg"
+          MANIFEST="Releases/releases.win.json"
+          for f in "$FULL" "$MANIFEST" Releases/OrderDeck-win-Setup.exe; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Yüklenecek dosya yok: $f — feed'e dokunulmadı."
+              exit 1
+            fi
+          done
+
+          upload=()
+          for f in Releases/*; do
+            case "$f" in
+              "$MANIFEST") ;;
+              "$FULL"|"$DELTA") upload+=("$f") ;;
+              *.nupkg) echo "Atlandı (taban paketi, sunucuda var): $f" ;;
+              *) upload+=("$f") ;;
+            esac
+          done
+          printf 'Yüklenecek: %s\n' "${upload[@]}" "$MANIFEST (en son)"
+
+          ssh $SSHOPTS "$REMOTE" "mkdir -p ${FEED}"
+          scp $SSHOPTS "${upload[@]}" "${REMOTE}:${FEED}/"
+          scp $SSHOPTS "$MANIFEST" "${REMOTE}:${FEED}/"
 
       - name: Create GitHub Release + upload Setup.exe
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4

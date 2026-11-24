@@ -63,6 +63,22 @@ jobs:
                       + [range(0; $m) | {kind: "inmemory", index: ., count: $m}])}')
           echo "matrix=$matrix" | tee -a "$GITHUB_OUTPUT"
 
+  # .github/scripts altındaki betiklerin testleri (~10 sn, her PR ve push'ta).
+  # Bu betikler sürüm akışının karar noktaları (ör. delta tabanı seçimi,
+  # release.yml); iş akışının kendisi gerçek bir sürüm atılmadan sınanamadığı
+  # için mantık burada korunur.
+  script-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Betik testleri
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
   build-test:
     needs: changes
     if: needs.changes.outputs.code == 'true'
