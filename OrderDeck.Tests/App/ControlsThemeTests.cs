@@ -15,7 +15,7 @@ public class ControlsThemeTests
 {
     private static readonly string[] StyleKeys =
     [
-        "OD.Panel", "OD.Button.Primary", "OD.Button.Ghost", "OD.Chip",
+        "OD.Panel", "OD.Button.Primary", "OD.Button.Secondary", "OD.Button.Ghost", "OD.Chip",
         "OD.TextBox", "OD.Text.Micro", "OD.Text.Mono", "OD.CountPill",
         // Faz 4b: DarkControls'un örtük stillerinin keyed karşılıkları.
         "OD.ListBoxItem", "OD.ListBox", "OD.PasswordBox", "OD.CheckBox",

@@ -6,9 +6,10 @@ namespace OrderDeck.Tests.App;
 /// <summary>
 /// Themes/Motion.xaml hareket sözleşmesi.
 ///
-/// NEDEN: Uygulamada bugün SIFIR animasyon var. Hareket eklenirken her
-/// ekranın kendi süresini uydurması, 120 rastgele rengin animasyon
-/// karşılığını üretir. Üç süre + iki easing; başka değer yok.
+/// NEDEN: Hareket eklenirken her ekranın kendi süresini uydurması, 120
+/// rastgele rengin animasyon karşılığını üretir. Üç süre + iki easing; başka
+/// değer yok. Tüketenler: çekmece girişi (OD.Dur.Base), düğme geçişleri
+/// (OD.Dur.Fast + OD.Ease.Out), meşgul halkası (OD.Dur.Slow).
 /// </summary>
 public class ThemeMotionTests
 {

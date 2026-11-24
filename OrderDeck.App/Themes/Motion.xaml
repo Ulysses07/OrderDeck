@@ -7,8 +7,13 @@
       cubic-bezier(.2,.8,.3,1)     -> OD.Ease.Out    (CubicEase/EaseOut)
       cubic-bezier(.34,1.56,.64,1) -> OD.Ease.Spring (BackEase/EaseOut, A=0.3)
 
-    prefers-reduced-motion karşılığı: Storyboard'ları çalıştırmadan önce
-    SystemParameters.ClientAreaAnimation kontrol edilir; false ise atlanır.
+    prefers-reduced-motion karşılığı: hareket başlatılmadan önce
+    Controls/MotionPolicy.IsEnabled sorulur (SystemParameters.ClientAreaAnimation);
+    false ise atlanır. Şablonlardaki durum geçişleri bunu
+    MotionAwareVisualStateManager üzerinden, kod animasyonları doğrudan sorar.
+
+    Düğmeler (2026-11-24): geçişlerin hepsi OD.Dur.Fast + OD.Ease.Out.
+    OD.Ease.Spring düğmelerde KULLANILMAZ (tasarım: düğme hareketleri §3).
   -->
   <Duration x:Key="OD.Dur.Fast">0:0:0.15</Duration>  <!-- hover, odak geçişi -->
   <Duration x:Key="OD.Dur.Base">0:0:0.35</Duration>  <!-- giriş-çıkış: mesaj, kuyruk, banner, çekmece -->
