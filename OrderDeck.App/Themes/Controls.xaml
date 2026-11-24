@@ -33,46 +33,85 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd"
+                    <!-- DÜĞME HAREKETİ KALIBI (beş stilde aynı; tasarım: düğme
+                         hareketleri §3-§4, testi ButtonMotionTests):
+                         * Kök öğenin adı "Root". Görsel durumlar onda durur.
+                         * Üzerine gelme ve basma CommonStates durumlarıyla
+                           anlatılır; canlanan YALNIZ örtü katmanlarının
+                           saydamlığı ("Hover", "Press") ve ölçektir. Fırça
+                           rengi canlandırılmaz: tema fırçaları dondurulmuş,
+                           zemin de dışarıdan bağlanıyor.
+                         * Durum animasyonları süresiz "To" değerleridir;
+                           150 ms'lik geçişi yönetici üretir.
+                           MotionAwareVisualStateManager hareket azaltmada
+                           geçişi atlar (değer anında oturur).
+                         * Yay/sıçrama yok, yeni süre yok: OD.Dur.Fast +
+                           OD.Ease.Out. -->
+                    <Border x:Name="Root"
                             Background="{TemplateBinding Background}"
                             CornerRadius="{StaticResource OD.Radius.Md}"
                             RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform/>
+                        </Border.RenderTransform>
+                        <VisualStateManager.CustomVisualStateManager>
+                            <controls:MotionAwareVisualStateManager/>
+                        </VisualStateManager.CustomVisualStateManager>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualStateGroup.Transitions>
+                                    <VisualTransition GeneratedDuration="{StaticResource OD.Dur.Fast}"
+                                                      GeneratedEasingFunction="{StaticResource OD.Ease.Out}"/>
+                                </VisualStateGroup.Transitions>
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="MouseOver">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Hover"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="{StaticResource OD.Opacity.HoverVeil}" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <!-- Basılıyken beyaz örtü kalkar, koyu örtü iner:
+                                     kırmızı AccentDeep'e, yeşil koyu yeşile yaklaşır. -->
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Press"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="{StaticResource OD.Opacity.PressDark}" Duration="0"/>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                                         To="{StaticResource OD.Scale.Press}" Duration="0"/>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                                         To="{StaticResource OD.Scale.Press}" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Disabled"/>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
                         <Grid>
-                            <!-- Hover örtüsü. Eskiden hover'da arka plan sabit
-                                 AccentHot'a çevriliyordu; bu stil artık tek
-                                 renkli değil (yayın butonu kapalıyken yeşil,
-                                 açıkken kırmızı). Şablon içindeki TargetName
-                                 setter'ı dışarıdaki Style/DataTrigger'dan
-                                 EZİLEMEZ — o yüzden hover rengi şablondan
-                                 çıkarıldı. Yarı saydam beyaz örtü altındaki
-                                 rengi bilmeden aydınlatır.
-                                 Padding buradan ContentPresenter'a taşındı:
-                                 örtü butonun tamamını kaplasın. -->
-                            <Border x:Name="Veil" Opacity="0"
+                            <!-- Üzerine gelme örtüsü. Bu stil tek renkli değil
+                                 (yayın butonu kapalıyken yeşil, açıkken kırmızı)
+                                 ve şablon içindeki sabit renk dışarıdaki
+                                 Style/DataTrigger'dan EZİLEMEZ; yarı saydam beyaz
+                                 örtü altındaki rengi bilmeden aydınlatır.
+                                 Padding ContentPresenter'da: örtü butonun
+                                 tamamını kaplasın. -->
+                            <Border x:Name="Hover" Opacity="0"
                                     Background="{StaticResource OD.Brush.OnAccent}"
                                     CornerRadius="{StaticResource OD.Radius.Md}"/>
-                            <ContentPresenter HorizontalAlignment="Center"
+                            <Border x:Name="Press" Opacity="0"
+                                    Background="{StaticResource OD.Brush.Bg}"
+                                    CornerRadius="{StaticResource OD.Radius.Md}"/>
+                            <ContentPresenter x:Name="Content"
+                                              HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               Margin="{TemplateBinding Padding}"/>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Veil" Property="Opacity" Value="0.14"/>
-                            <!-- 1px yukarı kalkma. Transform'a x:Name verip
-                                 TargetName ile Y'yi kurcalamak MC4111 verir:
-                                 tetikleyici yalnız şablonun eleman ağacındaki
-                                 adlara erişir, RenderTransform içindeki nesneye
-                                 değil. Bu yüzden transform'un TAMAMI Border'a
-                                 tetikleyiciden set ediliyor. -->
-                            <Setter TargetName="Bd" Property="RenderTransform">
-                                <Setter.Value>
-                                    <TranslateTransform Y="-1"/>
-                                </Setter.Value>
-                            </Setter>
-                        </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -102,21 +141,72 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="Transparent"
-                            BorderBrush="{StaticResource OD.Brush.BorderStrong}"
-                            BorderThickness="1"
-                            CornerRadius="{StaticResource OD.Radius.Md}">
-                        <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"
-                                          Margin="{TemplateBinding Padding}"/>
-                    </Border>
+                    <!-- Hareket kalıbı: OD.Button.Primary'deki not. Burada
+                         üzerine gelme dolgusu ("Hover") çerçeveli Border'ın
+                         ARKASINDA durur: bugünkü görünümle (çerçevenin altını
+                         da dolduran Surface2) birebir aynı sonucu verir.
+                         Basılı ton AÇILIR: koyu zeminde koyulaşacak pay yok
+                         (Bg neredeyse siyah), koyu örtü basılı hâli durağana
+                         eşitlerdi. -->
+                    <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                        <Grid.RenderTransform>
+                            <ScaleTransform/>
+                        </Grid.RenderTransform>
+                        <VisualStateManager.CustomVisualStateManager>
+                            <controls:MotionAwareVisualStateManager/>
+                        </VisualStateManager.CustomVisualStateManager>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualStateGroup.Transitions>
+                                    <VisualTransition GeneratedDuration="{StaticResource OD.Dur.Fast}"
+                                                      GeneratedEasingFunction="{StaticResource OD.Ease.Out}"/>
+                                </VisualStateGroup.Transitions>
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="MouseOver">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Hover"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Hover"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0"/>
+                                        <DoubleAnimation Storyboard.TargetName="Press"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="{StaticResource OD.Opacity.PressLight}" Duration="0"/>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                                         To="{StaticResource OD.Scale.Press}" Duration="0"/>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                                         To="{StaticResource OD.Scale.Press}" Duration="0"/>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Disabled"/>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="Hover" Opacity="0"
+                                Background="{StaticResource OD.Brush.Surface2}"
+                                CornerRadius="{StaticResource OD.Radius.Md}"/>
+                        <Border x:Name="Bd" Background="Transparent"
+                                BorderBrush="{StaticResource OD.Brush.BorderStrong}"
+                                BorderThickness="1"
+                                CornerRadius="{StaticResource OD.Radius.Md}">
+                            <ContentPresenter x:Name="Content"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <Border x:Name="Press" Opacity="0" IsHitTestVisible="False"
+                                Background="{StaticResource OD.Brush.OnAccent}"
+                                CornerRadius="{StaticResource OD.Radius.Md}"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource OD.Brush.Surface2}"/>
-                        </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>

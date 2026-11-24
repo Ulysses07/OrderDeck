@@ -204,4 +204,19 @@
        yazdırılacak etiketler listesine gitti. -->
   <sys:Double x:Key="OD.Layout.CodeFont">44</sys:Double>
   <sys:Double x:Key="OD.Layout.CodeFontShort">32</sys:Double>
+
+  <!-- Düğme örtüleri (tasarım: düğme hareketleri §4.2). Renk değil ton
+       basamağı: yeni fırça eklemek yerine mevcut fırçalar bu saydamlıkla
+       örtü olarak kullanılır.
+         HoverVeil  birincil düğmede üzerine gelince beyaz örtü; zemin yeşil
+                    de olsa kırmızı da olsa (yayın düğmesi) aydınlatır.
+         PressDark  birincilde basılıyken koyu (Bg) örtü; kırmızıyı
+                    AccentDeep'e yaklaştırır.
+         PressLight öbür stillerde basılıyken beyaz örtü. Koyu zeminde
+                    koyulaşacak pay olmadığı için basılı ton AÇILIR.
+         Scale.Press basılıyken kutu düğmenin (birincil, ikincil) ölçeği. -->
+  <sys:Double x:Key="OD.Opacity.HoverVeil">0.14</sys:Double>
+  <sys:Double x:Key="OD.Opacity.PressDark">0.12</sys:Double>
+  <sys:Double x:Key="OD.Opacity.PressLight">0.06</sys:Double>
+  <sys:Double x:Key="OD.Scale.Press">0.98</sys:Double>
 </ResourceDictionary>
