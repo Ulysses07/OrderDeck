@@ -241,6 +241,28 @@ public sealed class InstagramHealthMonitor
     }
 
     /// <summary>
+    /// "Sohbeti yenile" bekleyen bir hesabı uyandırdı: girdi, durumuna BAKILMADAN
+    /// <see cref="InstagramAccountState.Starting"/>'e alınır ("bağlanıyor"); açıklaması ve yeniden
+    /// deneme saati temizlenir, "bu oturumda canlıydı" bilgisi korunur.
+    ///
+    /// <para><see cref="Report"/>'un Starting kuralının (yalnız durmuş girdide etkili) bilinçli
+    /// istisnasıdır: operatör düğmeye bastığında bekleyen hesabın yeniden denendiğini görmeli.
+    /// Yalnız beklemesi kesilen hesap için çağrılır; sağlıklı çalışan okuyucunun girdisine
+    /// dokunulmaz.</para>
+    /// </summary>
+    public void MarkRetrying(string pageId)
+    {
+        lock (_gate)
+        {
+            var index = IndexOf(pageId);
+            if (index < 0) return;
+
+            _entries[index] = WithState(_entries[index], InstagramAccountState.Starting, _time.GetUtcNow())
+                with { Detail = null, RetryAt = null };
+        }
+    }
+
+    /// <summary>
     /// O Sayfanın poller'ına verilecek gözlemci: tur sonuçlarını Sayfanın girdisine işler. Girdi
     /// o an yoksa da döner; girdisi olmayan Sayfanın tur olayı yok sayılır.
     /// </summary>

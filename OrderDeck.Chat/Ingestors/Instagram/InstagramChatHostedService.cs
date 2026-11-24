@@ -59,6 +59,11 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     private readonly InstagramHealthMonitor _health;
     private readonly TimeProvider _time;
     private readonly InstagramChatTimings _timings;
+    private readonly ChatReconnectSignal? _reconnect;
+
+    /// <summary>Üst döngünün ve hesap döngülerinin uyandırılabilir beklemesi: yayın oturumu başlayınca
+    /// ve "Sohbeti yenile" istenince bekleyen döngüler hemen yeniden dener.</summary>
+    private readonly InstagramWake _wake = new();
 
     /// <summary>PageId → o Sayfanın çözümleyicisi. Servis ömrünce yaşar: başarılı çözümleme
     /// önbelleği oturumlar arasında korunur, oturum başına Graph isteği eklenmez. Yalnız üst
@@ -89,6 +94,8 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     /// verilmezse servis kendi izleyicisini kurar (durum yine tutulur, yalnız okuyan olmaz).</param>
     /// <param name="time">Saat kaynağı (beklemeler, yeniden deneme saatleri, kota satırının
     /// aralığı); verilmezse sistem saati.</param>
+    /// <param name="reconnect">"Sohbeti yenile" sinyali; verilirse her istekte bekleyen döngüler
+    /// uyandırılır.</param>
     public InstagramChatHostedService(
         FacebookOAuthService oauth,
         IChatBus bus,
@@ -97,9 +104,10 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         StreamSessionService? sessions = null,
         IHttpClientFactory? httpFactory = null,
         InstagramHealthMonitor? health = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        ChatReconnectSignal? reconnect = null)
         : this(oauth, bus, loggerFactory, spamFilter, sessions, httpFactory, health, time,
-            InstagramChatTimings.Default)
+            InstagramChatTimings.Default, reconnect)
     {
     }
 
@@ -113,7 +121,8 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         IHttpClientFactory? httpFactory,
         InstagramHealthMonitor? health,
         TimeProvider? time,
-        InstagramChatTimings timings)
+        InstagramChatTimings timings,
+        ChatReconnectSignal? reconnect = null)
     {
         _oauth = oauth;
         _bus = bus;
@@ -125,15 +134,47 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         _time = time ?? TimeProvider.System;
         _health = health ?? new InstagramHealthMonitor(_time);
         _timings = timings;
+        _reconnect = reconnect;
 
         if (_sessions is not null)
+        {
             _sessions.SessionEnded += OnSessionEnded;
+            _sessions.SessionStarted += OnSessionStarted;
+        }
+
+        if (_reconnect is not null)
+            _reconnect.Requested += OnReconnectRequested;
     }
 
     private void OnSessionEnded(object? sender, SessionEndedEventArgs e)
     {
         // Operatör "Yayını Bitir" dedi → bütün hesapların yoklamasını hemen kes.
         try { _sessionCts?.Cancel(); } catch { /* ignore */ }
+    }
+
+    private void OnSessionStarted(object? sender, SessionStartedEventArgs e)
+    {
+        // "Yayın Başlat": üst döngü oturumu uyuyarak yokluyordu, sohbet bir dakikaya kadar
+        // gecikiyordu. Bekleyen döngü hemen uyanır ve oturum kapısına yeniden bakar.
+        _wake.Signal();
+    }
+
+    private void OnReconnectRequested(object? sender, EventArgs e)
+    {
+        // Çağıranı (arayüz) BEKLETMEZ: yalnız sinyal verir.
+        if (_sessions is not null && _sessions.GetActive() is null)
+        {
+            _log.LogInformation("[ChatReconnect] instagram: oturum yok; yapılacak iş yok");
+            return;
+        }
+
+        // Bekleyen hesap döngüleri (hesap okunamadı, hata sonrası bekleme, atlanmış Sayfa) hemen
+        // yeniden dener. Sağlıklı çalışan okuyucu beklemede değildir: ona dokunulmaz, filigranı
+        // korunur. Hız sınırı beklemesi okuyucunun içindedir ve kesilmez (kesmek sınırı uzatır).
+        var woken = _wake.Signal();
+        _log.LogInformation(
+            "[ChatReconnect] instagram: bekleyen {Count} döngü uyandırıldı; çalışan okuyuculara dokunulmadı",
+            woken);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -172,6 +213,10 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
             // kaynak sonradan kurulsaydı o olay kaçar, poller'lar bitmiş oturumda sürerdi.
             using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _sessionCts = session;
+
+            // Uyandırma sıra numarası kapılara BAKILMADAN önce okunur: oturum, kapı "oturum yok"
+            // dedikten sonra ve bekleme başlamadan önce başlarsa sinyali kaçmaz, bekleme hemen döner.
+            var epoch = _wake.Epoch;
             try
             {
                 // Kip kapısı ve trial kapısı YOK: uzantıdan Instagram kaldırıldığı
@@ -183,7 +228,7 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                 if (pages.Count == 0)
                 {
                     _health.Clear();
-                    await Task.Delay(_timings.IdleWhenOffline, _time, ct).ConfigureAwait(false);
+                    await _wake.DelayAsync(_timings.IdleWhenOffline, _time, ct, epoch).ConfigureAwait(false);
                     continue;
                 }
 
@@ -196,7 +241,7 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                     active = _sessions.GetActive();
                     if (active is null)
                     {
-                        await Task.Delay(_timings.IdleWhenOffline, _time, ct).ConfigureAwait(false);
+                        await _wake.DelayAsync(_timings.IdleWhenOffline, _time, ct, epoch).ConfigureAwait(false);
                         continue;
                     }
                 }
@@ -214,7 +259,10 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
 
                 if (ct.IsCancellationRequested) break;
 
-                await Task.Delay(_timings.IdleAfterPollerExit, _time, ct).ConfigureAwait(false);
+                // Oturum sonrası bekleme de uyandırılabilir: yeni oturum onu beklemez. Sıra numarası
+                // turun başındakidir; oturum toplanırken başlayan yeni oturum da böylece kaçmaz
+                // (oturum içinde gelen bir yenileme bu beklemeyi atlatır; zararsız, döngü kapıya döner).
+                await _wake.DelayAsync(_timings.IdleAfterPollerExit, _time, ct, epoch).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -267,7 +315,7 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     private async Task RunSessionAsync(IReadOnlyList<FacebookLinkedPage> pages, CancellationToken session)
     {
         var services = new InstagramLoopServices(
-            _oauth, _bus, _loggerFactory, _log, _spamFilter, _httpFactory, _health, _time, _timings);
+            _oauth, _bus, _loggerFactory, _log, _spamFilter, _httpFactory, _health, _time, _timings, _wake);
 
         // Sayfa (PageId) → o Sayfanın hesap döngüsü.
         var loops = new Dictionary<string, RunningLoop>(StringComparer.Ordinal);
@@ -462,7 +510,14 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     public void Dispose()
     {
         if (_sessions is not null)
+        {
             _sessions.SessionEnded -= OnSessionEnded;
+            _sessions.SessionStarted -= OnSessionStarted;
+        }
+
+        if (_reconnect is not null)
+            _reconnect.Requested -= OnReconnectRequested;
+
         try { _cts?.Cancel(); } catch { /* ignore */ }
         _cts?.Dispose();
     }
