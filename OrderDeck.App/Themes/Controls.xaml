@@ -107,11 +107,35 @@
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               Margin="{TemplateBinding Padding}"/>
+                            <!-- Meşgul halkası: içeriğin yerinde, onunla aynı
+                                 hücrede. İçerik gizlenir ama yerini korur;
+                                 düğmenin ölçüsü ve Content'i değişmez. -->
+                            <controls:BusyRing x:Name="Busy" Visibility="Collapsed"
+                                               Width="{StaticResource OD.Icon.Md}"
+                                               Height="{StaticResource OD.Icon.Md}"
+                                               Stroke="{TemplateBinding Foreground}"
+                                               Period="{StaticResource OD.Dur.Slow}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"/>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                        <!-- MEŞGUL (controls:ButtonState.IsBusy; testi
+                             ButtonBusyTests). Devre dışı tetikleyicisinden SONRA
+                             durmalı: komut çalışırken düğmeyi devre dışı bırakır,
+                             meşgul düğme o sırada solmamalı; sonraki tetikleyici
+                             öncekinin saydamlığını ezer. Geçişsiz: şablon
+                             tetikleyicisi olduğu için bayrak şablondan önce de
+                             sonra da verilse sonuç aynı. -->
+                        <Trigger Property="controls:ButtonState.IsBusy" Value="True">
+                            <Setter TargetName="Content" Property="Opacity" Value="0"/>
+                            <Setter TargetName="Busy" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="Root" Property="IsHitTestVisible" Value="False"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="1"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -195,10 +219,19 @@
                                 BorderBrush="{StaticResource OD.Brush.BorderStrong}"
                                 BorderThickness="1"
                                 CornerRadius="{StaticResource OD.Radius.Md}">
-                            <ContentPresenter x:Name="Content"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}"/>
+                            <Grid>
+                                <ContentPresenter x:Name="Content"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  Margin="{TemplateBinding Padding}"/>
+                                <controls:BusyRing x:Name="Busy" Visibility="Collapsed"
+                                                   Width="{StaticResource OD.Icon.Md}"
+                                                   Height="{StaticResource OD.Icon.Md}"
+                                                   Stroke="{TemplateBinding Foreground}"
+                                                   Period="{StaticResource OD.Dur.Slow}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                            </Grid>
                         </Border>
                         <Border x:Name="Press" Opacity="0" IsHitTestVisible="False"
                                 Background="{StaticResource OD.Brush.OnAccent}"
@@ -207,6 +240,14 @@
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                        <!-- Meşgul: OD.Button.Primary'deki not. -->
+                        <Trigger Property="controls:ButtonState.IsBusy" Value="True">
+                            <Setter TargetName="Content" Property="Opacity" Value="0"/>
+                            <Setter TargetName="Busy" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="Root" Property="IsHitTestVisible" Value="False"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="1"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -268,9 +309,21 @@
                         <Border x:Name="Bd" Background="Transparent"
                                 CornerRadius="{StaticResource OD.Radius.Md}"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter x:Name="Content"
-                                HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                VerticalAlignment="Center"/>
+                            <Grid>
+                                <ContentPresenter x:Name="Content"
+                                    HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                    VerticalAlignment="Center"/>
+                                <!-- Halka içeriğin hizasında durur: sola yaslı
+                                     bağlantıda solda, ikon düğmesinde ikonun
+                                     yerinde. -->
+                                <controls:BusyRing x:Name="Busy" Visibility="Collapsed"
+                                                   Width="{StaticResource OD.Icon.Md}"
+                                                   Height="{StaticResource OD.Icon.Md}"
+                                                   Stroke="{TemplateBinding Foreground}"
+                                                   Period="{StaticResource OD.Dur.Slow}"
+                                                   HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                   VerticalAlignment="Center"/>
+                            </Grid>
                         </Border>
                         <Border x:Name="Press" Opacity="0" IsHitTestVisible="False"
                                 Background="{StaticResource OD.Brush.OnAccent}"
@@ -283,6 +336,14 @@
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                        <!-- Meşgul: OD.Button.Primary'deki not. -->
+                        <Trigger Property="controls:ButtonState.IsBusy" Value="True">
+                            <Setter TargetName="Content" Property="Opacity" Value="0"/>
+                            <Setter TargetName="Busy" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="Root" Property="IsHitTestVisible" Value="False"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="1"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
