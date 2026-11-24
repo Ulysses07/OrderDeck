@@ -34,11 +34,15 @@ public sealed partial class MainShellViewModel
     /// öğe değiştirilir, fazlalık sondan silinir, eksik sona eklenir. Değişmeyen satırda açık ipucu her nabızda
     /// kapanmasın (canlı satırın ipucu her nabızda değişse de).
     /// </summary>
-    private void EvaluateInstagramHealth(bool sessionActive)
+    /// <param name="sessionActive">Yayın oturumu açık mı.</param>
+    /// <param name="otherSourceLive">Instagram dışında bağlı bir sohbet kaynağı var mı (YouTube, Facebook, TikTok):
+    /// yayını kapanan hesap o zaman da "yayın kesildi"dir.</param>
+    private void EvaluateInstagramHealth(bool sessionActive, bool otherSourceLive)
     {
         if (_instagramHealth is null) return;
 
-        var view = InstagramHealthPresenter.Evaluate(_instagramHealth.Snapshot(), InstagramNow(), sessionActive);
+        var view = InstagramHealthPresenter.Evaluate(
+            _instagramHealth.Snapshot(), InstagramNow(), sessionActive, otherSourceLive);
         _instagramView = view;
         if (!InstagramAccounts.SequenceEqual(view.Rows))
         {
