@@ -128,8 +128,10 @@ public sealed partial class MainShellViewModel
 
     // ── Yenileme ────────────────────────────────────────────────────────────────────────────────
 
+    // Yalnız MEŞGULKEN basılamaz. Onay işareti görünürken düğme etkindir: devre dışı kalsaydı işaret soluk
+    // çizilirdi (komut çalıştırılamazken düğme devre dışı görünümüne düşer).
     private bool CanRefreshChat() =>
-        IsStreamActive && _chatReconnect is not null && _chatRefresh.Phase == ChatRefreshPhase.Idle;
+        IsStreamActive && _chatReconnect is not null && _chatRefresh.Phase != ChatRefreshPhase.Busy;
 
     /// <summary>
     /// "Sohbeti yenile": her kaynağa "baştan bağlan" sinyali verir ve düğmeyi meşgul eder. Onay sormaz (geri

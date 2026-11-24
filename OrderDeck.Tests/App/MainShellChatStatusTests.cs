@@ -250,7 +250,8 @@ public class MainShellChatStatusTests
         _time.Advance(TimeSpan.FromMilliseconds(500));
         h.Vm.TickChatRefresh();
         (h.Vm.IsRefreshingChat, h.Vm.ChatRefreshDone).Should().Be((false, true));
-        h.Vm.RefreshChatCommand.CanExecute(null).Should().BeFalse("onay işareti görünürken düğme basılmaz");
+        // Onay işareti görünürken düğme etkindir: devre dışı kalsaydı işaret soluk çizilirdi.
+        h.Vm.RefreshChatCommand.CanExecute(null).Should().BeTrue();
 
         _time.Advance(TimeSpan.FromSeconds(1.5));
         h.Vm.TickChatRefresh();

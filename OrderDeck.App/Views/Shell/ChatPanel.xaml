@@ -1,6 +1,7 @@
 <UserControl x:Class="OrderDeck.App.Views.Shell.ChatPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:OrderDeck.App.Controls">
     <Border Style="{StaticResource OD.Panel}">
         <Grid>
             <Grid.RowDefinitions>
@@ -47,20 +48,61 @@
                 </Grid>
             </Border>
 
-            <!-- ── Instagram sağlık şeridi: hesap başına nokta + durum metni ─
-                 ShellBanners'a değil buraya: sohbet paneli dar kipte de
-                 görünür ve sağlık durumu dakikalarca sürebilir. Uyarı işareti
-                 simge değil renkli noktadır (kenar çubuğu deseni). -->
+            <!-- ── Sohbet durum şeridi + "Sohbeti yenile" (tasarım 2026-11-24 §5.4, §5.5) ─
+                 Bütün sohbet kaynakları: YouTube, TikTok, Facebook, sonra
+                 Instagram hesapları. Satır = 8 px nokta + metin; sağlıklı kaynak
+                 yalnız adını yazar. Durum rengi yalnız noktadadır, platform
+                 ikonu yok (marka ikonlarının kullanım koşulu sohbet satırı için).
+                 ShellBanners'a değil buraya: sohbet paneli dar kipte de görünür
+                 ve durum dakikalarca sürebilir. Yayın oturumu açıkken hep
+                 görünür (yenile düğmesinin yeri burası), oturum yokken kalkar. -->
             <Border Grid.Row="1" Padding="{StaticResource OD.Pad.3}"
                     BorderBrush="{StaticResource OD.Brush.Border}"
                     BorderThickness="0,0,0,1"
-                    Visibility="{Binding ShowInstagramStatus,
+                    Visibility="{Binding ShowChatStatus,
                                  Converter={StaticResource BoolToVisibleConverter}}">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Left" Text="Instagram"
-                               Style="{StaticResource OD.Text.Micro}"
-                               VerticalAlignment="Center"/>
-                    <ItemsControl ItemsSource="{Binding InstagramAccounts}">
+                    <!-- Sağ uçta, İLK satırın hizasında (şerit alt satıra inse de
+                         ortalanmaz). 24 px'lik düğme satırdan yüksek; eksi dikey
+                         boşluk şeridi şişirmesini önler: düğme satırın ortasına
+                         oturur, taşan kısmı şeridin dolgusuna biner.
+                         Meşgulken ikonun yerinde halka döner (ButtonState.IsBusy);
+                         sorunsuz bitince ikon kısa süre onay işareti olur. -->
+                    <Button x:Name="RefreshChatButton"
+                            DockPanel.Dock="Right"
+                            VerticalAlignment="Top"
+                            Width="24" Height="24" Margin="0,-4" Padding="0"
+                            HorizontalContentAlignment="Center"
+                            Command="{Binding RefreshChatCommand}"
+                            controls:ButtonState.IsBusy="{Binding IsRefreshingChat}"
+                            ToolTip="Sohbet bağlantılarını yenile">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource OD.Button.Ghost}">
+                                <Setter Property="AutomationProperties.Name" Value="Sohbet bağlantılarını yenile"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRefreshingChat}" Value="True">
+                                        <Setter Property="AutomationProperties.Name"
+                                                Value="Sohbet bağlantıları yenileniyor"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                        <Path>
+                            <Path.Style>
+                                <Style TargetType="Path" BasedOn="{StaticResource OD.IconPath}">
+                                    <Setter Property="Data" Value="{StaticResource OD.Path.Refresh}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ChatRefreshDone}" Value="True">
+                                            <Setter Property="Data" Value="{StaticResource OD.Path.Check}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Path.Style>
+                        </Path>
+                    </Button>
+                    <ItemsControl x:Name="ChatStatusList"
+                                  ItemsSource="{Binding ChatStatusRows}"
+                                  VerticalAlignment="Top">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <WrapPanel/>
@@ -68,12 +110,22 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
+                                <!-- Öğeler arası boşluk SAĞDA: alt satır soldan hizalı
+                                     başlar. "Instagram" etiketi ilk hesabın öğesinin
+                                     içinde: şerit nereden kırılırsa kırılsın hesabından
+                                     ayrılmaz. -->
                                 <StackPanel Orientation="Horizontal"
                                             ToolTip="{Binding Tooltip}"
-                                            Margin="{StaticResource OD.Pad.Left4}">
+                                            Margin="{StaticResource OD.Pad.Right4}">
+                                    <TextBlock Text="{Binding GroupLabel}"
+                                               Style="{StaticResource OD.Text.Micro}"
+                                               VerticalAlignment="Center"
+                                               Margin="{StaticResource OD.Pad.Right3}"
+                                               Visibility="{Binding GroupLabel,
+                                                            Converter={StaticResource NullToCollapsedConverter}}"/>
                                     <Ellipse Width="8" Height="8"
                                              VerticalAlignment="Center"
-                                             Margin="{StaticResource OD.Pad.2}">
+                                             Margin="{StaticResource OD.Pad.Right2}">
                                         <Ellipse.Style>
                                             <Style TargetType="Ellipse">
                                                 <Setter Property="Fill" Value="{StaticResource OD.Brush.TextMute}"/>
@@ -88,7 +140,7 @@
                                             </Style>
                                         </Ellipse.Style>
                                     </Ellipse>
-                                    <TextBlock Text="{Binding Text}"
+                                    <TextBlock Text="{Binding DisplayText}"
                                                FontSize="{StaticResource OD.Font.F1}"
                                                Foreground="{StaticResource OD.Brush.TextDim}"
                                                VerticalAlignment="Center"/>
