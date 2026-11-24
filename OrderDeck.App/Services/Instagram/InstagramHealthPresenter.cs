@@ -29,11 +29,17 @@ public enum InstagramStatusSeverity
 /// <param name="AnyAccountLive">En az bir hesap canlı mı (durumu canlı ve yanıtsız değil).</param>
 /// <param name="TopDotTooltip">Üst bardaki sohbet noktasını sarartan Instagram durumunun cümlesi; noktayı sarartan
 /// durum yoksa null.</param>
+/// <param name="ProblemPageIds">Satırı bir sorun durumunda olan Sayfalar (rengi soluk olsa da): canlı, bağlanan,
+/// yayın bekleyen ve yayını biten hesap dışındaki her satır. "Sohbeti yenile" bunlardan biri kalmışsa onay işareti
+/// göstermez. Satır kaydına alan olarak eklenmedi: satırlar değer eşitliğiyle karşılaştırılıyor.</param>
+/// <param name="ConnectingPageIds">Satırı "bağlanıyor" olan Sayfalar; yenileme bunlar bitince biter.</param>
 public sealed record InstagramHealthView(
     IReadOnlyList<InstagramAccountStatusViewModel> Rows,
     bool ShowStrip,
     bool AnyAccountLive,
-    string? TopDotTooltip);
+    string? TopDotTooltip,
+    IReadOnlySet<string> ProblemPageIds,
+    IReadOnlySet<string> ConnectingPageIds);
 
 /// <summary>
 /// Instagram hesaplarının sağlık olgularını (<see cref="InstagramHealthMonitor.Snapshot"/>) ana ekranın gösterdiğine
@@ -98,14 +104,24 @@ public static class InstagramHealthPresenter
     private const string ExtraNotLinkedTooltip =
         "Bu Sayfaya bir Instagram profesyonel hesabı bağla ya da Sayfayı Ayarlar'dan kaldır.";
 
+    /// <summary>"Yayın kesildi"nin, canlı kalan kaynak başka bir Instagram hesabı DEĞİL başka bir platformken
+    /// ipucu.</summary>
+    private const string BroadcastCutElsewhereTooltip =
+        "Bu hesabın yayını kapandı; yorumları gelmiyor. Öbür kaynaklar yayında.";
+
     /// <summary>Anlık görüntüyü görünüme çevirir.</summary>
     /// <param name="snapshot">İzleyicinin anlık görüntüsü: bağlı her Sayfa için bir girdi.</param>
     /// <param name="now">Değerlendirme anı. Ofseti, metinlerdeki saatin (SS:DD) yazılacağı saat dilimidir: çağıran
     /// yerel saatli anı verir.</param>
     /// <param name="sessionActive">Yayın oturumu açık mı. Yalnız <see cref="InstagramHealthView.ShowStrip"/>'i
     /// kapılar; satırlar, canlılık bilgisi ve üst nokta ipucu oturumdan bağımsız hesaplanır.</param>
+    /// <param name="otherSourceLive">Instagram dışında bağlı bir sohbet kaynağı var mı (YouTube, Facebook, TikTok).
+    /// Yalnız "yayın kesildi" kuralına katılır: yayını kapanan hesap, yayın başka bir kaynakta sürüyorsa da uyarıdır.
+    /// "Canlı yayın bulunamadı" buna BAKMAZ (yalnız öbür Instagram hesaplarına bakar): o gece Instagram'da yayın
+    /// yapmayan yayıncı, YouTube'u canlı diye uyarı görmez.</param>
     public static InstagramHealthView Evaluate(
-        IReadOnlyList<InstagramAccountHealth> snapshot, DateTimeOffset now, bool sessionActive)
+        IReadOnlyList<InstagramAccountHealth> snapshot, DateTimeOffset now, bool sessionActive,
+        bool otherSourceLive = false)
     {
         // 1. geçiş: her girdinin yanıtsızlığı ve canlı küme. "Canlı yayın bulunamadı" ve "yayın kesildi" ÖBÜR
         // hesapların canlılığına baktığı için bu bilgi satırlardan önce hazır olmalıdır.
@@ -122,10 +138,16 @@ public static class InstagramHealthPresenter
         // 2. geçiş: girdiler anlık görüntü sırasıyla satıra çevrilir.
         var rows = new List<InstagramAccountStatusViewModel>(snapshot.Count);
         var raisingTopDot = new List<InstagramAccountStatusViewModel>();
+        var problems = new HashSet<string>(StringComparer.Ordinal);
+        var connecting = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < snapshot.Count; i++)
         {
             var entry = snapshot[i];
-            if (Describe(entry, now, snapshot.Count, unresponsiveFor[i], liveSince) is not { } line) continue;
+            if (Describe(entry, now, snapshot.Count, unresponsiveFor[i], liveSince, otherSourceLive) is not { } line)
+                continue;
+
+            if (line.IsProblem) problems.Add(entry.PageId);
+            if (line.IsConnecting) connecting.Add(entry.PageId);
 
             var label = line.ByPageName || string.IsNullOrWhiteSpace(entry.Username)
                 ? entry.PageName
@@ -146,7 +168,8 @@ public static class InstagramHealthPresenter
             _ => $"Instagram: {raisingTopDot.Count} hesapta sorun " +
                  $"({string.Join(", ", raisingTopDot.Select(r => r.Label))}).",
         };
-        return new InstagramHealthView(rows, showStrip, AnyAccountLive: liveSince is not null, topDotTooltip);
+        return new InstagramHealthView(
+            rows, showStrip, AnyAccountLive: liveSince is not null, topDotTooltip, problems, connecting);
     }
 
     /// <summary>
@@ -158,17 +181,21 @@ public static class InstagramHealthPresenter
     /// <param name="ByPageName">Satır, kullanıcı adı bilinse de Sayfa adıyla ve "{Sayfa adı}: …" biçiminde
     /// yazılır.</param>
     /// <param name="StripOnly">Satır sarı olsa da üst noktayı sarartmaz.</param>
+    /// <param name="IsProblem">Satır bir sorun durumudur (rengi uyarı kapısı yüzünden soluk olsa da).</param>
+    /// <param name="IsConnecting">Satır "bağlanıyor"dur.</param>
     private readonly record struct Line(
         string StateText,
         InstagramStatusSeverity Severity,
         string? Tooltip,
         bool ByPageName = false,
-        bool StripOnly = false);
+        bool StripOnly = false,
+        bool IsProblem = false,
+        bool IsConnecting = false);
 
     /// <summary>Girdinin satırı; girdi şeride girmiyorsa null.</summary>
     private static Line? Describe(
         InstagramAccountHealth entry, DateTimeOffset now, int pageCount, TimeSpan? unresponsiveFor,
-        DateTimeOffset? liveSince)
+        DateTimeOffset? liveSince, bool otherSourceLive)
     {
         // Yalnız Facebook kullanan tek Sayfalı kurulum (Sayfasında Instagram hesabı yok) hiçbir şey görmez. Gizleme
         // "yanıt yok" türetmesinden ÖNCE uygulanır: yeniden deneme saati geçince satır başka bir metinle çıkmasın.
@@ -183,7 +210,7 @@ public static class InstagramHealthPresenter
 
         // "Yanıt yok" taban durumun kendi satırından önce gelir ve bir sorun durumudur.
         if (unresponsiveFor is { } quiet)
-            return new Line($"yanıt yok ({WholeSeconds(quiet)} sn)", problem, UnresponsiveTooltip);
+            return new Line($"yanıt yok ({WholeSeconds(quiet)} sn)", problem, UnresponsiveTooltip, IsProblem: true);
 
         switch (entry.State)
         {
@@ -192,42 +219,46 @@ public static class InstagramHealthPresenter
                     "canlı", InstagramStatusSeverity.Live, $"Son yanıt {WholeSeconds(Silence(entry, now))} sn önce");
 
             case InstagramAccountState.Starting:
-                return new Line("bağlanıyor", InstagramStatusSeverity.Neutral, Tooltip: null);
+                return new Line("bağlanıyor", InstagramStatusSeverity.Neutral, Tooltip: null, IsConnecting: true);
 
             case InstagramAccountState.WaitingForBroadcast:
                 // Süre şu iki andan geç olanından ölçülür: bu hesabın beklemeye başladığı an ve canlı hesaplardan
                 // en erken canlı olanın canlı olduğu an. Canlı hesap yoksa hesap yalnızca yayın bekliyordur.
+                // Öbür platformlar buraya KATILMAZ (bkz. Evaluate, otherSourceLive).
                 return liveSince is { } otherLiveSince
                        && now - Later(entry.Since, otherLiveSince) > MissingBroadcastAfter
                     ? new Line(
                         "canlı yayın bulunamadı", InstagramStatusSeverity.Warning, MissingBroadcastTooltip,
-                        StripOnly: true)
+                        StripOnly: true, IsProblem: true)
                     : new Line("yayın bekleniyor", InstagramStatusSeverity.Neutral, WaitingTooltip);
 
             case InstagramAccountState.BroadcastEnded:
-                // Yalnız başka bir hesap hâlâ canlıyken uyarıdır; canlı hesap kalmadıysa yayın bitmiştir.
+                // Yalnız başka bir kaynak hâlâ canlıyken uyarıdır: başka bir Instagram hesabı ya da başka bir
+                // platform. Canlı kaynak kalmadıysa yayın bitmiştir.
                 var endedAt = Clock(entry.Since, now);
-                return liveSince is not null
+                return liveSince is not null || otherSourceLive
                     ? new Line(
-                        $"yayın kesildi ({endedAt})", InstagramStatusSeverity.Warning, BroadcastCutTooltip,
-                        StripOnly: now - entry.Since > EndedTopDotFor)
+                        $"yayın kesildi ({endedAt})", InstagramStatusSeverity.Warning,
+                        liveSince is not null ? BroadcastCutTooltip : BroadcastCutElsewhereTooltip,
+                        StripOnly: now - entry.Since > EndedTopDotFor, IsProblem: true)
                     : new Line($"yayın bitti ({endedAt})", InstagramStatusSeverity.Neutral, Tooltip: null);
 
             case InstagramAccountState.RateLimited:
-                return new Line("hız sınırı" + RetryClause(entry, now), problem, RateLimitedTooltip);
+                return new Line("hız sınırı" + RetryClause(entry, now), problem, RateLimitedTooltip, IsProblem: true);
 
             case InstagramAccountState.Faulted:
-                return new Line("bağlantı yenilenmeli", problem, FaultedTooltip(entry, now));
+                return new Line("bağlantı yenilenmeli", problem, FaultedTooltip(entry, now), IsProblem: true);
 
             case InstagramAccountState.ResolveFailed:
                 return new Line(
                     "hesap bilgisi okunamadı" + RetryClause(entry, now), problem, ResolveFailedTooltip,
-                    ByPageName: true);
+                    ByPageName: true, IsProblem: true);
 
             case InstagramAccountState.NotLinked:
                 return new Line(
                     "Instagram hesabı bağlı değil", problem,
-                    entry.IsPrimary ? PrimaryNotLinkedTooltip : ExtraNotLinkedTooltip, ByPageName: true);
+                    entry.IsPrimary ? PrimaryNotLinkedTooltip : ExtraNotLinkedTooltip, ByPageName: true,
+                    IsProblem: true);
 
             default:
                 return null;   // Stopped, Skipped: şeride girmez
@@ -292,18 +323,10 @@ public static class InstagramHealthPresenter
     /// Anın, <paramref name="now"/>'ın ofsetindeki duvar saati (SS:DD). Makinenin saat dilimi değil çağıranın
     /// verdiği ofset esas alınır: saat dilimi de girdidir, sonuç makineye göre değişmez.
     /// </summary>
-    private static string Clock(DateTimeOffset at, DateTimeOffset now) =>
-        at.ToOffset(now.Offset).ToString("HH:mm", CultureInfo.InvariantCulture);
+    private static string Clock(DateTimeOffset at, DateTimeOffset now) => Chat.StatusClock.Clock(at, now);
 
-    /// <summary>
-    /// <see cref="Clock"/> + bulunma eki: "21:20'de". Eki mevcut <see cref="PaymentResultPresenter.Locative"/>
-    /// verir; o, anı makinenin yerel saatine çevirip okuduğu için aynı duvar saati yerel ofsetle yeniden kurulup
-    /// verilir (an doğrudan verilseydi ek, <paramref name="now"/>'ın ofsetindeki değil makinedeki saate uyardı).
-    /// </summary>
-    private static string ClockWithLocative(DateTimeOffset at, DateTimeOffset now)
-    {
-        var wall = at.ToOffset(now.Offset).DateTime;
-        var sameWallClockLocally = new DateTimeOffset(wall, TimeZoneInfo.Local.GetUtcOffset(wall));
-        return Clock(at, now) + PaymentResultPresenter.Locative(sameWallClockLocally);
-    }
+    /// <summary><see cref="Clock"/> + bulunma eki: "21:20'de". Platform satırlarıyla ortak:
+    /// <see cref="Chat.StatusClock"/>.</summary>
+    private static string ClockWithLocative(DateTimeOffset at, DateTimeOffset now) =>
+        Chat.StatusClock.ClockWithLocative(at, now);
 }
