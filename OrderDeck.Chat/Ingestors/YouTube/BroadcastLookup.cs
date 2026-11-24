@@ -49,4 +49,10 @@ public static class YouTubeStatusMessages
         "Bu YouTube hesabının kanalın canlı yayınını okuma yetkisi yok. Ayarlar > YouTube'dan doğru hesapla bağlan.";
 
     public const string QuotaExhausted = "Günlük YouTube API kotası doldu; sohbet yarına kadar okunamayabilir.";
+
+    public const string NoApiKey = "Bu kurulumda YouTube API anahtarı yok; sohbet okunamıyor.";
+
+    public const string FixedVideoNotLive =
+        "Ayarlardaki YouTube bağlantısı canlı bir yayına ait değil. " +
+        "Ayarlar > YouTube'a kanal adını ya da yeni yayının bağlantısını yaz.";
 }

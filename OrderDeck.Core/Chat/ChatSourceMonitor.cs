@@ -58,6 +58,11 @@ public sealed class ChatSourceMonitor
 
     private readonly Lock _gate = new();
     private readonly Dictionary<string, ChatSourceHealth> _entries = new(StringComparer.Ordinal);
+
+    /// <summary>"Bağlanıyor" araya girmeden önceki durum ve giriş anı, platform başına.</summary>
+    private readonly Dictionary<string, (ChatSourceState State, DateTimeOffset Since)> _beforeConnecting =
+        new(StringComparer.Ordinal);
+
     private readonly TimeProvider _time;
 
     public ChatSourceMonitor(TimeProvider? time = null) => _time = time ?? TimeProvider.System;
@@ -65,6 +70,11 @@ public sealed class ChatSourceMonitor
     /// <summary>
     /// Kaynağın durumunu yazar. Açıklama ve yeniden deneme saati her bildirimde yazılır (verilmeyen
     /// silinir); duruma giriş anı yalnız durum DEĞİŞİNCE şimdiye çekilir.
+    ///
+    /// <para><b>"Bağlanıyor" bir sorunun saatini silmez.</b> Yenileme her kaynağı "bağlanıyor"a alır;
+    /// kaynak ardından AYNI duruma dönerse (yayın hâlâ kapalı, hesap hâlâ bağlı değil) giriş anı
+    /// eskisidir: kesinti yenilemeyle başlamadı. Yeniden kurulan bağlantı (<see cref="ChatSourceState.Live"/>)
+    /// ise yeni bağlantıdır, kendi anından sayılır.</para>
     /// </summary>
     public void Report(string platform, ChatSourceState state, string? detail = null, DateTimeOffset? retryAt = null)
     {
@@ -73,11 +83,28 @@ public sealed class ChatSourceMonitor
         {
             var now = _time.GetUtcNow();
             var previous = _entries.GetValueOrDefault(key);
+
+            var since = now;
+            if (previous is not null)
+            {
+                if (previous.State == state)
+                    since = previous.Since;
+                else if (state == ChatSourceState.Connecting)
+                    _beforeConnecting[key] = (previous.State, previous.Since);
+                else if (previous.State == ChatSourceState.Connecting
+                         && state != ChatSourceState.Live
+                         && _beforeConnecting.TryGetValue(key, out var before)
+                         && before.State == state)
+                    since = before.Since;
+            }
+
+            if (state != ChatSourceState.Connecting) _beforeConnecting.Remove(key);
+
             _entries[key] = new ChatSourceHealth(
                 key,
                 state,
                 detail,
-                previous is not null && previous.State == state ? previous.Since : now,
+                since,
                 retryAt,
                 state == ChatSourceState.Live || previous is { WasLiveThisSession: true });
         }

@@ -201,9 +201,11 @@ public sealed class AppHost : IDisposable
                 sessions: sp.GetRequiredService<StreamSessionService>(),
                 httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
                 viewers: sp.GetRequiredService<ViewerCountTracker>(),
-                activeBroadcastResolver: ct => sp
+                // Sohbet döngüsü Google izin sayfasını açmaz: arama önce hesabın
+                // bağlı olup olmadığına tarayıcı açmadan bakar.
+                broadcastLookup: (fresh, ct) => sp
                     .GetRequiredService<OrderDeck.Chat.YouTube.YouTubeModerationService>()
-                    .GetActiveBroadcastAsync(ct)));
+                    .LookupActiveBroadcastAsync(fresh, ct)));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without
