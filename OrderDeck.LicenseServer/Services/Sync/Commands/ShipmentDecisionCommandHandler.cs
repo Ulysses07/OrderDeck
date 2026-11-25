@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
-using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
@@ -99,7 +98,7 @@ public sealed class ShipmentDecisionCommandHandler : ISalesCommandHandler
             var customer = (await customerIds.CanonicalHexOfAsync(scope.LicenseId, [owner], ct))[owner];
             await scope.AcquireLockAsync(SalesCommandLock.ShipmentResource(scope.LicenseId, customer), ct);
 
-            // Dosyalar bağlı siparişlerden ÖNCE (jeton sırası): hedef ve müşterinin açık dosyaları.
+            // Dosyalar bağlı siparişlerden ÖNCE (jeton sırası): hedef burada, müşterinin öbür açık dosyaları çekirdekte.
             var target = (await scope.LoadShipmentsAsync([payload.ShipmentId], ct)).GetValueOrDefault(payload.ShipmentId)
                          ?? throw SalesCommandRejection.UnknownShipment(payload.ShipmentId);
             if (target.Status == ShipmentStatus.Shipped)
@@ -107,61 +106,13 @@ public sealed class ShipmentDecisionCommandHandler : ISalesCommandHandler
             if (target.Version != payload.ExpectedVersion)
                 throw SalesCommandRejection.ShipmentStale(target.Id);
 
-            var decided = new List<Shipment> { target };
-            if (target.Status is ShipmentStatus.Pending or ShipmentStatus.Held)
-                decided.AddRange((await scope.LoadOpenShipmentsAsync(customer, target.CustomerId, ct))
-                    .Where(s => s.Id != target.Id));
+            var decided = await ShipmentDecisionCore.ApplyAsync(scope, customer, target, payload.Decision, ct);
 
-            // Kargoya verme (§7.2): o anda iptal edilmiş bağlar çözülür, sonra tutar bir kez türetilip donar.
-            var unlinked = new List<Guid>();
-            if (payload.Decision == ShipNow)
+            return new SalesCommandOutcome(decided.UnlinkedOrderIds, [])
             {
-                var linked = await scope.LoadLinkedOrdersAsync(decided.Select(s => s.Id).ToList(), ct);
-                foreach (var order in ShipmentShipping.UnlinkCancelled(linked, decided, scope.Now))
-                {
-                    scope.MarkChanged(order, OrderUnit.Shipment);
-                    unlinked.Add(order.Id);
-                }
-                await scope.DeriveShipmentsAsync(decided, ct);
-            }
-
-            var statusChanged = false;
-            foreach (var shipment in decided)
-            {
-                var before = shipment.Status;
-                Decide(shipment, payload.Decision, scope.Now);
-                statusChanged |= shipment.Status != before;
-                shipment.CommandedAt = scope.Now;
-                scope.MarkShipmentChanged(shipment);
-            }
-
-            return new SalesCommandOutcome(unlinked, [])
-            {
-                DecidedShipmentIds = decided.Select(s => s.Id).ToList(),
-                ShipmentStatusChangedCustomers = statusChanged ? [customer] : [],
+                DecidedShipmentIds = decided.ShipmentIds,
+                ShipmentStatusChangedCustomers = decided.StatusChanged ? [customer] : [],
             };
-        }
-
-        /// <summary>Yerel <c>ShipmentService.Decide</c>'ın aynası.</summary>
-        private static void Decide(Shipment shipment, string decision, DateTimeOffset now)
-        {
-            switch (decision)
-            {
-                case ShipNow:
-                    shipment.Status = ShipmentStatus.Shipped;
-                    shipment.ShippedAt = now;
-                    break;
-                case Hold:
-                    shipment.Status = ShipmentStatus.Held;
-                    // Yalnız ilk bekletmede; sonraki kararlar korur.
-                    shipment.HeldAt ??= now;
-                    break;
-                case RecipientPays:
-                    shipment.Status = ShipmentStatus.RecipientPays;
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(decision), decision, null);
-            }
         }
     }
 }
