@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Push;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -245,7 +246,7 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().HaveCount(1);
         var n = _factory.Push.SentToShoppers[0];
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
-        n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentApprovedPushBody);
+        n.Body.Should().Be(PaymentPushTexts.PaymentApprovedPushBody);
         n.Body.Should().NotContain("480", "tutar FCM'ye gitmez (KVKK K-5)");
         // Başlık yalnız yayıncı adı: ödeyen adı, referans no gibi bir alan eklenirse düşer (KVKK K-5).
         n.Title.Should().Be(await BroadcasterNameAsync(customerId));
@@ -271,7 +272,7 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().HaveCount(1);
         var n = _factory.Push.SentToShoppers[0];
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
-        n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentRejectedPushBody);
+        n.Body.Should().Be(PaymentPushTexts.PaymentRejectedPushBody);
         n.Body.Should().NotContain("Tutar uyu", "serbest metin ret gerekçesi FCM'ye gitmez (KVKK K-5)").And.NotContain("100");
         // Başlık yalnız yayıncı adı: ödeyen adı, referans no gibi bir alan eklenirse düşer (KVKK K-5).
         n.Title.Should().Be(await BroadcasterNameAsync(customerId));

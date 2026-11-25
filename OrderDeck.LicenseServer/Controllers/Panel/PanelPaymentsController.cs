@@ -25,10 +25,6 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
 public sealed class PanelPaymentsController : ControllerBase
 {
-    /// <summary>KVKK K-5: bildirim gövdesi Google FCM'ye gider; tutar ve serbest metin ret gerekçesi YAZILMAZ, ayrıntı uygulamada.</summary>
-    public const string PaymentApprovedPushBody = "Dekontun onaylandı.";
-    public const string PaymentRejectedPushBody = "Dekontun reddedildi. Ayrıntıyı uygulamada görebilirsin.";
-
     private readonly LicenseDbContext _db;
     private readonly INotificationSender _push;
     private readonly LabelRuleApplier _labels;
@@ -258,7 +254,7 @@ public sealed class PanelPaymentsController : ControllerBase
 
             // KVKK K-5: tutar ve ret gerekçesi FCM'ye gitmez; yayıncı adı (başlık) ve olgu kalır.
             var title = broadcasterName;
-            var body = approved ? PaymentApprovedPushBody : PaymentRejectedPushBody;
+            var body = approved ? PaymentPushTexts.PaymentApprovedPushBody : PaymentPushTexts.PaymentRejectedPushBody;
 
             await _push.SendToShoppersAsync(
                 new[] { shopper.Id },
