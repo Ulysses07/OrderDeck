@@ -162,6 +162,8 @@ public sealed class BankModelTests
     [InlineData(typeof(BankTransaction))]
     [InlineData(typeof(CustomerIbanMemory))]
     [InlineData(typeof(PaymentMatchGap))]
+    [InlineData(typeof(BankDecisionEvent))]
+    [InlineData(typeof(BankIbanState))]
     public void Lisansa_dogrudan_bagli_tablo_lisansla_kaskadla_silinir(Type entity)
     {
         using var db = NewDb();
@@ -193,6 +195,7 @@ public sealed class BankModelTests
     [InlineData(typeof(BankTransaction), "BankTransactions", nameof(BankTransaction.CounterpartyIbanHash))]
     [InlineData(typeof(BankTransaction), "BankTransactions", nameof(BankTransaction.CounterpartyTaxIdHash))]
     [InlineData(typeof(CustomerIbanMemory), "CustomerIbanMemories", nameof(CustomerIbanMemory.IbanHash))]
+    [InlineData(typeof(BankIbanState), "BankIbanStates", nameof(BankIbanState.IbanHash))]
     public void Hash_sutununa_yalniz_64_hex_yazilabilir(Type entity, string table, string column)
     {
         DesignModel().FindEntityType(entity)!.GetCheckConstraints()
@@ -214,6 +217,8 @@ public sealed class BankModelTests
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.Decision))]
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DecidedVia))]
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DismissReason))]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.ActorKind))]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.Surface))]
     public void Enum_alanlari_string_saklanir(Type entity, string property)
     {
         using var db = NewDb();
@@ -234,6 +239,10 @@ public sealed class BankModelTests
     [InlineData(typeof(CustomerIbanMemory), nameof(CustomerIbanMemory.IbanMasked), 40)]
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.AskReasons), 512)]
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DismissNote), 300)]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.Action), 32)]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.ReasonCode), 32)]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.AskReasons), 512)]
+    [InlineData(typeof(BankIbanState), nameof(BankIbanState.IbanHash), 64)]
     public void Hash_maske_ve_aciklama_sutun_uzunluklari(Type entity, string property, int maxLength)
     {
         using var db = NewDb();
@@ -259,6 +268,8 @@ public sealed class BankModelTests
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DecidedVia))]
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DismissReason))]
     [InlineData(typeof(CustomerIbanMemory), nameof(CustomerIbanMemory.LearnedFrom))]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.ActorKind))]
+    [InlineData(typeof(BankDecisionEvent), nameof(BankDecisionEvent.Surface))]
     public void Enum_adlari_sutuna_sigar(Type entity, string property)
     {
         var p = DesignModel().FindEntityType(entity)!.FindProperty(property)!;
@@ -291,5 +302,82 @@ public sealed class BankModelTests
     {
         var l = new License();
         (l.BankQuestionsEnabled, l.BankAutoApproveEnabled, l.BankQuestionsSince).Should().Be((false, false, (DateTimeOffset?)null));
+    }
+
+    [Fact]
+    public void CustomerIbanMemory_dar_tekil_yaninda_lisans_ozet_musteri_de_tekil() =>
+        DesignModel().FindEntityType(typeof(CustomerIbanMemory))!.GetIndexes().Where(i => i.IsUnique)
+            .Select(i => string.Join(",", i.Properties.Select(p => p.Name)))
+            .Should().BeEquivalentTo("LicenseId,IbanHash", "LicenseId,IbanHash,WpfCustomerId"); // dar olan S3b'de düşer
+
+    [Fact]
+    public void Karar_olayinin_tek_FKsi_lisans_ve_RequestId_tekil_degil()
+    {
+        var et = DesignModel().FindEntityType(typeof(BankDecisionEvent))!;
+        et.GetForeignKeys().Should().ContainSingle().Which.PrincipalEntityType.ClrType.Should().Be(typeof(License));
+        var request = et.GetIndexes().Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "RequestId" }));
+        (request.IsUnique, request.GetFilter()).Should().Be((false, "[RequestId] IS NOT NULL"));
+    }
+
+    [Fact]
+    public void Karar_olayinin_indeksleri_dolu_baglari_arar() =>
+        DesignModel().FindEntityType(typeof(BankDecisionEvent))!.GetIndexes()
+            .Select(i => $"{string.Join(",", i.Properties.Select(p => p.Name))} {i.GetFilter()}".TrimEnd())
+            .Should().BeEquivalentTo("LicenseId,CreatedAt", "LicenseId,TxId [TxId] IS NOT NULL", "PaymentId [PaymentId] IS NOT NULL",
+                "RelatedPaymentId [RelatedPaymentId] IS NOT NULL", "LicenseId,RequestId [RequestId] IS NOT NULL");
+
+    [Fact]
+    public void IbanState_lisans_icinde_tekil_UpdatedAt_jeton()
+    {
+        var et = DesignModel().FindEntityType(typeof(BankIbanState))!;
+        et.GetIndexes().Should().Contain(i => i.IsUnique && i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "IbanHash" }));
+        et.FindProperty(nameof(BankIbanState.UpdatedAt))!.IsConcurrencyToken.Should().BeTrue();
+        et.GetIndexes().Should().Contain(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LastTransferAt" }),
+            "12 ay saklaması lisanstan bağımsız, son havaleye göre arar");
+    }
+
+    /// <summary><see cref="PaymentMatch_UpdatedAt_atamayan_yazan_da_jetonu_ilerletir"/> ile aynı kural: "Evet" ile "Hayır"
+    /// aynı satırda yarışır, UpdatedAt'i atamayı unutan yazan da jetonu ilerletir.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IbanState_UpdatedAt_atamayan_yazan_da_jetonu_ilerletir(bool useAsyncSave)
+    {
+        var options = new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase($"bank-model-{Guid.NewGuid():N}").Options;
+        var stateId = Guid.NewGuid();
+        var originalStamp = DateTimeOffset.UtcNow.AddDays(1);
+        await using (var seed = new LicenseDbContext(options))
+        {
+            seed.BankIbanStates.Add(new BankIbanState
+            {
+                Id = stateId, LicenseId = Guid.NewGuid(), IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}",
+                LastTransferAt = DateTimeOffset.UtcNow, UpdatedAt = originalStamp,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using var stale = new LicenseDbContext(options);
+        await using var writer = new LicenseDbContext(options);
+        var staleRow = await stale.BankIbanStates.SingleAsync(s => s.Id == stateId);
+        var row = await writer.BankIbanStates.SingleAsync(s => s.Id == stateId);
+
+        // Yazan UpdatedAt atamayı unutur.
+        row.Disputed = true;
+        if (useAsyncSave) await writer.SaveChangesAsync();
+        else writer.SaveChanges();
+
+        row.UpdatedAt.Should().Be(originalStamp.AddTicks(1));
+        staleRow.Shared = true;
+        Func<Task> staleWrite = async () =>
+        {
+            if (useAsyncSave) await stale.SaveChangesAsync();
+            else stale.SaveChanges();
+        };
+
+        await staleWrite.Should().ThrowAsync<DbUpdateConcurrencyException>();
+        await using var read = new LicenseDbContext(options);
+        var persisted = await read.BankIbanStates.AsNoTracking().SingleAsync(s => s.Id == stateId);
+        (persisted.Disputed, persisted.Shared, persisted.UpdatedAt).Should().Be((true, false, originalStamp.AddTicks(1)));
     }
 }
