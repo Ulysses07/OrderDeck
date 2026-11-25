@@ -289,6 +289,40 @@ public class ShipmentServiceTests
     }
 
     [Fact]
+    public void EvaluatePool_tam_esikte_ulasildi_bir_kurus_altinda_kalan_bir_kurus()
+    {
+        var (db, svc, _, _, _, _) = Fx(threshold: 500m);
+        using var _d = db;
+        var mirror = new Shipment("kargo-ayna", Cid, ShipmentStatus.Pending, 40, null, null, 300m);
+
+        svc.EvaluatePool(mirror, 500m).Should().BeEquivalentTo(
+            new { ThresholdReached = true, AmountToThreshold = 0m, ShouldPrompt = true, AllLabelsPaid = true });
+        svc.EvaluatePool(mirror, 499.99m).Should().BeEquivalentTo(
+            new { ThresholdReached = false, AmountToThreshold = 0.01m, ShouldPrompt = true, AllLabelsPaid = true });
+    }
+
+    [Theory]
+    [InlineData(500, null)]
+    [InlineData(null, 60)]
+    [InlineData(0, 60)]
+    [InlineData(500, 0)]
+    public void EvaluatePool_yarim_ayarda_kargo_kapali_sayilir(int? threshold, int? fee)
+    {
+        var (db, svc, _, _, _, _) = Fx(threshold, fee);
+        using var _d = db;
+
+        svc.EvaluatePool(new Shipment("k", Cid, ShipmentStatus.Pending, 40, null, null, 900m), 900m)
+            .Should().BeEquivalentTo(new
+            {
+                ThresholdReached = false,
+                AmountToThreshold = 0m,
+                ShouldPrompt = false,
+                AllLabelsPaid = true,
+                PooledAmount = 900m,
+            });
+    }
+
+    [Fact]
     public void EvaluatePool_kargo_kapaliyken_sormaz()
     {
         var (db, svc, _, _, _, _) = Fx(threshold: null, fee: null);

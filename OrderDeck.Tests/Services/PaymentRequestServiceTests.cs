@@ -658,6 +658,43 @@ public partial class PaymentRequestServiceTests : IDisposable
         note.Should().Be("Kargo: 150,00 TL");
     }
 
+    [Fact]
+    public void ComputeShipping_exactly_at_threshold_is_free_one_kurus_below_adds_fee()
+    {
+        var shipping = new ShippingSettings { FreeShippingThreshold = 5000m, ShippingFee = 149.9m };
+        var customer = MakeCustomer(Telefon);
+
+        PaymentRequestService.ComputeShipping(customer, 5000m, shipping)
+            .Should().Be((5000m, (decimal?)null, "Ücretsiz kargo"));
+        PaymentRequestService.ComputeShipping(customer, 4999.99m, shipping)
+            .Should().Be((5149.89m, (decimal?)149.9m, "Kargo: 149,90 TL"));
+    }
+
+    [Fact]
+    public void ComputeShipping_recipient_pays_note_precedes_feature_off_and_free_shipping()
+    {
+        var customer = MakeCustomer(Telefon, recipientPaysActive: true);
+
+        PaymentRequestService.ComputeShipping(customer, 3000m, new ShippingSettings())
+            .Should().Be((3000m, (decimal?)null, "Kargo: alıcı ödemeli"));
+        PaymentRequestService.ComputeShipping(
+                customer, 6000m, new ShippingSettings { FreeShippingThreshold = 5000m, ShippingFee = 150m })
+            .Should().Be((6000m, (decimal?)null, "Kargo: alıcı ödemeli"));
+    }
+
+    [Theory]
+    [InlineData(5000, null)]
+    [InlineData(null, 150)]
+    [InlineData(0, 150)]
+    [InlineData(5000, 0)]
+    public void ComputeShipping_half_configured_is_feature_off(int? threshold, int? fee)
+    {
+        var shipping = new ShippingSettings { FreeShippingThreshold = threshold, ShippingFee = fee };
+
+        PaymentRequestService.ComputeShipping(MakeCustomer(Telefon), 3000m, shipping)
+            .Should().Be((3000m, (decimal?)null, ""));
+    }
+
     /// <summary>
     /// Spec 2026-10-13 §6.2 (Y4): mesajın kargosu <see cref="IShippingSettingsProvider"/>'dan — mod On'da lisans geneli
     /// ayar, mod Off'ta yerel ayar. Aynı kurulum: yerel 500/60, lisans geneli 1000/80, ürün 600. İki yol da (yalın
