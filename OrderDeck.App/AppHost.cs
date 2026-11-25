@@ -624,8 +624,8 @@ public sealed class AppHost : IDisposable
         // aynı kilitleri görür, tamamlanma hello'su turla aynı kapıdan. 60 sn'de bir; turda en çok 10 istek.
         // W3-05 (spec 2026-10-13 §3.2, §4.7, §6.4, §8.4-1): bekleyen ödeme kayıtları — gönderilemeyen finish'ler ve mod
         // Off'taki kirasız kayıtlar, iki kipte. Gönderici TEK örnek: geri doldurma turu (60 sn, geri doldurmanın
-        // durumundan bağımsız) ve mod On açılışının 1. adımı (İLK kuyruk) aynı kapıdan geçer — aynı kayıt aynı anda iki
-        // kez gitmez. Zarf tekil örnek (geri yüklemeden sonra kip tazelenene kadar istek yok).
+        // durumundan bağımsız), mod On açılışının 1. adımı (İLK kuyruk) ve kapanış gönderimi aynı kapıdan geçer — aynı
+        // kayıt aynı anda iki kez gitmez. Zarf tekil örnek (geri yüklemeden sonra kip tazelenene kadar istek yok).
         services.AddSingleton<PendingPaymentRecordRepository>();
         services.AddSingleton<Services.Sync.PaymentRecordSender>();
         // W3-06 (§6.4 "Ödeme geçmişi (mod Off'ta da)"): mod Off'ta her teslim ya da belirsiz gönderimden sonra kirasız

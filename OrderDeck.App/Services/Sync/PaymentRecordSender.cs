@@ -121,11 +121,18 @@ public sealed record PaymentRecordFlush(int Sent, int Kept, int Dropped, int Rem
 /// adımı henüz yok, süreç <see cref="SalesSyncEnvelope.HoldUntilRestart"/> ile kapalı) ya da kopya kimliği yoksa (uçlar
 /// yalnız v2 konuşur) hiç istek gitmez, deneme sayılmaz. Boş kuyrukta istek yok. Ağ işi arayüz iş parçacığında koşmaz;
 /// günlük yalnız Id ve sayı taşır (tutar, ad yok).</para>
+///
+/// <para><b>Durum satırı (I-3):</b> kuyruk bekleyen sayıya girer (<see cref="SyncOutboxRepository"/>); kuyruğu boş ya da
+/// takılan kaydı olmayan gönderim <see cref="SyncStatusTracker.MarkPushOk"/> yazar, takılan kayıt satırı "Gönderilemiyor"
+/// yapar.</para>
 /// </summary>
 public sealed class PaymentRecordSender
 {
     /// <summary>Bir gönderimdeki en çok istek: lisans çözümü, <c>finish</c>'ler ve geri doldurma partileri.</summary>
     public const int MaxRequestsPerFlush = 10;
+
+    /// <summary>Durum satırındaki gönderim ilerlemesinin adı (D2 incelemesi I-3).</summary>
+    public const string PushStatusName = "odeme-kaydi";
 
     private readonly LicenseApiClient _api;
     private readonly PendingPaymentRecordRepository _repo;
@@ -133,8 +140,9 @@ public sealed class PaymentRecordSender
     private readonly ICurrentLicenseProvider _license;
     private readonly IClock _clock;
     private readonly ILogger<PaymentRecordSender> _log;
+    private readonly SyncStatusTracker? _tracker;
 
-    /// <summary>Tek gönderim kapısı: geri doldurma turu ve açılışın 1. adımı sıraya girer.</summary>
+    /// <summary>Tek gönderim kapısı: geri doldurma turu, açılışın 1. adımı ve kapanış gönderimi sıraya girer.</summary>
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>Kapıda sırasını bekleyen gönderim sayısı — testler ikinci gönderimin gerçekten kapıda beklediğini
@@ -155,7 +163,8 @@ public sealed class PaymentRecordSender
         SalesSyncEnvelope envelope,
         ICurrentLicenseProvider license,
         IClock clock,
-        ILogger<PaymentRecordSender> log)
+        ILogger<PaymentRecordSender> log,
+        SyncStatusTracker? statusTracker = null)
     {
         _api = api;
         _repo = repo;
@@ -163,6 +172,8 @@ public sealed class PaymentRecordSender
         _license = license;
         _clock = clock;
         _log = log;
+        _tracker = statusTracker;
+        _tracker?.RegisterPush(PushStatusName);
     }
 
     /// <summary>Gönderilemeyen <c>finish</c>'i kuyruğa yazar (kayıt Id'sine göre idempotent: zaten kuyruktaysa false).</summary>
@@ -244,7 +255,11 @@ public sealed class PaymentRecordSender
             rows = rows.Where(r => r.Kind == PendingPaymentRecordKinds.Finish).ToList();
             if (rows.Count == 0) return new PaymentRecordFlush(0, 0, 0, all);
         }
-        if (rows.Count == 0) return PaymentRecordFlush.Empty;
+        if (rows.Count == 0)
+        {
+            _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);   // I-3: gönderecek bir şey yok
+            return PaymentRecordFlush.Empty;
+        }
 
         if (_envelope.ForPush() is not { IsV2: true } envelope)
         {
@@ -298,6 +313,9 @@ public sealed class PaymentRecordSender
                 "Bekleyen ödeme kayıtları: {Count} kayıt son durumla düştü (record-not-found / content-conflict; yeniden "
               + "gönderilmez): {RecordIds}",
                 tally.Conflicts.Count, string.Join(",", tally.Conflicts));
+
+        // I-3: takılan yok (bütçeye sığmayan kalan sonraki gönderimde). finishesOnly kuyruğun tamamını anlatmaz.
+        if (!finishesOnly && tally.Kept == 0) _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);
 
         var remaining = _repo.Count();
         if (tally.Sent + tally.Dropped > 0)

@@ -202,6 +202,7 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<SessionOrderSyncService>(),
             host.Services.GetRequiredService<PaymentSyncService>(),
             host.Services.GetRequiredService<ShipmentSyncService>(),
+            host.Services.GetRequiredService<PaymentRecordSender>(),
         ];
 
         foreach (var push in pushes)
@@ -209,7 +210,7 @@ public sealed class CustomerSyncDiTests
                 $"I-3: {push.GetType().Name} isteğe bağlı parametreyi DI'dan almazsa düşen gönderimi durum satırı göremezdi");
         tracker.Snapshot().PushOkAt!.Keys.Should().BeEquivalentTo(
             WpfCustomerProjectionSyncService.PushStatusName, SessionOrderSyncService.PushStatusName,
-            PaymentSyncService.PushStatusName, ShipmentSyncService.PushStatusName);
+            PaymentSyncService.PushStatusName, ShipmentSyncService.PushStatusName, PaymentRecordSender.PushStatusName);
     }
 
     [Fact]
