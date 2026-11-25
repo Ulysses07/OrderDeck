@@ -303,11 +303,17 @@ public sealed class BankModelTests
     public void Odemenin_musteri_ve_hareket_indeksleri_filtreli()
     {
         var ix = DesignModel().FindEntityType(typeof(Payment))!.GetIndexes().ToList();
-        ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "WpfCustomerId" })).GetFilter().Should().Be("[WpfCustomerId] IS NOT NULL");
+        var customer = ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "WpfCustomerId" }));
+        (customer.IsUnique, customer.GetFilter()).Should().Be((false, "[WpfCustomerId] IS NOT NULL"), "bir müşterinin çok dekontu olur");
         var transaction = ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "BankTransactionId" }));
         (transaction.IsUnique, transaction.GetFilter()).Should().Be((false, "[BankTransactionId] IS NOT NULL"),
             "geri alınan Rejected satır aynı hareketi taşır; tekil olsaydı yeniden onay 2601 alırdı");
     }
+
+    [Fact]
+    public void Havaleler_lisans_icinde_karar_durumuyla_aranir() =>
+        DesignModel().FindEntityType(typeof(PaymentMatch))!.GetIndexes().Should().Contain(i =>
+            !i.IsUnique && i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "Decision" }));
 
     [Fact]
     public void Lisansin_banka_bayraklari_kapali_dogar()

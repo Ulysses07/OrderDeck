@@ -289,6 +289,7 @@ internal static class BankDecisionsS2aMigrationScenario
 
         // Kalıntı elle kurulur: silinen kişinin bağı gider (1), devralmada T W'nin kopyası olur; kanıtı düşen bağ boşalır
         // (2), kanıtlı bağ W'ye geçer (3). Eski imaj dekontlara dokunmaz. (4) aynı pencerede gönderilen dekont boş doğar.
+        // (5) kalıntı değil: shopper'sız dekontun müşterisi bağdan gelmez (S3b'nin banka ödemesi), koşu ona dokunmaz.
         await ExecAsync(conn, "DELETE FROM ShopperBroadcasterLinks WHERE Id = @id", ("@id", seed.GoneBond));
         await ExecAsync(conn, "UPDATE WpfCustomerProjections SET MergedIntoId = @w WHERE Id = @t", ("@w", seed.W), ("@t", seed.T));
         await ExecAsync(conn, "UPDATE ShopperBroadcasterLinks SET WpfCustomerId = NULL WHERE Id = @id", ("@id", seed.UnprovenBond));
@@ -296,15 +297,18 @@ internal static class BankDecisionsS2aMigrationScenario
             ("@w", seed.W), ("@id", seed.MovedBond));
         var latePayment = await InsertPreS2aPaymentAsync(
             conn, seed.License, seed.ShopperA, PaymentStatus.Pending, DateTimeOffset.UtcNow);
+        var withoutShopper = await InsertPreS2aPaymentAsync(
+            conn, seed.License, shopperId: null, PaymentStatus.Approved, DateTimeOffset.UtcNow);
+        await ExecAsync(conn, "UPDATE Payments SET WpfCustomerId = @w WHERE Id = @id", ("@w", seed.W), ("@id", withoutShopper));
         (await CustomersAsync(conn, seed.UnprovenPayment, seed.MovedPayment, latePayment))
             .Should().Equal([seed.T, seed.T, null], "eski imajın bıraktığı hâl: iki dekont kopyada, yenisi boş");
         var stamps = await StampsAsync(conn, seed);
 
         (await RederiveAsync(conn)).Should().Be(4);
 
-        (await CustomersAsync(conn, seed.GonePayment, seed.UnprovenPayment, seed.MovedPayment, latePayment))
-            .Should().Equal([null, null, seed.W, seed.P],
-                "silinen bağ ⇒ boş; boşalan bağ ⇒ boş (kopyada kalsaydı W'ye çözülürdü); taşınan bağ ⇒ W; yeni dekont ⇒ P");
+        (await CustomersAsync(conn, seed.GonePayment, seed.UnprovenPayment, seed.MovedPayment, latePayment, withoutShopper))
+            .Should().Equal([null, null, seed.W, seed.P, seed.W],
+                "silinen bağ ⇒ boş; boşalan bağ ⇒ boş (kopyada kalsaydı W'ye çözülürdü); taşınan bağ ⇒ W; yeni dekont ⇒ P; shopper'sız ⇒ aynı");
         (await RederiveAsync(conn)).Should().Be(0);
         (await StampsAsync(conn, seed)).Should().Equal(stamps);
         await ShouldMatchResolversAsync(db, seed.License, seed.Other);
@@ -423,11 +427,11 @@ internal static class BankDecisionsS2aMigrationScenario
     }
 
     /// <summary>SQL'in sonucu üretim kuralınınkiyle aynı: <c>PaymentMatchReconciler.ResolveWpfCustomerAsync</c>'in (private)
-    /// bağ seçimi ve <see cref="CustomerIdResolver"/>. Toplu tohumun lisansı hariç; <c>JoinedAt</c> eşitliği
-    /// tohumlanmaz.</summary>
+    /// bağ seçimi ve <see cref="CustomerIdResolver"/>. Shopper'sız dekont (bağdan türetilmez) ve toplu tohumun lisansı hariç;
+    /// <c>JoinedAt</c> eşitliği tohumlanmaz.</summary>
     private static async Task ShouldMatchResolversAsync(LicenseDbContext db, params Guid[] licenseIds)
     {
-        foreach (var p in await db.Payments.AsNoTracking().Where(x => licenseIds.Contains(x.LicenseId))
+        foreach (var p in await db.Payments.AsNoTracking().Where(x => x.ShopperId != null && licenseIds.Contains(x.LicenseId))
                      .Select(x => new { x.LicenseId, x.ShopperId, x.WpfCustomerId }).ToListAsync())
         {
             var bond = await db.ShopperBroadcasterLinks.AsNoTracking()
