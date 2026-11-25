@@ -143,6 +143,9 @@ public sealed class PaymentMatcherServiceTests
 
         svc.Match(CustomerId, SessionId, dekontAmount: 4999.99m).Should().Be(new PaymentMatcherService.MatchResult(
             PaymentMatcherService.MatchOutcome.ShippingShortage, 4999.99m, 5149.99m, 4999.99m, 150m));
+        svc.Match(CustomerId, SessionId, dekontAmount: 5149.99m).Should().Be(new PaymentMatcherService.MatchResult(
+            PaymentMatcherService.MatchOutcome.Match, 4999.99m, 5149.99m, 5149.99m, 150m),
+            "eşik ürün toplamıyla ölçülür, kargolu dekont tutarıyla değil");
     }
 
     [Theory]
