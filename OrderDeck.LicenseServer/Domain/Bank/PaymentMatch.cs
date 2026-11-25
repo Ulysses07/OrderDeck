@@ -36,6 +36,34 @@ public sealed class PaymentMatch
     /// tek başına doğrulama sayılmaz.</summary>
     public DateTimeOffset? IbanConfirmedAt { get; set; }
 
+    // Karar katmanı (banka havalesi spec'i 2026-10-10 §2.4, §3). S2a'da hiçbir kod okumaz ve yazmaz.
+
+    /// <summary>Havalenin karar durumu. Bu sütunu bilmeyen imajın INSERT'i DB varsayılanıyla None yazar.</summary>
+    public PaymentMatchDecision Decision { get; set; }
+
+    /// <summary>Her karar geçişinde bir artar; istemci gördüğü sürümü geri yollar. Eşzamanlılık jetonu değildir (jeton
+    /// <see cref="UpdatedAt"/>).</summary>
+    public int DecisionRevision { get; set; }
+
+    /// <summary>Sorma nedenleri, <see cref="BankAskReasons"/> biçiminde.</summary>
+    public string? AskReasons { get; set; }
+
+    /// <summary>Kararın verildiği yer.</summary>
+    public BankDecisionSurface? DecidedVia { get; set; }
+
+    public BankDismissReason? DismissReason { get; set; }
+
+    /// <summary>Serbest not; yalnız <see cref="BankDismissReason.Other"/>'da. 180. günde hareketle birlikte
+    /// silinir.</summary>
+    public string? DismissNote { get; set; }
+
+    /// <summary>Öneriyi IBAN hafızası da destekliyor mu. <see cref="Layer"/>'dan okunamaz: kullanıcı adı ile IBAN aynı
+    /// müşteriyi gösterince katman kullanıcı adı yazılır.</summary>
+    public bool SupportedByIbanMemory { get; set; }
+
+    /// <summary>Öneriyi üreten eşleştirici: boş = satır düzeyi, 2 = kişi düzeyi (yazımı S2b).</summary>
+    public int? MatcherVersion { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }

@@ -23,6 +23,15 @@ public sealed class BankModelTests
         return db.GetService<IDesignTimeModel>().Model;
     }
 
+    /// <summary>SQL Server sağlayıcısının tasarım modeli; bağlantı açmaz. "DB varsayılanı olan sütun eklemede üretilir"
+    /// kuralı ilişkisel sağlayıcınındır, InMemory modelinde hiç uygulanmaz.</summary>
+    private static IModel SqlServerDesignModel()
+    {
+        using var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseSqlServer("Server=model-okuma;Database=yok").Options);
+        return db.GetService<IDesignTimeModel>().Model;
+    }
+
     [Fact]
     public void BankTransaction_lisans_icinde_ObifinId_tekil()
     {
@@ -200,6 +209,11 @@ public sealed class BankModelTests
     [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.Status))]
     [InlineData(typeof(CustomerIbanMemory), nameof(CustomerIbanMemory.LearnedFrom))]
     [InlineData(typeof(PaymentMatchGap), nameof(PaymentMatchGap.Reason))]
+    [InlineData(typeof(Payment), nameof(Payment.Source))]
+    [InlineData(typeof(Payment), nameof(Payment.ApprovalSource))]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.Decision))]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DecidedVia))]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DismissReason))]
     public void Enum_alanlari_string_saklanir(Type entity, string property)
     {
         using var db = NewDb();
@@ -218,9 +232,64 @@ public sealed class BankModelTests
     [InlineData(typeof(BankAccount), nameof(BankAccount.IbanMasked), 40)]
     [InlineData(typeof(CustomerIbanMemory), nameof(CustomerIbanMemory.IbanHash), 64)]
     [InlineData(typeof(CustomerIbanMemory), nameof(CustomerIbanMemory.IbanMasked), 40)]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.AskReasons), 512)]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DismissNote), 300)]
     public void Hash_maske_ve_aciklama_sutun_uzunluklari(Type entity, string property, int maxLength)
     {
         using var db = NewDb();
         db.Model.FindEntityType(entity)!.FindProperty(property)!.GetMaxLength().Should().Be(maxLength);
+    }
+
+    [Theory]
+    [InlineData(typeof(Payment), nameof(Payment.Source), PaymentSource.Receipt)]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.Decision), PaymentMatchDecision.None)]
+    public void Eski_imajin_vermedigi_enum_sutunu_DB_varsayilaniyla_dolar(Type entity, string property, object expected)
+    {
+        var p = SqlServerDesignModel().FindEntityType(entity)!.FindProperty(property)!;
+        (p.IsNullable, p.ValueGenerated).Should().Be((false, ValueGenerated.Never), "DEFAULT yalnız eski imaj için; yeni kod değeri her INSERT'te yazar");
+        // GetDefaultValue() varsayılan hiç verilmemişken de 0. değeri döner; açıkça verildiğini yalnız TryGet söyler.
+        p.TryGetDefaultValue(out var value).Should().BeTrue("varsayılansız NOT NULL sütun eski imajın INSERT'ini 515 ile düşürür");
+        value.Should().Be(expected);
+    }
+
+    [Theory] // Sığmayan ad yazımda 2628 ile düşerdi.
+    [InlineData(typeof(Payment), nameof(Payment.Source))]
+    [InlineData(typeof(Payment), nameof(Payment.ApprovalSource))]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.Decision))]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DecidedVia))]
+    [InlineData(typeof(PaymentMatch), nameof(PaymentMatch.DismissReason))]
+    [InlineData(typeof(CustomerIbanMemory), nameof(CustomerIbanMemory.LearnedFrom))]
+    public void Enum_adlari_sutuna_sigar(Type entity, string property)
+    {
+        var p = DesignModel().FindEntityType(entity)!.FindProperty(property)!;
+        Enum.GetNames(Nullable.GetUnderlyingType(p.ClrType) ?? p.ClrType).Max(n => n.Length).Should().BeLessThanOrEqualTo(p.GetMaxLength()!.Value);
+    }
+
+    [Theory]
+    [InlineData(nameof(Payment.WpfCustomerId))]
+    [InlineData(nameof(Payment.ApprovedByOperatorId))]
+    [InlineData(nameof(Payment.BankTransactionId))]
+    public void Odemenin_banka_baglari_bos_olabilir_ve_FKsizdir(string property)
+    {
+        var p = DesignModel().FindEntityType(typeof(Payment))!.FindProperty(property)!;
+        p.IsNullable.Should().BeTrue();
+        p.IsForeignKey().Should().BeFalse("hareket 180. günde silinir; NoAction FK silmeyi 547 ile düşürür (§2.3)");
+    }
+
+    [Fact]
+    public void Odemenin_musteri_ve_hareket_indeksleri_filtreli()
+    {
+        var ix = DesignModel().FindEntityType(typeof(Payment))!.GetIndexes().ToList();
+        ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "WpfCustomerId" })).GetFilter().Should().Be("[WpfCustomerId] IS NOT NULL");
+        var transaction = ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "BankTransactionId" }));
+        (transaction.IsUnique, transaction.GetFilter()).Should().Be((false, "[BankTransactionId] IS NOT NULL"),
+            "geri alınan Rejected satır aynı hareketi taşır; tekil olsaydı yeniden onay 2601 alırdı");
+    }
+
+    [Fact]
+    public void Lisansin_banka_bayraklari_kapali_dogar()
+    {
+        var l = new License();
+        (l.BankQuestionsEnabled, l.BankAutoApproveEnabled, l.BankQuestionsSince).Should().Be((false, false, (DateTimeOffset?)null));
     }
 }

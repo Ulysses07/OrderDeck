@@ -500,6 +500,14 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.FraudFlags).HasMaxLength(256).IsRequired();
             b.Property(p => p.ParserConfidence).HasMaxLength(16).IsRequired();
             b.HasIndex(p => p.ShopperId);
+            // Banka havalesi onayı (spec 2026-10-10 §2.3). DEFAULT yalnız sütunu bilmeyen (geri alınan) imajın INSERT'i
+            // için; ValueGeneratedNever olmasa EF 0. değerde sütunu INSERT'ten çıkarır, OUTPUT ile geri okurdu.
+            b.Property(p => p.Source).HasConversion<string>().HasMaxLength(16)
+                .HasDefaultValue(PaymentSource.Receipt).ValueGeneratedNever().IsRequired();
+            b.Property(p => p.ApprovalSource).HasConversion<string>().HasMaxLength(16);
+            b.HasIndex(p => new { p.LicenseId, p.WpfCustomerId }).HasFilter("[WpfCustomerId] IS NOT NULL");
+            // Tekil DEĞİL: geri alınan onayın Rejected satırı aynı hareketi taşır, yeniden onay yeni satır yazar.
+            b.HasIndex(p => new { p.LicenseId, p.BankTransactionId }).HasFilter("[BankTransactionId] IS NOT NULL");
         });
 
         // Siparişler (PR siparis-sync 2026-05-13): WPF lokal StreamSession + Label'ların
@@ -1345,6 +1353,15 @@ public class LicenseDbContext : DbContext
             b.Property(m => m.Status).HasConversion<string>().HasMaxLength(24).IsRequired();
             b.Property(m => m.Confidence).HasPrecision(4, 3);
             b.Property(m => m.Evidence).HasMaxLength(500);
+            // Karar katmanı (spec 2026-10-10 §2.4). DEFAULT ve ValueGeneratedNever: bkz. Payment.Source. DecisionRevision
+            // jeton DEĞİL (jeton UpdatedAt).
+            b.Property(m => m.Decision).HasConversion<string>().HasMaxLength(24)
+                .HasDefaultValue(PaymentMatchDecision.None).ValueGeneratedNever().IsRequired();
+            b.Property(m => m.AskReasons).HasMaxLength(BankAskReasons.MaxLength);
+            b.Property(m => m.DecidedVia).HasConversion<string>().HasMaxLength(16);
+            b.Property(m => m.DismissReason).HasConversion<string>().HasMaxLength(24);
+            b.Property(m => m.DismissNote).HasMaxLength(300);
+            b.HasIndex(m => new { m.LicenseId, m.Decision });
         });
 
         mb.Entity<CustomerIbanMemory>(b =>
