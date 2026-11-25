@@ -1,5 +1,6 @@
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.Core.Payments;
 
@@ -70,7 +71,7 @@ public sealed class PaymentMatcherService
         var threshold = shipping.FreeShippingThreshold!.Value;
         var fee = shipping.ShippingFee!.Value;
 
-        if (productTotal >= threshold)
+        if (ShippingRules.ReachesThreshold(productTotal, threshold))
         {
             // Ücretsiz kargo bölgesi — kargo ücreti beklenmiyor.
             var outcome = dekontAmount == productTotal ? MatchOutcome.Match : MatchOutcome.Mismatch;

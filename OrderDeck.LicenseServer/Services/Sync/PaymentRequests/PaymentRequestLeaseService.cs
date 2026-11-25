@@ -679,19 +679,12 @@ public sealed class PaymentRequestLeaseService
     }
 
     /// <summary>
-    /// İstenecek kargo — WPF <c>PaymentRequestService.ComputeShipping</c>'in kuralı: alıcı ödemeliyse, ayar kapalıysa
-    /// (<c>ShippingSettings.IsEnabled</c>: eşik ve ücret ikisi de &gt; 0 değil) ya da ürün toplamı eşik ve üstündeyse 0;
-    /// değilse ücret.
+    /// İstenecek kargo — WPF <c>PaymentRequestService.ComputeShipping</c>'in kuralı, ortak tanımdan
+    /// (<see cref="ShippingRules.FeeToRequest"/>).
     /// </summary>
     private static decimal ShippingFee(
         LicenseShippingSettingsStore.Snapshot settings, decimal productTotal, bool recipientPays)
-    {
-        if (recipientPays) return 0m;
-        if (settings.FreeShippingThreshold is not { } threshold || threshold <= 0
-            || settings.Fee is not { } fee || fee <= 0)
-            return 0m;
-        return productTotal >= threshold ? 0m : fee;
-    }
+        => ShippingRules.FeeToRequest(settings.FreeShippingThreshold, settings.Fee, productTotal, recipientPays);
 
     // ── Kilit adları ──────────────────────────────────────────────────────
 
