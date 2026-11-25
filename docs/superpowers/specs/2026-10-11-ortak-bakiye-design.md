@@ -643,7 +643,7 @@ InMemory tekil indeks ve jeton yarışını uygulamaz. Bu yüzden şunlar gerçe
 
 ## 9. Banka spec'ine etkisi (K6)
 
-Bu PR banka spec'ini **değiştirmez**. Aşağıdaki düzeltmeler #505 birleştikten sonra tek bir docs PR'ında uygulanır. Satır numaraları master'dandır; #505'ten sonra birkaç satır kayar, bölüm numarası esastır. **25.11.2026:** dokuz madde banka spec'ine işlendi (`2026-10-10-banka-havale-onay-design.md` §18). İki düzeltmeyle: beklenti artık ödeme isteği kaydından türediği için hedef satır o kaydın sahip satırı (3, 4); 7. maddedeki "fazla yazımı `DrawAsync`'i kullanır" tutmaz, `DrawAsync` yalnız eksi yazar, geri almada kullanılır.
+Bu PR banka spec'ini **değiştirmez**. Aşağıdaki düzeltmeler #505 birleştikten sonra tek bir docs PR'ında uygulanır. Satır numaraları master'dandır; #505'ten sonra birkaç satır kayar, bölüm numarası esastır. **25.11.2026:** dokuz madde banka spec'ine işlendi (`2026-10-10-banka-havale-onay-design.md` §18). İki düzeltmeyle: beklenti artık ödeme isteği kaydından türediği için hedef satır o kaydın sahip satırı (3, 4); 7. maddedeki "fazla yazımı `DrawAsync`'i kullanır" tutmaz, `DrawAsync` yalnız eksi yazar, geri almada kullanılır. Banka S5'i ayrıca `apply`'ın tavanına kişi×kapsamın tahsis toplamını ekler (§4.2'deki `min(Amount, max(0, Σ), ProductTotal − tahsis)`; banka §4.3).
 
 1. **§2 "Kişi" (#505'in eklediği paragraf):** cümle eklenir. "Müşteri bakiyesi kişi havuzudur: kişinin üye satırlarındaki bakiyelerin toplamı (`2026-10-11-ortak-bakiye-design.md` §2, §4). `GroupId` karşılaştırması BIN2/ordinaldir."
 2. **§2.8 (`:78`):** "`bank-overpayment` artı ve tek satırlı bir harekettir (`DrawGroupId` `NULL`). Geri alınması ortak bakiye çekimiyle yapılır (§11.2)."
