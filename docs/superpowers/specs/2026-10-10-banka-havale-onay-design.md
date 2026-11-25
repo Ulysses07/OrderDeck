@@ -187,7 +187,7 @@ Geri alma ayrı bir durum değildir; `Reverted` olayı yazılır ve satır `Unma
 - Panel kararı sormaz, yalnız "Kargo kararı masaüstünde" satırını gösterir.
 
 #### 4.6.3 Veri
-- **`PaymentShipmentStep`:** `Id`, `PaymentId` (FK, kaskad), `LicenseId` (FK'sız), `CustomerKey nvarchar(64)` (`Orders.CustomerId` biçimi; GUID'siz yerel müşteri düşmesin), `State`, `Reason`, `ProposedShipmentId`, `Decision?`, `LastRequestId?`, `Attempts`, `NextAttemptAt`, `Version` (jeton).
+- **`PaymentShipmentStep`:** `Id`, `PaymentId` (FK, kaskad), `LicenseId` (FK'sız), `CustomerKey nvarchar(64)` BIN2 (`Orders.CustomerId` biçimi, ordinal; GUID'siz yerel müşteri düşmesin), `State`, `Reason`, `ProposedShipmentId`, `Decision?`, `LastRequestId?`, `Attempts`, `NextAttemptAt`, `Version` (jeton).
   - `State`: `Waiting`, `NeedsDecision`, `Bound`, `BoundNeedsDecision`, `Reverting`, `Closed`.
   - `Reason`: `SessionLive`, `ModeOff`, `Shortage`, `RecipientPays`, `OrderSetUnknown`, `OrdersChanged`, `Threshold`, `RetryExhausted`.
   - Tekil `(PaymentId, CustomerKey)`, `State <> Closed` süzgeciyle: geri alınan dekont aynı `PaymentId` ile yeniden onaylanabilir (§11.2).
@@ -195,14 +195,14 @@ Geri alma ayrı bir durum değildir; `Reverted` olayı yazılır ve satır `Unma
 - `Orders`, `Shipments`, `SalesCommandLogs`, `WpfReplicas` ve SQLite şeması değişmez; iz `BankDecisionEvent` (yalnız Id). Enum'lar S2a'da tanımlanır.
 
 #### 4.6.4 Yazım kuralları
-- Bağ alanları komutla aynı: `ShipmentId`, `ShipmentSetAt` (sunucu saati), `SyncVersion` + 1; `CommandedAt` ve `Version` dosyada. Eski istemci de yakınsar: bağ da NULL bağ da akıştan iner (`SalesFeedRepository` 241); WPF'in eşzamanlı `attach-shipment`'ı boş aday bulur, hata vermez.
+- Bağ alanları komutla aynı: `ShipmentId`, `ShipmentSetAt` (sunucu saati), `SyncVersion` + 1; `CommandedAt` ve `Version` dosyada. Mod On'da push bağı değiştiremez (K4, `OrderUnitMerge`; açılış penceresi yalnız boş bağı doldurur). Eski istemci de yakınsar: bağ da NULL bağ da akıştan iner (`SalesFeedRepository` 241); WPF'in eşzamanlı `attach-shipment`'ı boş aday bulur, hata vermez.
 - Yeni dosya: Pending, `AmountDerivedAt` ve `CommandedAt` dolu, `OriginReplicaId` `SalesModeDisable` kuralıyla (yayının sahibi, yoksa siparişin kaynağı; zincir en yeniye; payı büyük olan: 56, 149-200). Boş kalsa `SalesModeGate` 6. maddesi (128) `enable`'ı düşürürdü.
 - Fiyat onaydan sonra düzeltildiyse (`Price ≠ PriceAtApproval`) `PaidPrice` boşsa `PaidPrice = PriceAtApproval` yazılır ve `PriceSetAt` damgalanır (ödendiği fiyat). Çözmede yalnız bu yazım silinir; ayırt eden `PriceSetAt = BoundSetAt` eşitliği.
-- **Çekirdekler (S1b, davranışsız):** `ShipmentBindCore` (`AttachShipmentCommandHandler` 113-145) ve `ShipmentDecisionCore` (`ShipmentDecisionCommandHandler` 110-142). Ayrıştırma, kilit, aday ve `expected` işleyicide kalır; çekirdek var olan 19 + 6 testle (`SalesShipmentCommandsTests`, `SalesCommandsRelationalTests.Shipments`) değişmeden sınanır.
+- **Çekirdekler (S1b, davranışsız):** `ShipmentBindCore` (`AttachShipmentCommandHandler` 113-145) ve `ShipmentDecisionCore` (`ShipmentDecisionCommandHandler` 110-142). Ayrıştırma, kilit, aday ve `expected` işleyicide kalır; yeni dosyanın `OriginReplicaId`'si çekirdeğe parametredir (işleyici çağıran kopyayı, koşucu `SalesModeDisable` sonucunu verir). Çekirdek var olan 19 + 6 testle (`SalesShipmentCommandsTests`, `SalesCommandsRelationalTests.Shipments`) değişmeden sınanır.
 - `OrderDeck.Shared/Sales/ShippingRules`: kargo ücreti (`PaymentRequestLeaseService.ShippingFee` 686) ve eşik (`ShipmentService.EvaluatePool` 186) tek tanıma iner.
 
 #### 4.6.5 Geri alma
-- Geri alma (§11.2) adımı aynı SaveChanges'te `Reverting` yapar. Koşucu yalnız **adımın kurduğu** (`BoundShipmentId` ve `BoundSetAt`, siparişin `ShipmentId` ve `ShipmentSetAt`'ine eşit) ve kargoya verilmemiş bağı çözer, dosyayı yeniden türetir, adımı `Closed` yapar. Henüz bağlanmamış adım doğrudan `Closed` olur. "Elle gir"in ya da başka bilgisayarın sonradan kurduğu bağ korunur.
+- Geri alma (§11.2) adımı aynı SaveChanges'te `Reverting` yapar. Koşucu yalnız **adımın kurduğu** (`BoundShipmentId` ve `BoundSetAt`, siparişin `ShipmentId` ve `ShipmentSetAt`'ine eşit) ve kargoya verilmemiş bağı çözer (`ShipmentId` boş, `ShipmentSetAt` sunucu saati; damga hiç silinmez), dosyayı yeniden türetir, adımı `Closed` yapar. Henüz bağlanmamış adım doğrudan `Closed` olur. "Elle gir"in ya da başka bilgisayarın sonradan kurduğu bağ korunur.
 - Siparişi kapsayan başka bir onaylı adım varsa bağ çözülmez, ona geçer.
 - Dosya `Shipped` ise bağ kalır; olay satırı ve "kargolandı" uyarısı yazılır.
 
