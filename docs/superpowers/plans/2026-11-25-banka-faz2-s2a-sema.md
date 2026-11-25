@@ -1,0 +1,648 @@
+# Banka Faz 2 S2a (şema) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Banka havalesi onayının bütün şemasını tek genişletme göçüyle prod'a koymak: `Payment`, `PaymentMatch`, `License` sütunları, beş yeni tablo, geniş IBAN indeksi, `Payment.WpfCustomerId` geri doldurması, bütün enum'lar, iki banka ayarı ve `bank-questions` CLI'ı. Hiçbir akışın davranışı değişmez.
+
+**Architecture:** Genişlet/daralt. Göç yalnız ekler: eski imajın INSERT'i yeni NOT NULL sütunlarda kalıcı DB varsayılanına düşer, dar IBAN tekili yerinde kalır. Yeni sütunlara göçün geri doldurması, müşteri birleştiricisi (onun eşi olan bağ kesme yollarıyla) ve CLI dışında kimse yazmaz. Beş tablo boş doğar. Birleştirici çift IBAN'ı şimdiden tekilleştirir ki dar indeks S3b'de düştüğünde müşteri senkronu düşmesin.
+
+**Tech Stack:** ASP.NET Core 10, EF Core 10.0.10 (SQL Server prod, Express; InMemory test), xunit + FluentAssertions 7, Testcontainers (SQL Server 2022 Developer ve Express).
+
+**Spec:** `docs/superpowers/specs/2026-10-10-banka-havale-onay-design.md`, dal `docs/banka-faz2-spec` (§2, §3, §4.6.3, §5.2, §9, §14, §15). Bu dalda belgenin eski hâli durur: DEĞİŞTİRME (D0 ile çakışır; §15 gereği D0 önce birleşir). Tasarımdan ayrılan yerler "Kararlar"da.
+
+## Global Constraints
+
+- **Yer:** `<WT>` = `bank-s2a` çalışma ağacının mutlak yolu (`git worktree list`), dal `feat/banka-faz2-s2a`, kod = origin/master `a9729534`. Her Bash komutu `cd <WT> &&` ile başlar. Başka çalışma ağacına ve ana klasöre yazma. `git stash`, push, PR, `amend` yok. `dotnet` süreçlerini öldürme.
+- **Depo PUBLIC:** sır, kişi adı, gerçek Id yazılmaz; testte her değer üretilir (`Guid.NewGuid()`). Literal kimlik, IBAN, telefon yok. 64 hex özet: `$"{Guid.NewGuid():N}{Guid.NewGuid():N}"`.
+- **Kaynak düzenleme:** yalnız Edit / Write (PowerShell 5.1 UTF-8'i bozar). Göç dosyalarını `dotnet ef` üretir. `OrderDeck.LicenseServer` uyarıyı hata sayar.
+- **Davranış değişmez:** yeni tablo ve sütunu okuyan ya da yazan tek kod göç, birleştirici, kanıtsız bağın kesilmesi, shopper ve yayıncı silmesi, CLI. Dekont gönderimi, eşleştirici, bağdaştırıcı, panel, `payments/sync` DEĞİŞMEZ.
+- **Genişlet/daralt:** `Up`'ta `DropIndex`, `DropColumn`, `AlterColumn`, `DELETE`, `ONLINE` yok. NOT NULL eklenen sütunların hepsi DB DEFAULT'lu: `Payments.Source` `N'Receipt'`, `PaymentMatches.Decision` `N'None'`, `PaymentMatches.DecisionRevision` 0, `PaymentMatches.SupportedByIbanMemory` 0, `Licenses.BankQuestionsEnabled` 0, `Licenses.BankAutoApproveEnabled` 0. Öbürleri NULL.
+- **IBAN indeksleri:** dar `IX_CustomerIbanMemories_LicenseId_IbanHash` (tekil) KALIR; geniş `IX_CustomerIbanMemories_LicenseId_IbanHash_WpfCustomerId` (tekil) eklenir.
+- **Göç** `BankDecisionsS2a`, tek göç, Görev 5'te üretilir. Görev 2-4 arasında `Migrate()` koşan (SQL Server) testler `PendingModelChangesWarning` ile düşer, beklenir: o görevler InMemory ve tasarım modeliyle sınanır.
+- **Sütun uzunlukları:** `Source`, `ApprovalSource`, `DecidedVia`, `ActorKind`, `Surface`, `Kind`, adım `Decision` 16; eşleşme `Decision`, `DismissReason`, adım `State` ve `Reason` 24; `Action`, `ReasonCode` 32; `CustomerKey`, `IbanHash` 64; `DismissNote` 300; `AskReasons` 512; para `decimal(18,2)`. `CustomerKey` harmanı `Latin1_General_100_BIN2`.
+- **Enum'lar** string saklanır, değer listesine CHECK yok. Yeni bağlar FK'sız Guid; FK yalnız tahsis→Payment, adım→Payment, adım siparişi→adım, olay→License, IBAN durumu→License (hepsi Cascade, tablo başına tek yol, 1785 yok).
+- **Koşu kısaltmaları.** `T(x)`: `cd <WT> && ORDERDECK_TEST_SHARD=inmemory:0/1 DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo --filter "FullyQualifiedName~x"` (birden çok ad `|FullyQualifiedName~y`; ortam değişkeni SQL Server sınıflarını eler). `B`: `cd <WT> && DOTNET_CLI_UI_LANGUAGE=en dotnet build OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo`.
+- **SQL Server testi** (`[Collection(SqlServerCollection.Name)]` + `[Trait("Category","Testcontainers")]`): Docker kapalı, yerelde yalnız `B` ile derlenir; CI'nın ilişkisel parçaları koşar. Kırmızı hâli yerelde görülmez; görülmüş gibi yazma.
+- **Commit:** görev başına bir commit, Türkçe emir kipi, gövde nedeni söyler, son satır `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`. Yalnız görevin dosyaları `git add` edilir.
+- **Yayın:** master merge = prod deploy. Merge ve CLI yayın penceresi (Paz/Pzt/Çar/Per 20:00–01:00 TR) dışında; merge sahibindedir.
+
+## Review Focus
+
+1. **Geri alınan imaj yeni şemada çalışır.** Deploy geri alınınca imaj döner, göç kalır: varsayılansız NOT NULL her dekontu 515 ile düşürür, düşmüş dar IBAN tekili iki müşteriye aynı IBAN'ı öğretir. Görev 5: `BankDecisionsS2aMigrationTests.Goc_genisletir_geri_doldurur_eski_imaj_yazmayi_surdurur`, `BankDecisionsS2aMigrationScriptTests.Yalniz_genisletir`.
+2. **Geri doldurma yanlış kişiye yazmaz.** En yeni müşterili bağ, lisans süzgeci, birleşme zinciri; `UpdatedAt` ilerlerse bütün dekont geçmişi masaüstüne yeniden iner. Görev 5: aynı senaryonun geri doldurma satırları.
+3. **Birleştirme müşteri senkronunu düşürmez.** Çift IBAN 2601, aynı anda onaylanan dekont jeton çakışması üretir; yakalanmayan hata 500 ve sonsuz yeniden gönderimdir. Görev 6: `Ayni_ozetli_uc_bag_tek_SaveChangeste_tekillesir`, `Senkron_sirasinda_onaylanan_dekont_senkronu_dusurmez`.
+4. **Dolan kişi bağı silmeden ve kanıt kaybından sonra yaşamaz.** Görev 7: `Odemenin_musteri_bagi_silmede_bosalir_tekrar_silme_saymaz`, `Devralmada_kanitsiz_baglantinin_dekontu_musterisiz_kalir`; Görev 8: `Banka_onay_satirlari_lisansla_gider`.
+5. **Bayrak erken açılmaz, açılış anı sıfırlanmaz.** `BankQuestionsSince` bir kez yazılır; erken yazım S3a deploy'unda eski havaleleri sordurur. Görev 10: `Karar_katmani_hazir_degilken_apply_reddeder`, `Kapat_ac_BankQuestionsSince_korur`.
+
+## Kararlar
+
+1. **IBAN indeksi S2a'da genişler; dar indeks S2a'da da S2b'de de düşmez, S3b'de düşer** (ikinci çifti ilk yazan PR). `LearnIbanAsync` oku-sonra-ekle yapar (`PaymentMatchReconciler` 474-494), iki müşteriye eşzamanlı öğretmeyi bugün yalnız dar indeks durdurur (`RetryOnceAsync` 719-747); `PaymentMatcher` 164-167 sırasız `FirstOrDefault` okur. Bir kısıt ancak dönülebilecek bütün imajlar gevşemiş hâle hazırken gevşer: S2a'da düşse eski imaj, S2b'de düşse S2a imajı hazırlıksızdır; S3b'den dönülen S3a (S2b okuyucusuyla) hazırdır. Dar indeks dururken çift oluşamaz: göçte tekilleştirme (DELETE, kapı) yoktur, geniş tekil kurulurken düşemez.
+2. **`Source` NOT NULL DEFAULT.** Tasarım §14 nullable der; amaç eski imajın INSERT'i, DEFAULT onu karşılar ve "boş Source" hâli hiç doğmaz. Aynı kural `Decision`, `DecisionRevision`, `SupportedByIbanMemory` ve iki bayrakta (emsal `SalesSyncMode`). Modelde `HasDefaultValue(...).ValueGeneratedNever()`: göç `'Receipt'` / `'None'` üretir (varsayılansız iskele `''` üretir: EF onu 0. değer diye okur ama SQL süzgeci satırı bulamaz), yeni kod değeri her INSERT'te kendisi yazar.
+3. **Geri doldurma S2b göçünde yeniden koşar:** S2a gönderimde yazmaz, aradaki (ve geri alma penceresindeki) dekont boş kalır. SQL idempotent; S2b metni kopyalar (göç uygulama koduna bağlanmaz).
+4. **Kişi bağını kesen iki yol S2a'da:** göç prod'a anında "dekont → müşteri" bağı yazar, silme ise S4'e kadar onu bilmezdi; kod aynı bağı denetim satırında bile siliyor (`ShopperPurgeService` 3c). Kanıtı düşen Shopper bağının dekontu da birleştiriciyle gerçek müşteriye geçerdi.
+5. **Yayıncı silmesinin ödemesiz tahsisi silmesi S2a'da** (tasarım §2.2 kuralı): satır türü FK'sız doğuyor, silme yolu onunla gelir.
+6. **`BankDecisionEvent.Action` enum değil dize** (`BankDecisionActions`): tasarım kapalı liste vermiyor, eski imaj bilmediği dizeyi düşmeden okur. Tasarımın istediği ölçüm ve bağ sütunları açık yazıldı (`CreatedAt`, `RelatedPaymentId`, `WouldAutoApprove`, `OrderSetReliable`, `WpfCustomerId`, `AskReasons`, `DetailsJson`). `RequestId` indeksi tekil DEĞİL: hakem satır jetonudur, bir istek birden çok olay yazabilir.
+7. **Adımda `CreatedAt`, `StateChangedAt`:** §14'ün "bir günü geçen adım" uyarısı başka türlü hesaplanamaz (`NextAttemptAt` saatte bir ilerler). **`BankIbanState.UpdatedAt` jeton:** "Evet" ile "Hayır" aynı satırda yarışır.
+8. **CLI'da yalnız `enable` ve `disable`** (tasarımda `status` yok; kuru koşu aynı bilgiyi basar). `enable`'ın 2. koşulu `DecisionLayerReady` (S2a'da `false`): tek kod koşulu satış senkronu kipiydi ve bugün tutabilir; erken `--apply` geri alınamayan `BankQuestionsSince` yazardı. Pilot adımı tek satırla `true` yapar.
+9. **`StaleFeedAfterMinutes`:** TimeSpan bağlama `=2`'yi 2 gün okur. **Birleştirme:** `BankConfirm` yoksa eski `CreatedAt` kalır, son doğrulama ikisinin en yenisidir, tekilleştirme silmesine imha kaydı yazılmaz (bağ kalan satırda yaşar).
+
+**Sonraki PR'lara bırakılan (yazma):** S2b geri doldurmayı yeniden koşar, `SharedIbanSchema` kullanır; S3b dar indeksi düşürür ve `customers/sync`'e IBAN indeksinin 2601'inde tek yeniden deneme ekler; S4 purge'de `WpfCustomerId` ile arama, `BankIbanState` ve olay saklaması; S5 ödemesiz tahsisin silme yarışı.
+
+## Dosya haritası
+
+| Dosya (`LS/` = `OrderDeck.LicenseServer/`, `T/` = `OrderDeck.LicenseServer.Tests/`) | Sorumluluk | Görev |
+|---|---|---|
+| `LS/Domain/PaymentSource.cs`, `LS/Domain/Bank/PaymentMatchDecision.cs`, `BankAskReason.cs`, `BankDecisionCodes.cs` (yeni) | enum'lar, `BankAskReasons`, `BankDecisionActions` | 1 |
+| `LS/Domain/Payment.cs`, `License.cs`, `Bank/PaymentMatch.cs`, `Bank/CustomerIbanMemory.cs` | sütunlar, `BankConfirm` | 1, 2 |
+| `LS/Domain/Bank/BankDecisionEvent.cs`, `BankIbanState.cs` (yeni) | denetim satırı, IBAN durumu | 3 |
+| `LS/Domain/PaymentExpectationAllocation.cs`, `PaymentShipmentStep.cs` (yeni) | tahsis, kargo adımı ve siparişi | 4 |
+| `LS/Data/LicenseDbContext.cs`, `LS/Data/Migrations/*_BankDecisionsS2a*` | eşleme, göç, snapshot | 2-5 |
+| `LS/Services/CustomerSync/CustomerIdentityMerger.cs`, `CustomerIdentityMergeJob.cs`, `LS/Tools/MergeCustomerIdentities.cs` | tekilleştirme, dekont müşterisi, rapor | 6, 7 |
+| `LS/Controllers/Licenses/LicensesWpfCustomersSyncController.cs`, `LS/Services/Shoppers/ShopperPurgeService.cs` | bağ kesme | 7 |
+| `LS/Controllers/Customers/AdminCustomersController.cs` | ödemesiz tahsis silme | 8 |
+| `LS/Services/Bank/BankOptions.cs`, `LS/appsettings.json`, `deploy/docker-compose.yml`, `deploy/README.md` | ayarlar, işletim | 9, 10 |
+| `LS/Tools/BankQuestionsCommand.cs` (yeni), `LS/Program.cs` | CLI | 10 |
+| `T/Domain/BankDecisionCodesTests.cs`, `T/Data/BankModelTests.cs`, `T/Data/BankDecisionsS2aMigrationTests.cs`, `T/TestHelpers/SharedIbanSchema.cs` ve görevlerdekiler | testler | 1-10 |
+
+### Task 1: Kod kümeleri ve sorma nedeni biçimi
+
+**Files:**
+- Create: `LS/Domain/PaymentSource.cs`, `LS/Domain/Bank/PaymentMatchDecision.cs`, `LS/Domain/Bank/BankAskReason.cs`, `LS/Domain/Bank/BankDecisionCodes.cs`
+- Modify: `LS/Domain/Bank/CustomerIbanMemory.cs` (`IbanMemorySource`'a `BankConfirm = 2`)
+- Test: `T/Domain/BankDecisionCodesTests.cs` (saf, veritabanı yok)
+
+**Interfaces:**
+- Consumes: yok.
+- Produces (namespace `OrderDeck.LicenseServer.Domain`): `PaymentSource { Receipt = 0, Bank = 1 }`, `PaymentApprovalSource { ReceiptHuman = 0, BankHuman = 1, BankAuto = 2 }`.
+- Produces (namespace `…Domain.Bank`, sayısal değerler sırayla 0'dan, açık yazılır):
+  - `PaymentMatchDecision { None, Excluded, Awaiting, Unmatched, Approved, AutoApproved, ClosedByReceipt, Dismissed }`
+  - `BankAskReason { UsernameOnly, NameOnly, IbanNotConfirmed, IbanShared, IbanOtherCustomer, IbanDisputed, IbanHashUnverified, CustomerNotCanonical, NoExpectation, AmountMismatch, AmbiguousExpectations, ExpectationUnreliable, RequestInProgress, SalesSyncNotReady, PendingReceipt, UnlinkedApprovedPayment, ReceiptOtherCustomer, TooOld }` (§5.2 sırası)
+  - `BankDismissReason { OwnTransfer, MarketplacePayout, Refund, Other }`, `BankRevertReason { WrongCustomer, NotCustomerPayment, BankReturned, DataSubjectObjection, Other }`
+  - `BankDecisionActorKind { Owner, Staff, System }`, `BankDecisionSurface { Panel, Wpf, Sink, Sweep, Runner, ReceiptApproval, Admin }`
+  - `public static class BankAskReasons { public const int MaxLength = 512; public static string? Format(IEnumerable<BankAskReason> reasons); public static IReadOnlyList<BankAskReason> Parse(string? stored); }` — `Format`: ayrık, enum sırasıyla, `,` ayraçlı, boş küme null. `Parse`: yalnız tam ad (sayı ve farklı harf reddedilir), bilinmeyen kod ATLANIR: küme büyüyüp imaj geri alınırsa satır okunur kalsın.
+  - `public static class BankDecisionActions` — `public const string` (değer = ad): `Evaluated, Reevaluated, Approved, AutoApproved, Declined, Dismissed, Restored, ClosedByReceipt, ReceiptUnlinked, Reverted, ReceiptSamePayment, ReceiptSeparatePayment, AllocationReversed, ExpectationWaived, ExpectationCancelled, ExpectationOffBank, OverpaymentRefunded, ListViewed, ShipmentBound, ShipmentUnbound, ShipmentDecided`. Özet: kapalı küme değil, sütun dize; yeni sabit göç ve okuyucu-önce yayını istemez.
+
+- [ ] **Step 1: Düşen testi yaz**
+
+```csharp
+public sealed class BankDecisionCodesTests
+{
+    private static void Names<T>(params string[] expected) where T : struct, Enum => Enum.GetNames<T>().Should().Equal(expected);
+
+    [Fact] // adlar veritabanında durur: değişirse eski satır okunamaz
+    public void Enum_adlari_sabit()
+    {
+        Names<PaymentSource>("Receipt", "Bank");
+        Names<PaymentApprovalSource>("ReceiptHuman", "BankHuman", "BankAuto");
+        Names<PaymentMatchDecision>("None", "Excluded", "Awaiting", "Unmatched", "Approved", "AutoApproved", "ClosedByReceipt", "Dismissed");
+        Names<IbanMemorySource>("ManualMatch", "HumanApproval", "BankConfirm");
+        Names<BankDismissReason>("OwnTransfer", "MarketplacePayout", "Refund", "Other");
+        Names<BankRevertReason>("WrongCustomer", "NotCustomerPayment", "BankReturned", "DataSubjectObjection", "Other");
+        Names<BankDecisionActorKind>("Owner", "Staff", "System");
+        Names<BankDecisionSurface>("Panel", "Wpf", "Sink", "Sweep", "Runner", "ReceiptApproval", "Admin");
+        Enum.GetNames<BankAskReason>().Should().HaveCount(18).And.StartWith("UsernameOnly").And.EndWith("TooOld");
+        ((int)PaymentSource.Receipt, (int)PaymentMatchDecision.None).Should().Be((0, 0), "DB varsayılanı CLR varsayılanıyla aynı");
+    }
+
+    [Fact]
+    public void Sorma_nedenleri_enum_sirasiyla_yazilir_bilinmeyen_kod_atlanir()
+    {
+        BankAskReasons.Format([BankAskReason.TooOld, BankAskReason.UsernameOnly, BankAskReason.TooOld]).Should().Be("UsernameOnly,TooOld");
+        BankAskReasons.Format([]).Should().BeNull();
+        BankAskReasons.Parse(null).Should().BeEmpty();
+        BankAskReasons.Parse("UsernameOnly,IleridekiKod,3,tooold,TooOld").Should().Equal(BankAskReason.UsernameOnly, BankAskReason.TooOld);
+        BankAskReasons.Format(Enum.GetValues<BankAskReason>())!.Length.Should().BeLessThanOrEqualTo(BankAskReasons.MaxLength);
+    }
+
+    [Fact]
+    public void Olay_adlari_tekil_ve_32_karaktere_sigar() =>
+        typeof(BankDecisionActions).GetFields().Select(f => (string)f.GetRawConstantValue()!)
+            .Should().OnlyHaveUniqueItems().And.OnlyContain(a => a.Length <= 32);
+}
+```
+
+- [ ] **Step 2: Koş** — `T(BankDecisionCodesTests)`. Beklenen: derleme hatası (tipler yok).
+- [ ] **Step 3: Uygula** — yukarıdaki tipler; XML özetleri Türkçe, her enum'da "string saklanır, ad değişmez" notu.
+- [ ] **Step 4: Yeniden koş** — `T(BankDecisionCodesTests)`. Beklenen: 3 test geçer.
+- [ ] **Step 5: Commit** — `feat(bank): Faz 2 karar enum'larını ve sorma nedeni biçimini tanımla`
+
+### Task 2: Payment, PaymentMatch ve License sütunları
+
+**Files:**
+- Modify: `LS/Domain/Payment.cs`, `LS/Domain/Bank/PaymentMatch.cs`, `LS/Domain/License.cs`, `LS/Data/LicenseDbContext.cs` (`Payment` 468-502, `PaymentMatch` 1327-1348)
+- Test: `T/Data/BankModelTests.cs` (InMemory, tasarım modeli)
+
+**Interfaces:**
+- Consumes: Görev 1 enum'ları, `BankAskReasons.MaxLength`.
+- Produces: `Payment.Source` (`PaymentSource`), `.ApprovalSource` (`PaymentApprovalSource?`), `.ApprovedByOperatorId`, `.WpfCustomerId`, `.BankTransactionId` (`Guid?`); `PaymentMatch.Decision`, `.DecisionRevision` (int), `.AskReasons` (`string?`), `.DecidedVia` (`BankDecisionSurface?`), `.DismissReason` (`BankDismissReason?`), `.DismissNote` (`string?`), `.SupportedByIbanMemory` (bool), `.MatcherVersion` (`int?`); `License.BankQuestionsEnabled`, `.BankAutoApproveEnabled` (bool), `.BankQuestionsSince` (`DateTimeOffset?`).
+
+- [ ] **Step 1: Düşen testleri yaz** (`BankModelTests`; var olan `CustomerIbanMemory_lisans_icinde_iban_hash_tekil` DEĞİŞMEZ)
+
+```csharp
+// Enum_alanlari_string_saklanir'a InlineData: (Payment, Source), (Payment, ApprovalSource), (PaymentMatch, Decision), (PaymentMatch, DecidedVia), (PaymentMatch, DismissReason)
+// Hash_maske_ve_aciklama_sutun_uzunluklari'na InlineData: (PaymentMatch, AskReasons, 512), (PaymentMatch, DismissNote, 300)
+
+[Theory]
+[InlineData(typeof(Payment), nameof(Payment.Source), PaymentSource.Receipt)]
+[InlineData(typeof(PaymentMatch), nameof(PaymentMatch.Decision), PaymentMatchDecision.None)]
+public void Eski_imajin_vermedigi_enum_sutunu_DB_varsayilaniyla_dolar(Type entity, string property, object expected)
+{
+    var p = DesignModel().FindEntityType(entity)!.FindProperty(property)!;
+    (p.IsNullable, p.ValueGenerated).Should().Be((false, ValueGenerated.Never), "DEFAULT yalnız eski imaj için; yeni kod değeri her INSERT'te yazar");
+    p.GetDefaultValue().Should().Be(expected);
+}
+
+[Theory] // InlineData: yukarıdaki beş alan + (CustomerIbanMemory, LearnedFrom); Görev 3-4 bu listeye ekler. Sığmayan ad yazımda 2628 ile düşerdi.
+public void Enum_adlari_sutuna_sigar(Type entity, string property)
+{
+    var p = DesignModel().FindEntityType(entity)!.FindProperty(property)!;
+    Enum.GetNames(Nullable.GetUnderlyingType(p.ClrType) ?? p.ClrType).Max(n => n.Length).Should().BeLessThanOrEqualTo(p.GetMaxLength()!.Value);
+}
+
+[Theory, InlineData(nameof(Payment.WpfCustomerId)), InlineData(nameof(Payment.ApprovedByOperatorId)), InlineData(nameof(Payment.BankTransactionId))]
+public void Odemenin_banka_baglari_bos_olabilir_ve_FKsizdir(string property)
+{
+    var p = DesignModel().FindEntityType(typeof(Payment))!.FindProperty(property)!;
+    p.IsNullable.Should().BeTrue();
+    p.IsForeignKey().Should().BeFalse("hareket 180. günde silinir; NoAction FK silmeyi 547 ile düşürür (§2.3)");
+}
+
+[Fact]
+public void Odemenin_musteri_ve_hareket_indeksleri_filtreli()
+{
+    var ix = DesignModel().FindEntityType(typeof(Payment))!.GetIndexes().ToList();
+    ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "WpfCustomerId" })).GetFilter().Should().Be("[WpfCustomerId] IS NOT NULL");
+    ix.Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "BankTransactionId" })).GetFilter().Should().Be("[BankTransactionId] IS NOT NULL");
+}
+
+[Fact]
+public void Lisansin_banka_bayraklari_kapali_dogar()
+{
+    var l = new License();
+    (l.BankQuestionsEnabled, l.BankAutoApproveEnabled, l.BankQuestionsSince).Should().Be((false, false, (DateTimeOffset?)null));
+}
+```
+
+- [ ] **Step 2: Koş** — `T(BankModelTests)`. Beklenen: derleme hatası.
+- [ ] **Step 3: Uygula** — alanlar ve eşleme:
+  - `Payment`: `Source` `HasConversion<string>().HasMaxLength(16).HasDefaultValue(PaymentSource.Receipt).ValueGeneratedNever().IsRequired()` (alan başlangıcı `= PaymentSource.Receipt`; `ValueGeneratedNever` olmasa EF sütunu INSERT'ten çıkarır, `OUTPUT` ile geri okur); `ApprovalSource` `HasConversion<string>().HasMaxLength(16)`; `HasIndex(LicenseId, WpfCustomerId).HasFilter("[WpfCustomerId] IS NOT NULL")`; `HasIndex(LicenseId, BankTransactionId).HasFilter("[BankTransactionId] IS NOT NULL")` (tekil DEĞİL: geri alınan `Rejected` satır aynı hareketi taşır). `Status` jetonu ve var olan indeksler değişmez.
+  - `PaymentMatch`: `Decision` `HasConversion<string>().HasMaxLength(24).HasDefaultValue(PaymentMatchDecision.None).ValueGeneratedNever().IsRequired()`; `AskReasons` `HasMaxLength(BankAskReasons.MaxLength)`; `DecidedVia` ve `DismissReason` string 16 / 24; `DismissNote` 300; `HasIndex(LicenseId, Decision)`. `DecisionRevision` jeton DEĞİL (jeton `UpdatedAt`). Var olan tekil indeksler (`BankTransactionId`; `PaymentId` filtreli) değişmez; `Status` ve `Layer`'a değer eklenmez.
+  - `License`: üç alan, eşleme satırı yok; özet "yalnız `bank-questions` CLI'ı yazar (spec §2.7)".
+- [ ] **Step 4: Yeniden koş** — `T(BankModelTests|PaymentShopperFieldsTests|PaymentMatcherTests|PaymentMatchReconcilerTests)`. Beklenen: hepsi geçer (InMemory DB varsayılanını uygulamaz, CLR varsayılanı aynıdır).
+- [ ] **Step 5: Commit** — `feat(bank): Payment, PaymentMatch ve License'a Faz 2 sütunlarını ekle`
+
+### Task 3: BankDecisionEvent, BankIbanState ve geniş IBAN indeksi
+
+**Files:**
+- Create: `LS/Domain/Bank/BankDecisionEvent.cs`, `LS/Domain/Bank/BankIbanState.cs`
+- Modify: `LS/Data/LicenseDbContext.cs` (DbSet'ler, eşleme, `StampBankIbanStateVersions`, 1245-1252 yorumu, `CustomerIbanMemory` 1350-1363)
+- Test: `T/Data/BankModelTests.cs` (InMemory, tasarım modeli)
+
+**Interfaces:**
+- Consumes: Görev 1.
+- Produces:
+  - `BankDecisionEvent`: `Guid Id, LicenseId; License License; DateTimeOffset CreatedAt; Guid? TxId, ExpectationId, PaymentId, RelatedPaymentId, StepId; BankDecisionActorKind ActorKind; Guid? OperatorId; BankDecisionSurface Surface; string Action; string? ReasonCode; Guid? RequestId; int RuleVersion; bool? WouldAutoApprove, OrderSetReliable; Guid? WpfCustomerId; string? AskReasons, DetailsJson` (nvarchar(max)). Özet: yalnız eklenir; ad, IBAN, açıklama, not YAZILMAZ; `DetailsJson` yalnız Id, sürüm, tutar, `memoryId`, `LearnedFrom`.
+  - `BankIbanState`: `Guid Id, LicenseId; License License; string IbanHash; bool Shared, Disputed; DateTimeOffset LastTransferAt, UpdatedAt` (`UpdatedAt` jeton).
+  - `DbSet`'ler `BankDecisionEvents`, `BankIbanStates`; `CustomerIbanMemory` geniş tekili.
+
+- [ ] **Step 1: Düşen testleri yaz**
+
+```csharp
+// Lisansa_dogrudan_bagli_tablo_lisansla_kaskadla_silinir: + BankDecisionEvent, BankIbanState
+// Hash_sutununa_yalniz_64_hex_yazilabilir: + (BankIbanState, "BankIbanStates", IbanHash)
+// Enum_alanlari_string_saklanir ve Enum_adlari_sutuna_sigar: + (BankDecisionEvent, ActorKind), (BankDecisionEvent, Surface)
+// Hash_maske_ve_aciklama_sutun_uzunluklari: + (BankDecisionEvent, Action, 32), (…, ReasonCode, 32), (…, AskReasons, 512), (BankIbanState, IbanHash, 64)
+
+[Fact]
+public void CustomerIbanMemory_dar_tekil_yaninda_lisans_ozet_musteri_de_tekil() =>
+    DesignModel().FindEntityType(typeof(CustomerIbanMemory))!.GetIndexes().Where(i => i.IsUnique)
+        .Select(i => string.Join(",", i.Properties.Select(p => p.Name)))
+        .Should().BeEquivalentTo("LicenseId,IbanHash", "LicenseId,IbanHash,WpfCustomerId"); // dar olan S3b'de düşer
+
+[Fact]
+public void Karar_olayinin_tek_FKsi_lisans_ve_RequestId_tekil_degil()
+{
+    var et = DesignModel().FindEntityType(typeof(BankDecisionEvent))!;
+    et.GetForeignKeys().Should().ContainSingle().Which.PrincipalEntityType.ClrType.Should().Be(typeof(License));
+    var request = et.GetIndexes().Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "RequestId" }));
+    (request.IsUnique, request.GetFilter()).Should().Be((false, "[RequestId] IS NOT NULL"));
+}
+
+[Fact]
+public void IbanState_lisans_icinde_tekil_UpdatedAt_jeton()
+{
+    var et = DesignModel().FindEntityType(typeof(BankIbanState))!;
+    et.GetIndexes().Should().Contain(i => i.IsUnique && i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "IbanHash" }));
+    et.FindProperty(nameof(BankIbanState.UpdatedAt))!.IsConcurrencyToken.Should().BeTrue();
+}
+
+[Theory, InlineData(false), InlineData(true)] // PaymentMatch_UpdatedAt_atamayan_yazan_da_jetonu_ilerletir deseni
+public async Task IbanState_UpdatedAt_atamayan_yazan_da_jetonu_ilerletir(bool useAsyncSave) { /* Disputed = true; UpdatedAt == özgün + 1 tick; bayat bağlamın yazısı DbUpdateConcurrencyException */ }
+```
+
+- [ ] **Step 2: Koş** — `T(BankModelTests)`. Beklenen: derleme hatası.
+- [ ] **Step 3: Uygula** — eşleme:
+  - `BankDecisionEvent`: `HasOne(e => e.License).WithMany()…Cascade`; enum'lar string 16; `Action` 32 zorunlu; `ReasonCode` 32; `AskReasons` `BankAskReasons.MaxLength`; indeksler `(LicenseId, CreatedAt)`, `(LicenseId, TxId)` filtre `[TxId] IS NOT NULL`, `PaymentId` filtre `[PaymentId] IS NOT NULL`, `RelatedPaymentId` filtre `[RelatedPaymentId] IS NOT NULL`, `(LicenseId, RequestId)` filtre `[RequestId] IS NOT NULL`.
+  - `BankIbanState`: lisans Cascade; `(LicenseId, IbanHash)` tekil; `LastTransferAt` indeksi (12 ay saklama, S4); `IbanHash` 64 zorunlu; CHECK `CK_BankIbanStates_IbanHash_Hex64` `LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'`; `UpdatedAt` jeton, `StampVersions<BankIbanState>(s => s.UpdatedAt)` iki `SaveChanges` override'ında.
+  - `CustomerIbanMemory`: `HasIndex(LicenseId, IbanHash)` satırı KALIR, altına `HasIndex(LicenseId, IbanHash, WpfCustomerId).IsUnique()` ve yorum: dar indeks S3b'de düşer, o zamana dek iki müşteriye eşzamanlı öğretmenin tek hakemidir.
+  - 1245-1252 yorumunda lisansa doğrudan bağlılar listesine `BankDecisionEvents`, `BankIbanStates`.
+- [ ] **Step 4: Yeniden koş** — `T(BankModelTests)`. Beklenen: geçer.
+- [ ] **Step 5: Commit** — `feat(bank): karar olayı, IBAN durumu ve geniş IBAN indeksini modele ekle`
+
+### Task 4: Tahsis ve kargo adımı tabloları
+
+**Files:**
+- Create: `LS/Domain/PaymentExpectationAllocation.cs`, `LS/Domain/PaymentShipmentStep.cs`
+- Modify: `LS/Data/LicenseDbContext.cs`
+- Test: `T/Data/BankModelTests.cs`, `T/Domain/BankDecisionCodesTests.cs` (InMemory, tasarım modeli)
+
+**Interfaces:**
+- Consumes: Görev 2 `Payment`.
+- Produces (namespace `…Domain`; enum değerleri sırayla 0'dan):
+  - `PaymentAllocationKind { Payment, Waived, Cancelled, OffBank }`
+  - `PaymentExpectationAllocation`: `Guid Id, LicenseId` (FK'sız); `Guid? PaymentId; Payment? Payment; Guid ExpectationId` (= `PaymentRequestRecord.Id`, FK'sız); `PaymentAllocationKind Kind; decimal Amount; DateTimeOffset CreatedAt; DateTimeOffset? ReversedAt`
+  - `PaymentShipmentStepState { Waiting, NeedsDecision, Bound, BoundNeedsDecision, Reverting, Closed }`
+  - `PaymentShipmentStepReason { SessionLive, ModeOff, Shortage, RecipientPays, OrderSetUnknown, OrdersChanged, NothingToBind, Threshold, RetryExhausted }`
+  - `PaymentShipmentStepDecision { Normal, Hold, ShipNow, RecipientPays }`
+  - `PaymentShipmentStep`: `Guid Id, PaymentId, LicenseId` (FK'sız); `Payment Payment; string CustomerKey; PaymentShipmentStepState State; PaymentShipmentStepReason? Reason; Guid? ProposedShipmentId; PaymentShipmentStepDecision? Decision; Guid? LastRequestId; int Attempts; DateTimeOffset? NextAttemptAt; int Version` (jeton); `DateTimeOffset CreatedAt, StateChangedAt; List<PaymentShipmentStepOrder> Orders`
+  - `PaymentShipmentStepOrder`: `Guid StepId; PaymentShipmentStep Step; Guid OrderId, LicenseId, RecordId; decimal PriceAtApproval; Guid? BoundShipmentId; DateTimeOffset? BoundSetAt`
+  - DbSet'ler: `PaymentExpectationAllocations`, `PaymentShipmentSteps`, `PaymentShipmentStepOrders`.
+
+- [ ] **Step 1: Düşen testleri yaz**
+
+```csharp
+// Ebeveyn_uzerinden_kaskadlanan_tablonun_lisansa_FKsi_yok_ebeveyn_FKsi_kaskad:
+//   + (PaymentExpectationAllocation, Payment), (PaymentShipmentStep, Payment), (PaymentShipmentStepOrder, PaymentShipmentStep)
+// Enum_alanlari_string_saklanir ve Enum_adlari_sutuna_sigar: + (PaymentExpectationAllocation, Kind), (PaymentShipmentStep, State), (…, Reason), (…, Decision)
+// BankDecisionCodesTests.Enum_adlari_sabit'e dört Names<…> satırı (yukarıdaki sırayla)
+
+[Fact]
+public void Tahsis_tek_FKsi_odemeye_bos_olabilir_kaskad_ve_turle_tutarli()
+{
+    var et = DesignModel().FindEntityType(typeof(PaymentExpectationAllocation))!;
+    var fk = et.GetForeignKeys().Should().ContainSingle().Subject;
+    (fk.PrincipalEntityType.ClrType, fk.DeleteBehavior, fk.IsRequired).Should().Be((typeof(Payment), DeleteBehavior.Cascade, false));
+    et.GetCheckConstraints().Should().ContainSingle(c => c.Name == "CK_PaymentExpectationAllocations_Kind_Payment").Which.Sql.Should().Be(
+        "([Kind] = N'Payment' AND [PaymentId] IS NOT NULL) OR ([Kind] <> N'Payment' AND [PaymentId] IS NULL)");
+    et.GetIndexes().Should().Contain(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "ExpectationId" }));
+}
+
+[Fact]
+public void Kargo_adimi_odeme_musteri_basina_tek_acik_kapanan_ve_cozulen_engellemez()
+{
+    var et = DesignModel().FindEntityType(typeof(PaymentShipmentStep))!;
+    et.GetForeignKeys().Should().ContainSingle("LicenseId, ProposedShipmentId, LastRequestId FK'sız");
+    var open = et.GetIndexes().Single(i => i.GetDatabaseName() == "UX_PaymentShipmentSteps_Open");
+    (open.IsUnique, open.GetFilter()).Should().Be((true, "[State] <> N'Closed' AND [State] <> N'Reverting'"));
+    open.Properties.Select(p => p.Name).Should().Equal("PaymentId", "CustomerKey");
+    et.GetIndexes().Should().Contain(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "PaymentId" }),
+        "filtreli bileşik indeks EF'in FK indeksini bastırır; kaskad ve geri alma PaymentId ile arar");
+    et.GetIndexes().Single(i => i.GetDatabaseName() == "IX_PaymentShipmentSteps_Due").GetFilter().Should().Be("[State] IN (N'Waiting', N'Reverting')");
+    et.FindProperty(nameof(PaymentShipmentStep.CustomerKey))!.GetCollation().Should().Be("Latin1_General_100_BIN2");
+    et.FindProperty(nameof(PaymentShipmentStep.Version))!.IsConcurrencyToken.Should().BeTrue();
+}
+
+[Fact]
+public void Adim_siparisi_anahtari_adim_ve_siparis_Orders_FKsi_yok()
+{
+    var et = DesignModel().FindEntityType(typeof(PaymentShipmentStepOrder))!;
+    et.FindPrimaryKey()!.Properties.Select(p => p.Name).Should().Equal("StepId", "OrderId");
+    et.GetForeignKeys().Should().ContainSingle().Which.PrincipalEntityType.ClrType.Should().Be(typeof(PaymentShipmentStep));
+    et.GetIndexes().Should().Contain(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "LicenseId", "OrderId" }));
+}
+```
+
+- [ ] **Step 2: Koş** — `T(BankModelTests|BankDecisionCodesTests)`. Beklenen: derleme hatası.
+- [ ] **Step 3: Uygula** — tahsiste `HasOne(a => a.Payment).WithMany().HasForeignKey(a => a.PaymentId).OnDelete(DeleteBehavior.Cascade)` AÇIKÇA (isteğe bağlı FK'nın varsayılanı `ClientSetNull`, yayıncı silmesi 547 alırdı), `Kind` string 16, `Amount` (18,2), CHECK ve indeks testteki gibi. Adımda Payment Cascade, `CustomerKey` 64 + harman, `State` 24, `Reason` 24, `Decision` 16 string, `Version` `IsConcurrencyToken()`; indeksler: `(PaymentId, CustomerKey)` tekil filtreli `UX_PaymentShipmentSteps_Open`, açık `HasIndex(s => s.PaymentId)`, `NextAttemptAt` filtreli `IX_PaymentShipmentSteps_Due`, `(LicenseId, State)`. Adım siparişinde bileşik PK, Step Cascade (`WithMany(s => s.Orders)`), `PriceAtApproval` (18,2), `(LicenseId, OrderId)`.
+- [ ] **Step 4: Yeniden koş** — `T(BankModelTests|BankDecisionCodesTests)`. Beklenen: geçer.
+- [ ] **Step 5: Commit** — `feat(bank): ödeme tahsisi ve kargo adımı tablolarını modele ekle`
+
+### Task 5: Göç `BankDecisionsS2a`
+
+**Files:**
+- Create (üretilir): `LS/Data/Migrations/<zaman>_BankDecisionsS2a.cs`, `.Designer.cs`; Modify: `LicenseDbContextModelSnapshot.cs`
+- Test: `T/Data/BankDecisionsS2aMigrationTests.cs` — `BankDecisionsS2aMigrationScriptTests` (Docker'sız), `BankDecisionsS2aMigrationTests` ve `BankDecisionsS2aMigrationExpressTests` (SQL Server), `internal static BankDecisionsS2aMigrationScenario`
+
+**Interfaces:**
+- Consumes: Görev 2-4 modeli.
+- Produces: `public const string BankDecisionsS2a.BackfillPaymentCustomers`, `public const string BankDecisionsS2a.CanonicalizeIbanMemories` (test ve inceleme okur; S2b kopyalar).
+
+- [ ] **Step 1: Docker'sız düşen testi yaz**
+
+```csharp
+public sealed class BankDecisionsS2aMigrationScriptTests
+{
+    private static readonly IReadOnlyList<MigrationOperation> Up = new BankDecisionsS2a().UpOperations;
+
+    [Fact]
+    public void Yalniz_genisletir()
+    {
+        Up.Should().NotContain(o => o is DropIndexOperation || o is DropColumnOperation || o is DropTableOperation
+            || o is AlterColumnOperation || o is RenameColumnOperation || o is DeleteDataOperation);
+        Up.OfType<CreateIndexOperation>().Should().Contain(i => i.Name == "IX_CustomerIbanMemories_LicenseId_IbanHash_WpfCustomerId" && i.IsUnique);
+        Up.OfType<CreateTableOperation>().Select(t => t.Name).Should().BeEquivalentTo("BankDecisionEvents", "BankIbanStates",
+            "PaymentExpectationAllocations", "PaymentShipmentSteps", "PaymentShipmentStepOrders");
+        Up.OfType<AddColumnOperation>().Where(c => !c.IsNullable).Should().OnlyContain(c => c.DefaultValue != null,
+            "geri alınan imajın INSERT'i sütunu vermez");
+    }
+
+    [Fact]
+    public void Geri_doldurma_sutundan_sonra_indeksten_once_ve_UpdatedAt_Status_yazmaz()
+    {
+        var ops = Up.ToList();
+        var column = ops.FindIndex(o => o is AddColumnOperation { Table: "Payments", Name: "WpfCustomerId" });
+        var sql = ops.FindIndex(o => o is SqlOperation s && s.Sql.Contains("UPDATE p"));
+        var index = ops.FindIndex(o => o is CreateIndexOperation { Name: "IX_Payments_LicenseId_WpfCustomerId" });
+        (column >= 0 && column < sql && sql < index).Should().BeTrue();
+        ops.OfType<SqlOperation>().Should().HaveCount(2)
+            .And.OnlyContain(s => !s.Sql.Contains("UpdatedAt") && !s.Sql.Contains("[Status]") && !s.Sql.Contains("DELETE"));
+    }
+
+    [Fact]
+    public void Betikte_ONLINE_yok_varsayilanlar_var()
+    {
+        using var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer("Server=betik-uretimi;Database=yok").Options);
+        var (previous, target) = BankDecisionsS2aMigrationScenario.Migrations(db); // EndsWith("_BankDecisionsS2a")
+        var script = db.GetService<IMigrator>().GenerateScript(previous, target);
+        Regex.IsMatch(script, @"\bONLINE\b", RegexOptions.IgnoreCase).Should().BeFalse("prod Express");
+        script.Should().Contain("[Source] nvarchar(16) NOT NULL DEFAULT N'Receipt'").And.Contain("[Decision] nvarchar(24) NOT NULL DEFAULT N'None'")
+            .And.Contain("[DecisionRevision] int NOT NULL DEFAULT 0").And.Contain("[SupportedByIbanMemory] bit NOT NULL DEFAULT")
+            .And.Contain("[BankQuestionsEnabled] bit NOT NULL DEFAULT").And.Contain("[BankAutoApproveEnabled] bit NOT NULL DEFAULT");
+    }
+}
+```
+
+- [ ] **Step 2: Koş** — `T(BankDecisionsS2aMigrationScriptTests)`. Beklenen: derleme hatası (`BankDecisionsS2a` yok).
+- [ ] **Step 3: Göçü üret** — `cd <WT> && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankDecisionsS2a --project OrderDeck.LicenseServer --startup-project OrderDeck.LicenseServer --context LicenseDbContext --output-dir Data/Migrations` (araç 10.0.10; `--context` şart, `LicenseReadOnlyDbContext` de kayıtlı). Üretilende `DropIndex` varsa dar indeks satırı modelden kaybolmuştur: aynı bayraklarla `dotnet ef migrations remove --force`, modeli düzelt, yeniden üret. İki enum sütununda `defaultValue: "Receipt"` / `"None"` üretilmiş olmalı (elle düzeltme gerekmez).
+- [ ] **Step 4: Geri doldurmayı ekle** — son `AddColumn`'dan sonra, ilk `CreateTable`/`CreateIndex`'ten önce iki ayrı `migrationBuilder.Sql(...)` (tek `Sql()` içinde DDL ile DML karıştırma). Sınıf özeti: yalnız genişletir, eski imaj yazmayı sürdürür, geri doldurma S2b'de yeniden koşar, dar IBAN indeksi S3b'de düşer.
+
+```csharp
+// Bağ seçimi PaymentMatchReconciler.ResolveWpfCustomerAsync ile aynı: LeftAt'e bakılmaz, en yeni JoinedAt'li MÜŞTERİLİ bağ
+// (eşitlikte Id, oradaki sıra belirsiz). Asıl kayda en çok 3 adım (CustomerIdResolver.MaxHops). UpdatedAt yazılmaz (payments/since imleci).
+public const string BackfillPaymentCustomers = """
+    UPDATE p
+    SET p.[WpfCustomerId] = COALESCE(h3.[MergedIntoId], h2.[MergedIntoId], h1.[MergedIntoId], l.[WpfCustomerId])
+    FROM [Payments] p
+    CROSS APPLY (
+        SELECT TOP (1) x.[WpfCustomerId] FROM [ShopperBroadcasterLinks] x
+        WHERE x.[ShopperId] = p.[ShopperId] AND x.[LicenseId] = p.[LicenseId] AND x.[WpfCustomerId] IS NOT NULL
+        ORDER BY x.[JoinedAt] DESC, x.[Id] DESC) l
+    LEFT JOIN [WpfCustomerProjections] h1 ON h1.[Id] = l.[WpfCustomerId] AND h1.[LicenseId] = p.[LicenseId]
+    LEFT JOIN [WpfCustomerProjections] h2 ON h2.[Id] = h1.[MergedIntoId] AND h2.[LicenseId] = p.[LicenseId]
+    LEFT JOIN [WpfCustomerProjections] h3 ON h3.[Id] = h2.[MergedIntoId] AND h3.[LicenseId] = p.[LicenseId]
+    WHERE p.[ShopperId] IS NOT NULL AND p.[WpfCustomerId] IS NULL;
+    """;
+// Birleştirmeyle yarışan öğrenmenin kopyada bıraktığı bağ. Dar tekil dururken çakışamaz, silme gerekmez.
+public const string CanonicalizeIbanMemories = """
+    UPDATE m SET m.[WpfCustomerId] = COALESCE(h3.[MergedIntoId], h2.[MergedIntoId], h1.[MergedIntoId])
+    FROM [CustomerIbanMemories] m
+    JOIN [WpfCustomerProjections] h1 ON h1.[Id] = m.[WpfCustomerId] AND h1.[LicenseId] = m.[LicenseId] AND h1.[MergedIntoId] IS NOT NULL
+    LEFT JOIN [WpfCustomerProjections] h2 ON h2.[Id] = h1.[MergedIntoId] AND h2.[LicenseId] = m.[LicenseId]
+    LEFT JOIN [WpfCustomerProjections] h3 ON h3.[Id] = h2.[MergedIntoId] AND h3.[LicenseId] = m.[LicenseId];
+    """;
+```
+
+- [ ] **Step 5: Yeniden koş** — `T(BankDecisionsS2aMigrationScriptTests|BankModelTests)` geçer; `cd <WT> && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations has-pending-model-changes --project OrderDeck.LicenseServer --startup-project OrderDeck.LicenseServer --context LicenseDbContext` → "No changes".
+- [ ] **Step 6: SQL Server senaryosunu yaz** (desen `PersonBalanceS1MigrationTests`: `Scenario.RunAsync(cs, output)` Developer ve Express'te; önceki göçe kur, ESKİ sütun listeleriyle ham SQL, hedefi uygula; `Payments`, `PaymentMatches`, `Licenses` eski şemada modelle YAZILAMAZ). `PreS2aPaymentColumns`, `PreS2aMatchColumns`, `PreS2aLicenseColumns`, `PreS2aIbanColumns` hedeften önce `INFORMATION_SCHEMA.COLUMNS` ile `BeEquivalentTo` karşılaştırılır (`Licenses.RowVersion` hariç): eksik liste "eski imaj yazar" iddiasını boşa düşürür. Asıl test adı `Goc_genisletir_geri_doldurur_eski_imaj_yazmayi_surdurur`; iddialar:
+
+| Konu | İddia |
+|---|---|
+| Geri doldurma (P asıl, K1→P, K2→K1, Q asıl) | (a) eski ayrılmış bağ→Q + yeni bağ→K2 ⇒ P; (b) yalnız ayrılmış bağ→Q ⇒ Q; (c) yeni bağ müşterisiz + eski→Q ⇒ Q; (d) bağ yalnız başka lisansta ⇒ NULL; (e) `ShopperId` NULL ⇒ NULL; (f) bağsız shopper ⇒ NULL. Hepsinde `Source='Receipt'`, `ApprovalSource` NULL; `UpdatedAt` ve `Status` (Pending, Approved, Rejected örnekleri) göç öncesiyle aynı |
+| IBAN | (h1→K2) ⇒ P, (h2→Q) ⇒ Q; dar ve geniş indeks ikisi de var ve tekil; h1'e başka müşteri ⇒ 2601 ve ileti `'IX_CustomerIbanMemories_LicenseId_IbanHash'` taşır |
+| Idempotens | `BackfillPaymentCustomers` ikinci koşuda 0 satır; göçten sonra eski listeyle eklenen (a) shopper'ının dekontu boş, sabit yeniden koşunca P (S2b'nin dayanağı) |
+| Eski imaj | Dört tabloya eski listeyle INSERT geçer: `Source='Receipt'`, `Decision='None'`, `DecisionRevision=0`, `SupportedByIbanMemory=0`, `MatcherVersion` NULL, iki bayrak 0; EF modeli bu satırları okur; `UPDATE Payments SET Status=1 … WHERE Id=@id AND Status=0` 1 satır |
+| Yeni tablolar | beşi 0 satır; `sys.foreign_keys` = Global Constraints listesi, hepsi CASCADE; `CustomerKey` BIN2; `BankIbanStates`'e hex olmayan özet 547; `Kind='Payment'` ve `PaymentId` NULL 547 |
+| Kargo adımı (EF ile) | `Waiting` varken ikinci `Waiting` 2601 `UX_PaymentShipmentSteps_Open`; ilki `Closed` olunca ve ilki `Reverting` iken ikinci girer |
+| Süre | 30.000 dekont + bağ tohumuyla `Stopwatch` ölçüsü `ITestOutputHelper`'a (iddia değil); Express sınıfı sürümü `SERVERPROPERTY('Edition')` ile doğrular |
+
+- [ ] **Step 7: Derle** — `B`, 0 hata. SQL Server testleri CI'da koşar.
+- [ ] **Step 8: Commit** — `feat(bank): BankDecisionsS2a genişletme göçü ve geri doldurma`
+
+### Task 6: Birleştirici: IBAN tekilleştirme ve dekontun müşterisi
+
+**Files:**
+- Modify: `LS/Services/CustomerSync/CustomerIdentityMerger.cs` (36-38, 50, 129-148, sınıf özeti), `CustomerIdentityMergeJob.cs` (rapor: 235, 325, 417, 436, 617), `LS/Tools/MergeCustomerIdentities.cs` (228, 254)
+- Create: `T/TestHelpers/SharedIbanSchema.cs`
+- Test: `T/Services/CustomerSync/CustomerIdentityMergerTests.cs` (InMemory); `CustomerIdentityMergerRelationalTests.cs`, `CustomerIdentityMergeJobTests.cs`, `T/Controllers/Licenses/WpfCustomerIdentityRaceTests.cs` (SQL Server)
+
+**Interfaces:**
+- Consumes: `Payment.WpfCustomerId`, `IbanMemorySource.BankConfirm`, geniş indeks.
+- Produces: `RepointCounts(…, int WaConversations, int Payments)` (sona eklenir); `CustomerIdentityMergeJob.Report.PaymentsToMove`; CLI satırında `ödeme eşleşmesi=…`den sonra `dekont müşterisi={r.PaymentsToMove}`; `SharedIbanSchema.ApplyAsync(string connectionString)` (`DROP INDEX [IX_CustomerIbanMemories_LicenseId_IbanHash] ON CustomerIbanMemories`: S3b sonrası şema; S2b de kullanır).
+
+- [ ] **Step 1: Düşen InMemory testlerini yaz** (InMemory tekil uygulamaz, çift tohumlanabilir)
+
+```csharp
+[Theory]
+[InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.HumanApproval, true)]   // kopyanınki kalır (asıl kayıttaki daha eski olsa da)
+[InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm, false)]  // asıl kayıttaki kalır
+[InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm, false)]    // eski CreatedAt (asıl kayıttaki) kalır
+[InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.HumanApproval, false)]
+public async Task Iki_kayitta_ayni_IBAN_tek_satira_iner(IbanMemorySource copySource, IbanMemorySource canonicalSource, bool copyKept)
+// CreatedAt: asıl t0, kopya t0+1g. Kalan tek satır: Id beklenen, WpfCustomerId == canonical.Id, counts.IbanMemories == 1
+
+[Fact] public async Task Son_dogrulama_ikisinin_en_yenisi_olur()          // kalan 10 gün önce, düşen 2 gün önce ⇒ 2 gün önce
+[Fact] public async Task Dusenin_bos_son_dogrulamasi_kalani_degistirmez() // hata yönü erken silme
+[Fact] public async Task Farkli_IBAN_tasinir_baska_lisansin_satirina_dokunulmaz()
+[Fact] public async Task Dekontun_musterisi_asil_kayda_cevrilir_UpdatedAt_ve_Status_degismez()
+// üç dekont: kopyaya bağlı (Pending), kopyaya bağlı (Approved), başka lisansta kopya Id'siyle; counts.Payments.Should().Be(2);
+// UpdatedAt ve Status aynı, başka lisansınki kopyada kalır. Yozlaşmış çağrı testine (kopya==asıl): counts.Payments.Should().Be(0)
+```
+
+- [ ] **Step 2: Koş** — `T(CustomerIdentityMergerTests)`. Beklenen: derleme hatası (`Payments` sayacı yok); sayaç eklenince çift satır kalır, testler düşer.
+- [ ] **Step 3: Uygula** — IBAN bloğu (129-131) yerine:
+
+```csharp
+var moving = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId && m.WpfCustomerId == fromId).ToListAsync(ct);
+if (moving.Count > 0)
+{
+    var hashes = moving.Select(m => m.IbanHash).Distinct().ToList();
+    // Karar Local'den: aynı SaveChanges'te önceki kopyadan taşınmış satır veritabanında eski kimliktedir. Local, Deleted'ı içermez.
+    await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId && m.WpfCustomerId == toId && hashes.Contains(m.IbanHash)).LoadAsync(ct);
+    foreach (var m in moving)
+    {
+        var twin = _db.CustomerIbanMemories.Local.FirstOrDefault(x => x != m && x.LicenseId == licenseId && x.WpfCustomerId == toId && x.IbanHash == m.IbanHash);
+        if (twin is null) { m.WpfCustomerId = toId; continue; }
+        var (keep, drop) = PreferBond(m, twin); // BankConfirm önce, sonra eski CreatedAt, sonra küçük Id ("N" ordinal)
+        if (drop.LastConfirmedAt is { } at && (keep.LastConfirmedAt ?? keep.CreatedAt) < at) keep.LastConfirmedAt = at;
+        keep.WpfCustomerId = toId;
+        _db.CustomerIbanMemories.Remove(drop);
+    }
+}
+```
+
+  `PaymentMatches` ve öbür bloklar aynen. `WaConversations`'tan önce dekont bloğu: `Payments.Where(LicenseId, WpfCustomerId == fromId)` izlenerek yüklenir, yalnız `WpfCustomerId = toId` yazılır (`UpdatedAt` İLERLETİLMEZ: `payments/since` imleci bütün dekontları yeniden yollardı; `Status` jetondur, dokunulmaz). Sınıf özeti: tekilleştirme kuralı, imha kaydının neden yazılmadığı, jeton çakışmasını çağıranın ele aldığı (senkronda bir yeniden deneme, işte grup geri alma). `MergeJob`: `otherIds.Contains(p.WpfCustomerId.Value)` sayımı, `Tally.Payments`, `Report.PaymentsToMove`; CLI `Format` ve `Sum`.
+- [ ] **Step 4: Yeniden koş** — `T(CustomerIdentityMergerTests|MergeCustomerIdentitiesTests|LicensesWpfCustomersSyncControllerTests)`. Beklenen: geçer.
+- [ ] **Step 5: SQL Server testlerini yaz**
+  - `CustomerIdentityMergerRelationalTests` (`SharedIbanSchema.ApplyAsync` ile): `Ayni_ozetli_uc_bag_tek_SaveChangeste_tekillesir` (asıl `HumanApproval` t0, kopya1 `BankConfirm` t1, kopya2 `BankConfirm` t2; iki `RepointReferencesAsync`, tek `SaveChanges`; kalan kopya1'inki, `LastConfirmedAt` üçünün en yenisi, 2601 yok); `Kopyanin_satiri_kalirken_asil_satir_once_silinir` (DELETE, UPDATE'ten önce); `Once_birlestirme_sonra_onay_iki_yazim_da_kalir` (birleştirme kaydeder, onay bağlamı eski okumasıyla `Status=Approved` yazar ⇒ 1 satır, `WpfCustomerId` asıl).
+  - `WpfCustomerIdentityRaceTests`: `Senkron_sirasinda_onaylanan_dekont_senkronu_dusurmez` — geçici S + telefonu kanıtlı bağ + S'ye bağlı Pending dekont; `_race.BeforeSave` ilk kayıtta ayrı bağlamdan `ExecuteUpdate` ile `Status=Approved`; yanıt 200, dekont `Approved` ve `WpfCustomerId == W`, bağ W'de.
+  - `CustomerIdentityMergeJobTests.Kuru_calistirma_tasinacak_…`: kopyaya bağlı bir dekont tohumla, `dryRun.PaymentsToMove.Should().Be(1)`, uygulamadan sonra asıl kayıtta.
+- [ ] **Step 6: Derle** — `B`, 0 hata.
+- [ ] **Step 7: Commit** — `feat(bank): birleştirici çift IBAN bağını tekilleştirsin, dekontun müşterisini çevirsin`
+
+### Task 7: Kişi bağını kesen yollar
+
+**Files:**
+- Modify: `LS/Services/CustomerSync/CustomerIdentityMerger.cs` (yeni yöntem), `LS/Controllers/Licenses/LicensesWpfCustomersSyncController.cs` (`ReproveLinksAsync` 727), `LS/Services/CustomerSync/CustomerIdentityMergeJob.cs` (`provisionalLinks` döngüsü), `LS/Services/Shoppers/ShopperPurgeService.cs` (203-217, `HasPersonalFields(Payment)`, 3b yorumu)
+- Test: `T/Controllers/Licenses/LicensesWpfCustomersSyncControllerTests.cs`, `T/Services/Shoppers/ShopperPurgeServiceTests.cs` (InMemory); `T/Services/CustomerSync/CustomerIdentityMergeJobTests.cs` (SQL Server)
+
+**Interfaces:**
+- Consumes: `Payment.WpfCustomerId`, `Payment.ShopperId`.
+- Produces: `public Task CustomerIdentityMerger.UnbindPaymentsAsync(Guid licenseId, Guid shopperId, Guid customerId, CancellationToken ct)` — o shopper'ın izleyicideki GÜNCEL `WpfCustomerId`'si `customerId` olan dekontlarında alanı boşaltır; `SaveChanges` çağırmaz, `UpdatedAt` ilerletmez.
+
+- [ ] **Step 1: Düşen testleri yaz**
+
+```csharp
+// LicensesWpfCustomersSyncControllerTests (SeedProvisionalAsync + dekont tohumu: ShopperId = s.ShopperId, WpfCustomerId = s.ProjectionId)
+[Theory, InlineData(2), InlineData(1)]
+public async Task Devralmada_kanitsiz_baglantinin_dekontu_musterisiz_kalir(int format)
+// başka telefonla devralma ⇒ dekont.WpfCustomerId null, UpdatedAt aynı; W'ye bağlı başka shopper'ın dekontu W'de kalır
+[Fact] public async Task Devralmada_kanitli_baglantinin_dekontu_W_ye_gecer()   // telefon = s.ShopperPhone ⇒ W
+[Fact] public async Task Kendi_Id_farkli_telefonda_dekont_musterisiz_kalir()    // bağ S'den düşer ⇒ null
+
+// ShopperPurgeServiceTests
+[Fact]
+public async Task Odemenin_musteri_bagi_silmede_bosalir_tekrar_silme_saymaz()
+// SeedLinkedShopper + SeedPayment(WpfCustomerId = purgedId); ilk silme ⇒ null, "Payments.PersonalFields" 1; yalnız WpfCustomerId'si dolu
+// (öbür alanları boş) dekont da sayılır; ikinci silme yeni kayıt yazmaz
+
+// CustomerIdentityMergeJobTests (SQL Server): Kanitsiz_gecici_baglantinin_dekontu_musterisiz_kalir
+// Gecici_satir_asil_kayit_olmaz… kurulumu + geçiciye bağlı dekont ⇒ LinksUnbound 1, dekont null
+```
+
+- [ ] **Step 2: Koş** — `T(LicensesWpfCustomersSyncControllerTests|ShopperPurgeServiceTests)`. Beklenen: kanıtsız bağın dekontu W'de kaldığı, silmede müşteri dolu kaldığı için düşer.
+- [ ] **Step 3: Uygula** — `UnbindPaymentsAsync`: `Payments.Where(LicenseId, ShopperId, WpfCustomerId != null).ToListAsync` (taşınan dekont veritabanında eski kimliktedir; karar izlenen değere göre), eşit olan null. `ReproveLinksAsync`'te `row.Link.WpfCustomerId = null`'dan sonra `await _merger.UnbindPaymentsAsync(licenseId, row.Link.ShopperId, id, ct)`; işte `link.WpfCustomerId = null`'dan sonra `canonical.Id` ile. Shopper silmesinin 2. adımında `p.WpfCustomerId = null;` ve `HasPersonalFields`'e `|| p.WpfCustomerId is not null` (hedef adı `Payments.PersonalFields` değişmez); yorum: bağ S2a geri doldurmasıyla geldi, projeksiyon kullanıcı adını koruduğu için kişiye çözülürdü; banka satırını bulma S4'te.
+- [ ] **Step 4: Yeniden koş** — aynı süzgeç + `T(CustomerIdentityMergerTests)`. Beklenen: geçer. `B` 0 hata.
+- [ ] **Step 5: Commit** — `fix(kvkk): kanıtı düşen bağın ve silinen kişinin dekontunda müşteri bağını kes`
+
+### Task 8: Yayıncı silmesi ve kaskad
+
+**Files:**
+- Modify: `LS/Controllers/Customers/AdminCustomersController.cs` (188-192 ve imha kayıtları)
+- Test: `T/Controllers/Compliance/GdprFlowTests.cs` (InMemory); `T/Controllers/Customers/CustomerPurgeRelationalTests.cs` (SQL Server)
+
+**Interfaces:**
+- Consumes: Görev 4 tabloları, `DataDestruction.Record`.
+- Produces: yeni imha hedefi `"PaymentExpectationAllocations"` (ölçüt `criterion + ", ödemesiz"`).
+
+- [ ] **Step 1: Düşen InMemory testini yaz** — `GdprFlowTests.Purge_odemesiz_tahsisi_siler_odemeye_bagliyi_kaskada_birakir`: `ApiFactory.SeedAdminAndLoginAsync` ile yönetici, bir lisans, `Waived` (ödemesiz) ve `Payment` türü birer tahsis, başka lisansta bir `Waived`; silmeden sonra:
+
+```csharp
+var left = await db.PaymentExpectationAllocations.AsNoTracking().ToListAsync();
+left.Should().NotContain(a => a.LicenseId == licenseId && a.PaymentId == null);
+left.Should().Contain(a => a.LicenseId == otherLicenseId, "başka yayıncının satırına dokunulmaz");
+(await db.DataDestructionRecords.AsNoTracking().SingleAsync(r => r.SubjectId == customerId && r.Target == "PaymentExpectationAllocations"))
+    .RowCount.Should().Be(1, "yalnız açıkça silinen sayılır; ödemeye bağlı satır kaskadla gider (InMemory'de kaskad yok)");
+```
+
+- [ ] **Step 2: Koş** — `T(GdprFlowTests)`. Beklenen: yeni test düşer (satır duruyor).
+- [ ] **Step 3: Uygula** — `if (licenseIds.Count > 0)` bloğunda, lisanslardan önce `RemoveRange(PaymentExpectationAllocations.Where(a => licenseIds.Contains(a.LicenseId) && a.PaymentId == null))`; kayıtlar arasında `Record("PaymentExpectationAllocations", DataDestruction.Actions.Deleted, Deleted<PaymentExpectationAllocation>(), criterion + ", ödemesiz")`. Yorum: `PaymentId == null` süzgeci şart, ödemeye bağlıyı EF ile de silmek kaskadın önce sildiği satırda 0 etkiyle 409 üretirdi.
+- [ ] **Step 4: SQL Server testini yaz** — `CustomerPurgeRelationalTests.Banka_onay_satirlari_lisansla_gider`: Payment, ona bağlı tahsis, ödemesiz tahsis, adım + adım siparişi, karar olayı, IBAN durumu olan yayıncı silinir ⇒ 204, beş tabloda o lisanstan 0 satır, `DataDestructionRecords` `PaymentExpectationAllocations` 1. (Lisansta `ObifinConnection` yok; varsa 409.)
+- [ ] **Step 5: Yeniden koş** — `T(GdprFlowTests|CustomerPurgeMediaTests)` geçer; `B` 0 hata.
+- [ ] **Step 6: Commit** — `feat(kvkk): yayıncı silmesi ödemesiz tahsisleri açıkça silsin`
+
+### Task 9: Banka ayarları, compose ve README şablonu
+
+**Files:**
+- Modify: `LS/Services/Bank/BankOptions.cs`, `LS/appsettings.json` (`OrderDeck:Bank`), `deploy/docker-compose.yml` (204'ün altı), `deploy/README.md` (`.env` şablonu, HashKey satırının altı)
+- Test: `T/Services/Bank/BankOptionsTests.cs`, `T/Services/Bank/BankQuestionsDeployTests.cs` (saf; desen `PersonBalanceDeployTests`)
+
+**Interfaces:**
+- Consumes: yok. Produces: `BankOptions.ExpectationTtlDays` (int, 14), `BankOptions.StaleFeedAfterMinutes` (int, 120), `TimeSpan BankOptions.StaleFeedAfter => TimeSpan.FromMinutes(StaleFeedAfterMinutes)`. Okuyanı S3a ve S3c.
+
+- [ ] **Step 1: Düşen testleri yaz**
+
+```csharp
+// BankOptionsTests
+[Fact] public void Varsayilanlar() // 14, 120, TimeSpan.FromHours(2)
+[Fact] public void Ortam_anahtarlari_baglanir()
+// ConfigurationBuilder().AddInMemoryCollection({"OrderDeck:Bank:ExpectationTtlDays":"21","OrderDeck:Bank:StaleFeedAfterMinutes":"30"})
+//   .Build().GetSection("OrderDeck:Bank").Get<BankOptions>() ⇒ 21, 30 dk
+
+// BankQuestionsDeployTests
+[Fact]
+public void Compose_iki_ayari_sayisal_varsayilanla_gecirir()
+{
+    var compose = ReadRepoFile("deploy/docker-compose.yml");
+    compose.Should().Contain("      OrderDeck__Bank__ExpectationTtlDays: \"${OrderDeck__Bank__ExpectationTtlDays:-14}\"")
+        .And.Contain("      OrderDeck__Bank__StaleFeedAfterMinutes: \"${OrderDeck__Bank__StaleFeedAfterMinutes:-120}\"")
+        .And.NotContain("${OrderDeck__Bank__ExpectationTtlDays:?").And.NotContain("${OrderDeck__Bank__StaleFeedAfterMinutes:?");
+}
+[Fact] public void README_env_sablonunda_iki_satir_var() // "OrderDeck__Bank__ExpectationTtlDays=14", "OrderDeck__Bank__StaleFeedAfterMinutes=120" (yorumlu)
+```
+
+- [ ] **Step 2: Koş** — `T(BankOptionsTests|BankQuestionsDeployTests)`. Beklenen: derleme hatası, sonra iddia hataları.
+- [ ] **Step 3: Uygula** — compose yorumu: varsayılan SAYI zorunlu (int binder boş dizeyi ayrıştıramaz, `BankOptions` açılışta okunur), `:?` değil `:-` (eksik satır `config -q` kapısını düşürmesin). `ValidateOnStart` EKLEME (banka ayarı lisans sunucusunu düşürmesin); 0 ve eksi güvenli yönde (TTL ≤ 0 ⇒ otomatik onay yok, bayatlık ≤ 0 ⇒ şerit hep görünür), özete yaz. Saklama ayarlarını compose'a EKLEME (politika metnine bağlı).
+- [ ] **Step 4: Yeniden koş** — aynı süzgeç + `T(ObifinDataControllerGateTests)`. Beklenen: geçer.
+- [ ] **Step 5: Commit** — `feat(bank): istek ömrü ve besleme bayatlığı ayarlarını compose'a ekle`
+
+### Task 10: `bank-questions` CLI'ı ve işletim notu
+
+**Files:**
+- Create: `LS/Tools/BankQuestionsCommand.cs`
+- Modify: `LS/Program.cs` (`person-balance` bloğunun altına aynı kalıpta `args[0] == "bank-questions"`), `deploy/README.md`
+- Test: `T/Tools/BankQuestionsCommandTests.cs` (InMemory, `IClassFixture<ApiFactory>`), `T/Tools/BankQuestionsCommandRelationalTests.cs` (SQL Server), `T/Services/Bank/BankQuestionsDeployTests.cs`
+
+**Interfaces:**
+- Consumes: `License` bayrakları, `SalesSyncMode`.
+- Produces: `public static class BankQuestionsCommand` — `public const bool DecisionLayerReady = false;`, `public sealed record ToggleArgs(bool Enable, Guid License, bool Apply)`, `public static Task<int> RunAsync(string[] args)`, `public static bool TryParseArgs(string[] args, [NotNullWhen(true)] out ToggleArgs? parsed)`, `public static Task<int> RunEnableAsync(LicenseDbContext db, ToggleArgs args, bool decisionLayerReady, TextWriter output, TextWriter error, CancellationToken ct)`, `public static Task<int> RunDisableAsync(LicenseDbContext db, ToggleArgs args, TextWriter output, TextWriter error, CancellationToken ct)`.
+- Kullanım: `bank-questions enable --license <guid> [--apply]`, `bank-questions disable --license <guid> [--apply]`. Ayrıştırma katı: `--license` tam bir kez ve GUID, `--apply` en çok bir kez, başka her şey Usage (stderr) + 2. Çıkış: 0 tamam, kuru koşu ya da yapılacak yok; 1 koşul tutmadı ya da eşzamanlı değişiklik (hiçbir şey yazılmadı); 2 kullanım, bağlantı dizesi yok, bilinmeyen lisans. Zaman biçimi `"u"`. Kişisel veri, makine adı, anahtar basılmaz.
+
+| Durum | Satır (testler birebir sabitler) |
+|---|---|
+| başlık | `{UYGULAMA\|KURU ÇALIŞTIRMA} — bank-questions {enable\|disable} — {u}` ve `Lisans: {id}` |
+| bilinmeyen lisans (stderr, 2, stdout boş) | `Lisans bulunamadı: {id}. Hiçbir şey yazılmadı.` |
+| koşullar | `Koşul 1 — satış senkronu modu On: {TUTUYOR\|TUTMUYOR} ({mod})` · `Koşul 2 — karar katmanı bu sürümde: {TUTUYOR\|TUTMUYOR}` |
+| bilgi | `BankQuestionsSince: {boş, açılışta yazılacak\|{u}, korunur}; otomatik onay bayrağı: {açık\|kapalı}` |
+| sonuç | `Sonuç: bütün koşullar tutuyor` ya da `Sonuç: koşul 1, 2 tutmuyor` |
+| kuru enable (koşul tutmasa da 0) | `Kuru çalıştırma: hiçbir şey yazılmadı. Açmak için --apply ekle.` |
+| apply, koşul yok (stderr, 1) | `Havale soruları açılmadı: koşul 1, 2 tutmuyor; hiçbir şey yazılmadı.` |
+| apply, 0 satır (stderr, 1) | `Lisans bu arada değişti (başka bir enable, kapanan satış senkronu ya da silinen lisans); hiçbir şey yazılmadı, yeniden çalıştır.` |
+| zaten açık (0, koşullar basılmaz) | `Havale soruları zaten açık (BankQuestionsSince={u}); hiçbir şey yazılmadı.` |
+| açıldı (kayıtlı değer yeniden okunur) | `UYGULANDI: havale soruları açık, BankQuestionsSince={u}` |
+| disable kuru / zaten kapalı | `Kuru çalıştırma: havale soruları kapatılacak (BankQuestionsSince={u} korunur); veri işlemi yok. Kapatmak için --apply ekle.` · `Havale soruları zaten kapalı; hiçbir şey yazılmadı.` |
+| disable uygulandı / 0 satır (stderr, 1) | `UYGULANDI: havale soruları kapalı; verilmiş kararların geri alınması açık kalır, veri işlemi yapılmadı.` · `Havale soruları bu arada değişti (başka bir disable?); hiçbir şey yazılmadı, yeniden çalıştır.` |
+
+- [ ] **Step 1: Düşen InMemory testlerini yaz** (hepsi `ExecuteUpdate`'e varmadan döner; lisans `SalesCommandTestKit.CreateAsync(factory, SalesSyncMode.On|Off)`)
+
+```csharp
+[Theory] public void Gecerli_argumanlar(string line)   // "bank-questions enable --license {L}", "… --apply", "bank-questions disable --apply --license {L}"
+[Theory] public void Gecersiz_argumanlar(string line)  // lisanssız, GUID değil, iki --license, iki --apply, bilinmeyen seçenek, "status", "toggle"
+[Fact] public async Task Bilinmeyen_lisans_2_stdout_bos()
+[Fact] public async Task Kuru_enable_mod_Off_TUTMUYOR_basar_0_doner_yazmaz()
+[Fact] public async Task Mod_Off_iken_apply_1_yazmaz()                 // decisionLayerReady: true ⇒ "koşul 1 tutmuyor"
+[Fact] public async Task Karar_katmani_hazir_degilken_apply_reddeder() // mod On, decisionLayerReady: false ⇒ 1, "koşul 2 tutmuyor", bayrak kapalı, Since boş
+[Fact] public void S2a_surumunde_karar_katmani_kapali() => BankQuestionsCommand.DecisionLayerReady.Should().BeFalse("pilot adımı açar");
+[Fact] public async Task Zaten_acik_0_kosul_basmaz()
+[Fact] public async Task Disable_kuru_kosuda_yazmaz_kapaliyken_0()
+```
+
+- [ ] **Step 2: Koş** — `T(BankQuestionsCommandTests)`. Beklenen: derleme hatası.
+- [ ] **Step 3: Uygula** — iskelet `PersonBalanceCommand` (68-102, 252-358); `RunAsync` yalnız bağlantı dizesini okur ve `DecisionLayerReady`'yi geçirir. Yazım tek koşullu deyim (koşul WHERE'de de):
+
+```csharp
+var updated = await db.Licenses
+    .Where(l => l.Id == args.License && !l.BankQuestionsEnabled && l.SalesSyncMode == SalesSyncMode.On)
+    .ExecuteUpdateAsync(s => s
+        .SetProperty(l => l.BankQuestionsEnabled, true)
+        .SetProperty(l => l.BankQuestionsSince, l => l.BankQuestionsSince ?? (DateTimeOffset?)now), ct); // COALESCE: kapat/aç sıfırlamaz
+```
+
+  `disable`: `WHERE Id AND BankQuestionsEnabled` → `SET BankQuestionsEnabled = 0`; ön koşul ve yapılandırma yok (kill switch), `Since` ve otomatik onay bayrağı değişmez. İki komut da `BankAutoApproveEnabled`'a dokunmaz.
+- [ ] **Step 4: SQL Server testlerini yaz** (`BeforeNonQueryHook`, `when` = `[BankQuestionsEnabled]`; desen `PersonBalanceToggleCommandRelationalTests`; hepsi `decisionLayerReady: true`): `Apply_enable_bayragi_ve_Since_yazar_ikincisi_etkisiz`; `Kapat_ac_BankQuestionsSince_korur` (ilk açılış anı geri tarihlenir, disable + enable sonrası aynı); `Rakip_enable_once_yazarsa_1_rakibin_Since_i_kalir`; `UPDATEten_hemen_once_mod_Off_olursa_1_yazmaz`; `Rakip_disable_1`; `Enable_ve_disable_otomatik_onay_bayragina_dokunmaz`.
+- [ ] **Step 5: README** — `BankQuestionsDeployTests.README_komutlari_ve_geri_alma_uyarisi_var`: README `bank-questions enable --license`, `bank-questions disable --license` ve `Banka Faz 2 S2a tabanı` içerir. Geri alma bölümüne (Ortak bakiye S2 bloğunun altına) iki blok:
+  - **UYARI — Banka Faz 2 S2a tabanı:** göç yalnız genişletir, otomatik geri alma güvenli (eski imajın INSERT'i DB varsayılanına düşer, dar IBAN tekili yerinde). `OrderDeck.LicenseServer/Tools/BankQuestionsCommand.cs` içermeyen imajda `bank-questions` koşma: tanınmayan komut ikinci bir sunucu süreci başlatır. O imajdaki birleştirme ve shopper silmesi `Payments.WpfCustomerId`'yi bilmez: ileri dönünce o pencerede silinen kişilerin silmesi yeniden uygulanır ("Silmeleri yeniden uygula").
+  - **Havale soruları:** kuru koşu → `--apply`, çıkış kodları, yayın penceresi dışında, `disable` kill switch; pilot kapıları (tasarım §14) listesi; S2a'da `enable --apply` hep reddeder.
+- [ ] **Step 6: Yeniden koş** — `T(BankQuestionsCommandTests|BankQuestionsDeployTests)` geçer; `B` 0 hata.
+- [ ] **Step 7: Commit** — `feat(bank): bank-questions enable/disable komutu ve işletim notu`
+
+### Task 11: Son doğrulama
+
+**Files:** değişiklik yok (bulgu çıkarsa ilgili görevin dosyası, ayrı commit). **Interfaces:** Consumes: Görev 1-10. Produces: PR'a hazır dal (push ve PR sahibin onayıyla).
+
+- [ ] **Step 1: InMemory tam koşu** — `T(x)` komutu süzgeçsiz. Beklenen: 0 hata. Yük altında düşen test varsa tek başına yeniden koş, sonucu yaz.
+- [ ] **Step 2: Model ve göç eşliği** — Görev 5 Step 5'in `has-pending-model-changes` komutu "No changes".
+- [ ] **Step 3: Derleme** — `cd <WT> && DOTNET_CLI_UI_LANGUAGE=en dotnet build OrderDeck.sln --nologo -c Release`. Beklenen: 0 hata, yeni uyarı yok (WPF projeleri değişmedi).
+- [ ] **Step 4: Davranış taraması** — `cd <WT> && git diff --stat a9729534..HEAD -- OrderDeck.LicenseServer/Services/Bank OrderDeck.LicenseServer/Services/ShopperPayments OrderDeck.LicenseServer/Controllers/Panel OrderDeck.App OrderDeck.Core Extension`: yalnız `Services/Bank/BankOptions.cs`. `cd <WT> && git grep -nE "WouldAutoApprove|PaymentShipmentSteps|BankDecisionEvents|BankIbanStates|BankQuestionsEnabled" -- 'OrderDeck.LicenseServer/*.cs'`: yalnız Domain, `LicenseDbContext`, göç, `BankQuestionsCommand`.
+- [ ] **Step 5: SQL Server kanıtı** — Docker açılırsa yerelde, yoksa CI'da şu sınıflar yeşil olmadan PR hazır sayılmaz: `BankDecisionsS2aMigrationTests`, `BankDecisionsS2aMigrationExpressTests`, `CustomerIdentityMergerRelationalTests`, `CustomerIdentityMergeJobTests`, `WpfCustomerIdentityRaceTests`, `CustomerPurgeRelationalTests`, `BankQuestionsCommandRelationalTests`, `EnsureCreated` kullanan dört banka sınıfı (`IbanReevaluationRelationalTests`, `PaymentMatcherConcurrencyTests`, `PaymentMatchReconcilerConcurrencyTests`, `ObifinConnectionServiceConcurrencyTests`: 1785 ve bozuk filtre burada da patlar).
+
+**PR gövdesine (sahip koşar, salt okunur).** Merge'den önce satır sayıları: `SELECT (SELECT COUNT(*) FROM Payments), (SELECT COUNT(*) FROM PaymentMatches), (SELECT COUNT(*) FROM CustomerIbanMemories), (SELECT COUNT(*) FROM ShopperBroadcasterLinks)` (göç bütçesi ≈ 30 sn; Görev 5 ölçümüyle karşılaştır). Deploy sonrası: `SELECT COUNT(*) FROM Licenses WHERE BankQuestionsEnabled = 1` = 0; beş yeni tablo 0 satır; `SELECT name, is_unique FROM sys.indexes WHERE object_id = OBJECT_ID('CustomerIbanMemories')` iki IBAN tekilini gösterir; `SELECT COUNT(*) FROM Payments WHERE ShopperId IS NOT NULL AND WpfCustomerId IS NULL` (bağsız dekont, bilgi); konteynerde `printenv OrderDeck__Bank__ExpectationTtlDays` = 14; `bank-questions enable --license <id>` kuru koşusu "Koşul 2 … TUTMUYOR" basar.
