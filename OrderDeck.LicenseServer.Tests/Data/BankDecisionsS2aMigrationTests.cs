@@ -98,8 +98,8 @@ public sealed class BankDecisionsS2aMigrationScriptTests
         var sql = ops.FindIndex(o => o is SqlOperation s && s.Sql.Contains("UPDATE p"));
         var index = ops.FindIndex(o => o is CreateIndexOperation { Name: "IX_Payments_LicenseId_WpfCustomerId" });
         (column >= 0 && column < sql && sql < index).Should().BeTrue();
-        ops.OfType<SqlOperation>().Should().HaveCount(2)
-            .And.OnlyContain(s => !s.Sql.Contains("UpdatedAt") && !s.Sql.Contains("[Status]") && !s.Sql.Contains("DELETE"));
+        ops.OfType<SqlOperation>().Should().ContainSingle("IBAN bağına ve eşleşme kararına dokunulmaz (Karar 5)")
+            .Which.Sql.Should().NotContainAny("UpdatedAt", "[Status]", "DELETE");
     }
 
     [Fact]
@@ -173,12 +173,13 @@ internal static class BankDecisionsS2aMigrationScenario
     /// <summary>Tohumlanacak bir bağ; <paramref name="Day"/> katılma sırası.</summary>
     private sealed record Bond(Guid License, Guid? Customer, int Day, bool Left = false);
 
-    private sealed record Remembered(string Case, Guid Memory, Guid Customer);
+    /// <summary>Bir IBAN bağı ve onu öğreten havale; bağ da havalenin kararı da aynı müşteride.</summary>
+    private sealed record IbanBond(string Case, Guid Memory, Guid Transaction, Guid Customer);
 
     private sealed record Seed(
         Guid Account, Guid License, Guid Other,
         Guid P, Guid W, Guid T,
-        IReadOnlyList<Backfilled> Payments, IReadOnlyList<Remembered> Memories, string HashA,
+        IReadOnlyList<Backfilled> Payments, IReadOnlyList<IbanBond> IbanBonds, string HashA,
         Guid ShopperA, Guid GonePayment, Guid GoneBond, Guid UnprovenPayment, Guid UnprovenBond, Guid MovedPayment, Guid MovedBond,
         Guid MatchBefore, Guid TransactionAfter);
 
@@ -255,14 +256,19 @@ internal static class BankDecisionsS2aMigrationScenario
             .Should().Be(BulkPaymentCount, "ölçüm boş koşmadı: her toplu dekont bir asıl kayda bağlandı");
     }
 
-    /// <summary>Kopyada kalmış IBAN bağı asıl kayda geçer; silinmiş ya da başka lisansın kaydına geçmez. İki tekil de durur.</summary>
+    /// <summary>Kopyada kalmış IBAN bağına da onu öğreten karara da dokunulmaz (S2a planı, Karar 5): yalnız biri taşınsaydı IBAN
+    /// talebiyle silme kararın müşterisini, K-6 da kalan doğrulamayı bulamazdı. İki tekil de durur.</summary>
     private static async Task AssertIbanMemoriesAsync(string connectionString, LicenseDbContext db, SqlConnection conn, Seed seed)
     {
-        var memories = await db.CustomerIbanMemories.AsNoTracking()
-            .Where(m => m.LicenseId == seed.License).ToDictionaryAsync(m => m.Id, m => m.WpfCustomerId);
-        memories.Keys.Should().BeEquivalentTo(seed.Memories.Select(x => x.Memory));
-        foreach (var expected in seed.Memories)
-            memories[expected.Memory].Should().Be(expected.Customer, expected.Case);
+        var bonds = await (from b in db.CustomerIbanMemories.AsNoTracking()
+                           join m in db.PaymentMatches.AsNoTracking() on b.SourceBankTransactionId equals (Guid?)m.BankTransactionId
+                           where b.LicenseId == seed.License
+                           select new { b.Id, b.WpfCustomerId, m.ProposedWpfCustomerId, m.ActualWpfCustomerId })
+            .ToDictionaryAsync(x => x.Id, x => (x.WpfCustomerId, x.ProposedWpfCustomerId, x.ActualWpfCustomerId));
+        bonds.Keys.Should().BeEquivalentTo(seed.IbanBonds.Select(x => x.Memory));
+        foreach (var expected in seed.IbanBonds)
+            bonds[expected.Memory].Should().Be(((Guid, Guid?, Guid?))(expected.Customer, expected.Customer, expected.Customer),
+                expected.Case);
 
         (await IndexAsync(conn, "CustomerIbanMemories", NarrowIbanIndex))
             .Should().Be(new IndexInfo("LicenseId,IbanHash", null, true), "dar tekil S3b'ye kadar durur");
@@ -442,14 +448,13 @@ internal static class BankDecisionsS2aMigrationScenario
         var t0 = DateTimeOffset.UtcNow.AddDays(-30);
 
         await using var db = NewDb(connectionString);
-        Guid Customer(Guid licenseId, Guid? mergedInto = null, bool purged = false)
+        Guid Customer(Guid licenseId, Guid? mergedInto = null)
         {
             var row = new WpfCustomerProjection
             {
                 Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "tiktok", Username = $"m{Guid.NewGuid():N}",
                 MergedIntoId = mergedInto, UpdatedAt = t0,
             };
-            if (purged) row.MarkPurged(t0);
             db.WpfCustomerProjections.Add(row);
             return row.Id;
         }
@@ -483,12 +488,11 @@ internal static class BankDecisionsS2aMigrationScenario
 
         Guid BondOf(Shopper shopper) => db.ShopperBroadcasterLinks.Local.Single(l => l.ShopperId == shopper.Id).Id;
 
-        // K3→K2→K1→P: üç adımlık zincir. K6→K4→F→G: F ve G başka lisansta, zincir F'de durur. K5→R: R silinmiş. T asıl
-        // kayıttır; yeniden türetmede W'nin kopyası olur.
+        // K3→K2→K1→P: üç adımlık zincir. K6→K4→F→G: F ve G başka lisansta, zincir F'de durur. T asıl kayıttır; yeniden
+        // türetmede W'nin kopyası olur.
         Guid p = Customer(license), k1 = Customer(license, p), k2 = Customer(license, k1), k3 = Customer(license, k2);
         Guid q = Customer(license), w = Customer(license), t = Customer(license);
         Guid g = Customer(other), f = Customer(other, g), k4 = Customer(license, f), k6 = Customer(license, k4);
-        Guid r = Customer(license, purged: true), k5 = Customer(license, r);
         Guid m = Customer(other), unknown = Guid.NewGuid();
 
         var a = Person(new Bond(license, q, 1, Left: true), new Bond(license, k2, 2));
@@ -513,27 +517,29 @@ internal static class BankDecisionsS2aMigrationScenario
         var unprovenPayment = await Receipt("yeniden türetme (2)", license, unproven, t);
         var movedPayment = await Receipt("yeniden türetme (3)", license, moved, t);
 
-        var memories = new List<Remembered>();
-        string Remember(string name, Guid customer, Guid expected)
+        BankTransaction before = Transaction(license, 1, t0), after = Transaction(license, 2, t0);
+        db.BankTransactions.AddRange(before, after);
+
+        // Bağ ve onu öğreten karar aynı SaveChanges'te aynı müşteriye yazılır (PaymentMatchReconciler.LearnIbanAsync);
+        // birleştirmeyle yarışan öğrenme ikisini de kopyada bırakır.
+        var ibanBonds = new List<IbanBond>();
+        string Teach(string name, Guid customer)
         {
-            var memory = Memory(license, customer, NewHash());
+            var source = Transaction(license, 3 + ibanBonds.Count, t0);
+            var memory = Memory(license, customer, NewHash(), source.Id);
+            db.BankTransactions.Add(source);
             db.CustomerIbanMemories.Add(memory);
-            memories.Add(new Remembered(name, memory.Id, expected));
+            ibanBonds.Add(new IbanBond(name, memory.Id, source.Id, customer));
             return memory.IbanHash;
         }
 
-        var hashA = Remember("A: kopyadaki bağ asıl kayda geçer", k2, p);
-        Remember("B: asıl kayıttaki bağ yerinde", q, q);
-        Remember("C: silinmiş asıl kayda taşınmaz", k5, k5);
-        Remember("üç adımlık zincir", k3, p);
-        Remember("başka lisansın kaydına taşınmaz", k4, k4);
-
-        BankTransaction before = Transaction(license, 1, t0), after = Transaction(license, 2, t0);
-        db.BankTransactions.AddRange(before, after);
+        var hashA = Teach("A: kopyadaki bağ ve kararı kopyada kalır", k2);
+        Teach("B: asıl kayıttaki bağ ve kararı yerinde", q);
         await db.SaveChangesAsync();
         var matchBefore = await InsertPreS2aMatchAsync(conn, license, before.Id, t0);
+        foreach (var bond in ibanBonds) await InsertPreS2aMatchAsync(conn, license, bond.Transaction, t0, bond.Customer);
 
-        return new Seed(account, license, other, p, w, t, payments, memories, hashA, a.Id,
+        return new Seed(account, license, other, p, w, t, payments, ibanBonds, hashA, a.Id,
             gonePayment, BondOf(gone), unprovenPayment, BondOf(unproven), movedPayment, BondOf(moved), matchBefore, after.Id);
     }
 
@@ -587,10 +593,10 @@ internal static class BankDecisionsS2aMigrationScenario
 
     private static string NewHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
 
-    private static CustomerIbanMemory Memory(Guid licenseId, Guid customerId, string ibanHash) => new()
+    private static CustomerIbanMemory Memory(Guid licenseId, Guid customerId, string ibanHash, Guid? sourceId = null) => new()
     {
         Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = customerId, IbanHash = ibanHash, IbanMasked = "TR**",
-        LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow,
+        LearnedFrom = IbanMemorySource.HumanApproval, SourceBankTransactionId = sourceId, CreatedAt = DateTimeOffset.UtcNow,
     };
 
     private static BankTransaction Transaction(Guid licenseId, long obifinId, DateTimeOffset at) => new()
@@ -639,14 +645,18 @@ internal static class BankDecisionsS2aMigrationScenario
         return id;
     }
 
+    /// <param name="decidedFor">Doluysa önerisi bu müşteriye onaylanmış, IBAN'ı doğrulamış karar; boşsa kararsız satır.</param>
     private static async Task<Guid> InsertPreS2aMatchAsync(
-        SqlConnection conn, Guid licenseId, Guid transactionId, DateTimeOffset at)
+        SqlConnection conn, Guid licenseId, Guid transactionId, DateTimeOffset at, Guid? decidedFor = null)
     {
         var id = Guid.NewGuid();
+        var status = decidedFor is null ? PaymentMatchStatus.NoProposal : PaymentMatchStatus.ConfirmedByHuman;
+        DateTimeOffset? decidedAt = decidedFor is null ? null : at;
         await InsertAsync(conn, "PaymentMatches", PreS2aMatchColumns,
             ("Id", id), ("LicenseId", licenseId), ("BankTransactionId", transactionId),
-            ("Layer", nameof(PaymentMatchLayer.None)), ("Confidence", 0m), ("Status", nameof(PaymentMatchStatus.NoProposal)),
-            ("CreatedAt", at), ("UpdatedAt", at));
+            ("Layer", nameof(PaymentMatchLayer.None)), ("Confidence", 0m), ("Status", status.ToString()),
+            ("ProposedWpfCustomerId", decidedFor), ("ActualWpfCustomerId", decidedFor), ("DecidedAt", decidedAt),
+            ("IbanConfirmedAt", decidedAt), ("CreatedAt", at), ("UpdatedAt", at));
         return id;
     }
 

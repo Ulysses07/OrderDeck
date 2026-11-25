@@ -7,7 +7,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 {
     /// <summary>
     /// Banka havalesi onayı S2a (spec 2026-10-10 §2, §14): <c>Payments</c>, <c>PaymentMatches</c>, <c>Licenses</c> sütunları,
-    /// beş yeni tablo, geniş IBAN tekili ve iki veri deyimi.
+    /// beş yeni tablo, geniş IBAN tekili ve bir veri deyimi.
     ///
     /// <para><b>Yalnız genişletir.</b> Deploy'un otomatik geri alması imajı döndürür, göçü döndürmez: S2a öncesi imaj yazmayı
     /// sürdürür. Var olan tabloya eklenen her NOT NULL sütunun kalıcı DB varsayılanı vardır (eski imajın INSERT'i sütunu
@@ -16,6 +16,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
     ///
     /// <para><b>Geri doldurma bağdan türetir</b> (<see cref="BackfillPaymentCustomers"/>) ve S2b göçünde yeniden koşar: arada
     /// gönderilen dekont dolar, geri alma penceresinde bayatlayan dolu bağ kapanır.</para>
+    ///
+    /// <para><b>Birleştirilmiş kopyada kalmış IBAN bağı taşınmaz</b> (S2a planı, Karar 5). Bağ ve onu öğreten eşleşme kararı aynı
+    /// kopyadadır; göç bir kez koşar ve yalnız biri taşınırsa IBAN talebiyle silme kararın müşterisini, K-6 kalan doğrulamayı
+    /// bulamaz. İkisini birlikte S2b taşır.</para>
     /// </summary>
     public partial class BankDecisionsS2a : Migration
     {
@@ -38,18 +42,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             WHERE p.[ShopperId] IS NOT NULL AND NOT EXISTS (
                 SELECT p.[WpfCustomerId] INTERSECT
                 SELECT COALESCE(h3.[MergedIntoId], h2.[MergedIntoId], h1.[MergedIntoId], l.[WpfCustomerId]));
-            """;
-
-        /// <summary>Birleştirmeyle yarışan öğrenmenin kopyada bıraktığı IBAN bağını asıl kayda taşır. Dar tekil dururken
-        /// çakışamaz, silme gerekmez. Asıl kayıt silinmişse taşınmaz (S2a planı, Karar 5).</summary>
-        public const string CanonicalizeIbanMemories = """
-            UPDATE m SET m.[WpfCustomerId] = t.[Id]
-            FROM [CustomerIbanMemories] m
-            JOIN [WpfCustomerProjections] h1 ON h1.[Id] = m.[WpfCustomerId] AND h1.[LicenseId] = m.[LicenseId] AND h1.[MergedIntoId] IS NOT NULL
-            LEFT JOIN [WpfCustomerProjections] h2 ON h2.[Id] = h1.[MergedIntoId] AND h2.[LicenseId] = m.[LicenseId]
-            LEFT JOIN [WpfCustomerProjections] h3 ON h3.[Id] = h2.[MergedIntoId] AND h3.[LicenseId] = m.[LicenseId]
-            JOIN [WpfCustomerProjections] t ON t.[Id] = COALESCE(h3.[MergedIntoId], h2.[MergedIntoId], h1.[MergedIntoId])
-                AND t.[LicenseId] = m.[LicenseId] AND t.[PurgedAt] IS NULL;
             """;
 
         /// <inheritdoc />
@@ -164,9 +156,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 type: "datetimeoffset",
                 nullable: true);
 
-            // Veri deyimleri sütundan sonra, indeksten önce; her biri ayrı komut (DDL ile DML aynı Sql()'e girmez).
+            // Veri deyimi sütundan sonra, indeksten önce; ayrı komut (DDL ile DML aynı Sql()'e girmez).
             migrationBuilder.Sql(BackfillPaymentCustomers);
-            migrationBuilder.Sql(CanonicalizeIbanMemories);
 
             migrationBuilder.CreateTable(
                 name: "BankDecisionEvents",
