@@ -4,8 +4,9 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
 /// <summary>
-/// Sıralı yarış kancası (gerçek SQL Server testleri): bir <c>SaveChanges</c>'in SQL'i gitmeden HEMEN ÖNCE rakip bir
-/// yazımı koşturur — yarış zamanlamaya değil sıraya dayanır (<see cref="SaveHookInterceptor"/> gerekçesi).
+/// Sıralı yarış kancası: bir <c>SaveChanges</c> yazmadan HEMEN ÖNCE rakip bir yazımı koşturur — yarış zamanlamaya değil
+/// sıraya dayanır (<see cref="SaveHookInterceptor"/> gerekçesi). Asıl yeri gerçek SQL Server testleridir; eşzamanlılık
+/// jetonunu InMemory de denetlediği için jeton yarışları orada da kurulabilir.
 /// <see cref="Once"/> tek sefer, <see cref="Always"/> her kayıtta (üst üste çakışma). Kancanın kendi yazımları kancayı
 /// yeniden tetiklemez. Jeton çakışmalarını (<see cref="DbUpdateConcurrencyException"/>) sayar.
 /// </summary>

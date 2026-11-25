@@ -53,9 +53,6 @@ public sealed class PanelPaymentDecisionSideEffectTests
     /// <summary>Bir yan etki adımı ve o an DB'de commit edilmiş görünen karar ile sohbet etiketi.</summary>
     public sealed record Step(string Name, PaymentStatus Status, string? Label);
 
-    /// <summary>İstisnası tutulan uyarı: kuyruk uyarısının istisnayı EKLEMEDİĞİ de sınanır.</summary>
-    public sealed record Warning(string Message, Exception? Exception);
-
     /// <summary>Gölge bağdaştırmanın zamanlanmasını ve shopper bildirimini adım olarak kaydeden fabrika; ikisini ve kayıt
     /// anını test bozabilir.</summary>
     public sealed class StepApiFactory : ApiFactory
@@ -65,7 +62,7 @@ public sealed class PanelPaymentDecisionSideEffectTests
         private Guid _conversationId;
 
         public RaceSaveHook Save { get; } = new();
-        public WarningRecorder Warnings { get; } = new();
+        public LogRecorderProvider Log { get; } = new();
         public Exception? ScheduleFailure { get; set; }
         public Exception? PushFailure { get; set; }
 
@@ -90,7 +87,7 @@ public sealed class PanelPaymentDecisionSideEffectTests
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             base.ConfigureWebHost(builder);
-            builder.ConfigureLogging(l => l.AddProvider(Warnings));
+            builder.ConfigureLogging(l => l.AddProvider(Log));
             builder.ConfigureTestServices(s =>
             {
                 s.RemoveAll<IBackgroundJobClient>();
@@ -137,33 +134,6 @@ public sealed class PanelPaymentDecisionSideEffectTests
                 owner.Observe("bildirim");
                 if (owner.PushFailure is { } failure) throw failure;
                 return owner.Push.SendToShoppersAsync(shopperIds, title, body, data, ct);
-            }
-        }
-    }
-
-    public sealed class WarningRecorder : ILoggerProvider
-    {
-        private readonly List<Warning> _warnings = new();
-
-        /// <summary>Verilen metni içeren uyarılar (ortak günlükte ilgisiz uyarılar da var).</summary>
-        public IReadOnlyList<Warning> Containing(string text)
-        {
-            lock (_warnings) return _warnings.Where(w => w.Message.Contains(text, StringComparison.Ordinal)).ToArray();
-        }
-
-        public ILogger CreateLogger(string categoryName) => new Recorder(this);
-
-        public void Dispose() { }
-
-        private sealed class Recorder(WarningRecorder owner) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-            public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Warning;
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                if (!IsEnabled(logLevel)) return;
-                lock (owner._warnings) owner._warnings.Add(new Warning(formatter(state, exception), exception));
             }
         }
     }
@@ -237,6 +207,12 @@ public sealed class PanelPaymentDecisionSideEffectTests
             await db.WaConversationLabels.AsNoTracking().Where(x => x.ConversationId == s.ConversationId)
                 .Select(x => x.WaLabel.Name).SingleOrDefaultAsync());
     }
+
+    /// <summary>Bu ödemenin adı geçen uyarılar (ortak günlükte ilgisiz satırlar da var). İstisna da tutulur: kuyruk
+    /// uyarısının onu EKLEMEDİĞİ sınanır.</summary>
+    private IEnumerable<(string Message, Exception? Exception)> WarningsFor(Guid paymentId) => _factory.Log.Entries
+        .Where(e => e.Level == LogLevel.Warning && e.Message.Contains(paymentId.ToString(), StringComparison.Ordinal))
+        .Select(e => (e.Message, e.Exception));
 
     private static async Task ShouldBeNotPendingAsync(HttpResponseMessage resp)
     {
@@ -352,8 +328,8 @@ public sealed class PanelPaymentDecisionSideEffectTests
         _factory.Steps.Should().Equal(
             new Step("bağdaştırma", PaymentStatus.Approved, Label: null),
             new Step("bildirim", PaymentStatus.Approved, ApprovedLabel));
-        _factory.Warnings.Containing(s.PaymentId.ToString()).Should().Equal(
-            new Warning($"Gölge eşleştirme işi zamanlanamadı (ödeme {s.PaymentId}): InvalidOperationException", Exception: null));
+        WarningsFor(s.PaymentId).Should().Equal(
+            ($"Gölge eşleştirme işi zamanlanamadı (ödeme {s.PaymentId}): InvalidOperationException", null));
     }
 
     [Fact]
@@ -390,7 +366,7 @@ public sealed class PanelPaymentDecisionSideEffectTests
         var (payment, written) = await ReadAsync(s);
         payment.Status.Should().Be(status);
         written.Should().Be(label);
-        _factory.Warnings.Containing(s.PaymentId.ToString()).Should().Equal(
-            new Warning($"Shopper payment decision push failed for payment={s.PaymentId}", failure));
+        WarningsFor(s.PaymentId).Should().Equal(
+            ($"Shopper payment decision push failed for payment={s.PaymentId}", failure));
     }
 }

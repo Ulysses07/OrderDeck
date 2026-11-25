@@ -11,13 +11,16 @@ namespace OrderDeck.LicenseServer.Services.Payments;
 /// <summary>Ödeme kararının sonucu; HTTP karşılığını çağıran verir.</summary>
 public enum PaymentDecisionOutcome
 {
-    /// <summary>Karar kaydedildi ve yan etkileri yürütüldü (kuyruk, etiket ve bildirim arızası kararı düşürmez).</summary>
+    /// <summary>Karar kaydedildi ve yan etkileri yürütüldü; kuyruk, etiket kaydı ve bildirim arızası yalnız uyarıdır. Etiketin
+    /// telefon sorgusu istek jetonunu kullanır ve korumasızdır: istemci kayıttan sonra koparsa sonuç yerine istisna çıkar,
+    /// karar yine kalıcıdır.</summary>
     Decided,
 
     /// <summary>Bu yayıncının böyle bir ödemesi yok.</summary>
     NotFound,
 
-    /// <summary>Ödeme zaten karara bağlanmış ya da yarışan başka bir karar kazandı; hiçbir şey yazılmadı, yan etki yok.</summary>
+    /// <summary>Ödeme zaten karara bağlanmış ya da yarışan başka bir karar kazandı; veritabanına hiçbir şey yazılmadı, yan etki
+    /// yok. Yarış kaybında ödeme bağlamda değişmiş hâlde kalır: aynı <c>LicenseDbContext</c> ile yeniden kaydedilmez.</summary>
     NotPending,
 }
 
@@ -128,13 +131,13 @@ public sealed class PaymentApprovalService
     }
 
     /// <summary>
-    /// Gölge banka eşleştirmesi ölçümü (spec §6): onayı gölge öneriyle bağdaştıran işi
+    /// Gölge banka eşleştirmesi ölçümü (spec 2026-09-25 §6): onayı gölge öneriyle bağdaştıran işi
     /// <see cref="PaymentMatchReconcileJob.ApprovalDelay"/> sonrasına zamanlar — dekontun kendi havalesi çekilmeden
     /// koşsaydı aynı tutarlı başka bir havaleyi bağlardı. Onay isteğinde KOŞMAZ: eşleştirme onayı yavaşlatmamalı, hatası
     /// onayı düşürmemeli. Ödeme SaveChanges'inden SONRA: commit olmamış onay için koşan iş "onaylı değil" diye çıkardı.
     /// Etiket ve bildirimden ÖNCE: onlar istek jetonunu kullanır, etiketin telefon sorgusu da try dışında; istemci commit'ten
     /// sonra koparsa ya da o sorgu atarsa eylem orada biter ve onay Faz 2 ölçümünden sessizce düşerdi (ne iş, ne gap, ne
-    /// günlük). Ret bağlanmaz (spec §6 "ret öğretmez").
+    /// günlük). Ret bağlanmaz (aynı bölüm, "ret öğretmez").
     /// </summary>
     private void ScheduleShadowReconcile(Guid paymentId)
     {

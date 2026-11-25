@@ -17,7 +17,7 @@ public sealed class LogApiFactory : ApiFactory
     }
 }
 
-/// <summary>Information ve üstü günlük satırlarını kategori, düzey ve biçimlenmiş metinle toplar (iş parçacığı
+/// <summary>Information ve üstü günlük satırlarını kategori, düzey, biçimlenmiş metin ve istisnayla toplar (iş parçacığı
 /// güvenli). Tek bir <c>ILogger&lt;T&gt;</c>'yi elle veren testler için <see cref="LogRecorder{T}"/>.</summary>
 public sealed class LogRecorderProvider : ILoggerProvider
 {
@@ -39,10 +39,11 @@ public sealed class LogRecorderProvider : ILoggerProvider
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (IsEnabled(logLevel)) owner._entries.Enqueue(new LogEntry(category, logLevel, formatter(state, exception)));
+            if (IsEnabled(logLevel))
+                owner._entries.Enqueue(new LogEntry(category, logLevel, formatter(state, exception), exception));
         }
     }
 }
 
 /// <summary>Toplanan bir günlük satırı.</summary>
-public sealed record LogEntry(string Category, LogLevel Level, string Message);
+public sealed record LogEntry(string Category, LogLevel Level, string Message, Exception? Exception);
