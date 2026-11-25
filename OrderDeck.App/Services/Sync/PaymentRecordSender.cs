@@ -97,8 +97,9 @@ public sealed record PaymentRecordFlush(int Sent, int Kept, int Dropped, int Rem
 /// W3-05). Kuyruğa iki tür girer (<see cref="PendingPaymentRecordRepository"/>): gönderilemeyen <c>finish</c>
 /// (<see cref="EnqueueFinish"/>) ve mod Off'taki kirasız kayıt (<see cref="EnqueueRecord"/>). İkisi de iki kipte gider;
 /// sürücüleri geri doldurma turu (<see cref="SalesBackfillService"/>, 60 sn, geri doldurmanın durumundan bağımsız), mod
-/// On açılışının 1. adımı (<see cref="SalesOpeningFlush"/>, İLK kuyruk) ve kapanıştaki "gönder ve kapat"ın ilk adımıdır
-/// (<see cref="SyncFlushService.ForClose"/>). Hepsi TEK kapıdan: aynı kayıt aynı anda iki kez gitmez.
+/// On açılışının 1. adımı (<see cref="SalesOpeningFlush"/>, İLK kuyruk), kapanıştaki "gönder ve kapat"ın ilk adımı
+/// (<see cref="SyncFlushService.ForClose"/>) ve — yalnız <c>finish</c> — ödeme isteğinin ön gönderimi ile akış sonudur
+/// (<see cref="PaymentLeaseCoordinator"/>). Hepsi TEK kapıdan: aynı kayıt aynı anda iki kez gitmez.
 ///
 /// <para><b>Sıra ve bütçe:</b> kuyruk eskiden yeniye işlenir. <c>finish</c> kayıt başına bir istektir; art arda gelen
 /// kirasız kayıtlar tek <c>payment-requests/backfill</c> partisinde, en çok <see cref="PaymentRequestLimits.MaxBackfillBatch"/>
@@ -122,9 +123,10 @@ public sealed record PaymentRecordFlush(int Sent, int Kept, int Dropped, int Rem
 /// yalnız v2 konuşur) hiç istek gitmez, deneme sayılmaz. Boş kuyrukta istek yok. Ağ işi arayüz iş parçacığında koşmaz;
 /// günlük yalnız Id ve sayı taşır (tutar, ad yok).</para>
 ///
-/// <para><b>Durum satırı (I-3):</b> kuyruk bekleyen sayıya girer (<see cref="SyncOutboxRepository"/>); kuyruğu boş ya da
-/// takılan kaydı olmayan gönderim <see cref="SyncStatusTracker.MarkPushOk"/> yazar, takılan kayıt satırı "Gönderilemiyor"
-/// yapar.</para>
+/// <para><b>Durum satırı (I-3):</b> kuyruk bekleyen sayıya girer (<see cref="SyncOutboxRepository"/>). Tam gönderim
+/// (<c>finishesOnly</c> değil) kuyruk boşsa ya da işlenip takılan kayıt kalmadıysa <see cref="SyncStatusTracker.MarkPushOk"/>
+/// yazar (bütçeye sığmayan takılma değildir). Zarfı ya da lisansı hazır olmayan ve takılan kaydı olan gönderim yazmaz:
+/// kayıt beklerken <see cref="SyncStatusFormatter.OfflineAfter"/> dolunca satır "Gönderilemiyor" olur.</para>
 /// </summary>
 public sealed class PaymentRecordSender
 {
@@ -142,7 +144,8 @@ public sealed class PaymentRecordSender
     private readonly ILogger<PaymentRecordSender> _log;
     private readonly SyncStatusTracker? _tracker;
 
-    /// <summary>Tek gönderim kapısı: geri doldurma turu, açılışın 1. adımı ve kapanış gönderimi sıraya girer.</summary>
+    /// <summary>Tek gönderim kapısı: geri doldurma turu, açılışın 1. adımı, kapanış gönderimi, ödeme isteğinin ön gönderimi
+    /// ve akış sonu sıraya girer.</summary>
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>Kapıda sırasını bekleyen gönderim sayısı — testler ikinci gönderimin gerçekten kapıda beklediğini

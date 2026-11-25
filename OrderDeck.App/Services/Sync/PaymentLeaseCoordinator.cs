@@ -249,8 +249,9 @@ public sealed record PaymentLeaseBeginInput(
 /// sonucu bilinmiyorsa) her çıkışta <c>finish</c> — <c>delivered</c>, <c>unconfirmed</c> ya da <c>abandoned</c>; net,
 /// düşüm ve tamamı bakiyeden akıştan. Önce kalıcı kuyruğa yazılır (<see cref="PaymentRecordSender.EnqueueFinish"/>),
 /// sonra en çok <see cref="FinishBudget"/> gönderilir: gidemezse kuyrukta kalır, sonraki gönderim (geri doldurma turu,
-/// sonraki isteğin ön gönderimi) götürür. Süreç arada kapansa da kayıt kaybolmaz — kira kendiliğinden dolup sahte
-/// "gitmiş olabilir" olmaz.</para>
+/// sonraki isteğin ön gönderimi, mod On açılışı, kapanıştaki "gönder ve kapat") götürür. Süreç arada kapansa da kayıt
+/// kaybolmaz; ama gönderilmeden kira dolarsa sunucuda sonraki açılışın gönderimine dek <c>Unconfirmed</c> ("gitmiş
+/// olabilir") görünür, geç giden <c>finish</c> sonucu düzeltir.</para>
 ///
 /// <para>Günlük yalnız Id ve sayı taşır (ad, telefon, tutar yok).</para>
 /// </summary>
