@@ -321,7 +321,10 @@ işareti).
 - Facebook'ta "elle düzeltilmeli" bugün ayırt edilemiyor: çözümleyici her hatayı "yayın yok" sayıyor
   ve geçersiz token soluk "yayın bekleniyor" görünürdü. Çözümleyici yetki hatasını (Graph'ın oturum
   ve izin hataları) "yayın yok"tan ayırt edilebilir bildirir; bekçinin kullandığı sade çağrı ve
-  "iki ardışık boş cevap" kuralı değişmez.
+  "iki ardışık boş cevap" kuralı değişmez. Geçici hata (ağ, Graph'ın sunucu hatası, hız sınırı) da
+  "yayın yok" sayılmaz: satır "yeniden deneniyor" olur ve arama aynı aralıkla sürer. (Uygulama
+  sırasında, dal incelemesinin bulgusuyla eklendi: yayın sürerken ağ gidince satır "yayın kesildi"
+  deyip operatörü açık yayını yeniden açmaya yollamasın.)
 - TikTok: sekme bağlıyken `● TikTok` (ipucu: `TikTok canlı yayın sekmesi bağlı.`). Bu oturumda
   bağlıydı ve şimdi bağlı sekme yoksa `TikTok sekme bağlı değil`; başka kaynak bağlıyken sarı,
   değilse soluk. İpucu: `TikTok canlı yayın sekmesi kapalı ya da uzantı bağlı değil. Sekmeyi aç ya da

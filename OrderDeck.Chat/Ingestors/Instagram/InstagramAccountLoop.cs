@@ -25,6 +25,7 @@ namespace OrderDeck.Chat.Ingestors.Instagram;
 /// <param name="Health">Hesap başına sağlığın yazıldığı izleyici.</param>
 /// <param name="Time">Saat kaynağı: beklemeler, yeniden deneme saatleri, kota satırının aralığı.</param>
 /// <param name="Timings">Bekleme süreleri.</param>
+/// <param name="Wake">Uyandırılabilir bekleme: "Sohbeti yenile" bekleyen döngüleri bununla uyandırır.</param>
 [SupportedOSPlatform("windows")]
 internal sealed record InstagramLoopServices(
     FacebookOAuthService OAuth,
@@ -35,7 +36,8 @@ internal sealed record InstagramLoopServices(
     IHttpClientFactory? HttpFactory,
     InstagramHealthMonitor Health,
     TimeProvider Time,
-    InstagramChatTimings Timings);
+    InstagramChatTimings Timings,
+    InstagramWake Wake);
 
 /// <summary>
 /// Bağlı TEK bir Sayfanın Instagram hesabını bir oturum boyunca yoklar: hesabı çözer, poller'ı
@@ -62,6 +64,12 @@ internal sealed record InstagramLoopServices(
 /// saat göstermez, yeni poller yanıt alamazsa "yanıt yok" o saati beklemeden görünür. Yeni
 /// token'la ilk iş hesabın bir kez yeniden çözülmesidir
 /// (<see cref="ForgetAccountIfTokenChanged"/>).</para>
+///
+/// <para><b>"Sohbeti yenile".</b> Döngünün beklemeleri (hesap çözülemedi, kalıcı hata, atlanmış
+/// Sayfa, poller çıkışından sonraki bekleme) uyandırılabilir: yenileme isteği beklemeyi keser, hesap
+/// "bağlanıyor"a alınır (<see cref="InstagramHealthMonitor.MarkRetrying"/>) ve tur baştan başlar.
+/// Çalışan poller bir bekleme değildir: ona dokunulmaz, filigranı korunur. Hız sınırı beklemesi
+/// poller'ın içindedir ve kesilmez.</para>
 ///
 /// <para><b>Kapıya devir.</b> Oturum tek Sayfayla başlayıp ikinci Sayfa sonradan bağlanırsa kapı
 /// döngüye sonradan takılır (<see cref="AttachGate"/>): çalışan poller durdurulur ve beklenmeden,
@@ -97,6 +105,10 @@ internal sealed class InstagramAccountLoop
     /// <summary>Çalışan poller'ı <see cref="AttachGate"/> durdurdu; döngü poller bitince okur ve
     /// sıfırlar (<see cref="EndPoller"/>).</summary>
     private bool _handover;
+
+    /// <summary>Son bekleme "Sohbeti yenile" ile kesildi; sıradaki tur başında okunur ve sıfırlanır.
+    /// Yalnız döngünün kendi iş parçacığı okur ve yazar.</summary>
+    private bool _woken;
 
     /// <param name="pageId">Yoklanacak Sayfa.</param>
     /// <param name="services">Ortak servisler.</param>
@@ -183,13 +195,27 @@ internal sealed class InstagramAccountLoop
                     var watermark = carried ?? new InstagramCommentWatermark();
                     carried = null;
 
+                    // Uyandırma sıra numarası bu turun denemesinden ÖNCE okunur: deneme sürerken gelen
+                    // yenileme, ardından başlayacak beklemeyi atlatır (sinyal kaçmaz).
+                    var epoch = _services.Wake.Epoch;
+
                     // 1) Kimlik: Sayfanın güncel token'ı. Sayfa artık bağlı değilse döngü biter.
                     var page = await FindPageAsync(ct).ConfigureAwait(false);
                     if (page is null) return;
 
-                    // Yalnız durmuş girdide etkilidir: poller yeniden kurulurken sürmekte olan
-                    // durum ve süresi silinmez.
-                    Track(() => health.Report(_pageId, InstagramAccountState.Starting));
+                    if (_woken)
+                    {
+                        // Bekleme "Sohbeti yenile" ile kesildi: hesap "bağlanıyor"a alınır (durumuna
+                        // bakılmadan; bilinçli istisna) ve yeniden denenir.
+                        _woken = false;
+                        Track(() => health.MarkRetrying(_pageId));
+                    }
+                    else
+                    {
+                        // Yalnız durmuş girdide etkilidir: poller yeniden kurulurken sürmekte olan
+                        // durum ve süresi silinmez.
+                        Track(() => health.Report(_pageId, InstagramAccountState.Starting));
+                    }
 
                     // 2) Çözümleme. "Hesap yok" ile "çağrı düştü" ayrı durumlardır; ikisi de
                     // uzun bekler. Token değiştiyse önbellekteki hesap önce unutulur; devir turu
@@ -204,7 +230,7 @@ internal sealed class InstagramAccountLoop
                         ReportWaiting(status == InstagramResolveStatus.NotLinked
                             ? InstagramAccountState.NotLinked
                             : InstagramAccountState.ResolveFailed);
-                        await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, ct)
+                        await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, epoch, ct)
                             .ConfigureAwait(false);
                         continue;
                     }
@@ -222,7 +248,7 @@ internal sealed class InstagramAccountLoop
                         ReportWaiting(InstagramAccountState.Skipped);
                         // Token'a bakmaz (Sayfa token yüzünden atlanmadı), sahipliğe bakar: sahip
                         // bırakınca tur hemen baştan başlar ve sahipliği almayı yeniden dener.
-                        await WaitWhileOwnedByAsync(account.IgUserId, owner, timings.IdleAfterFatal, ct)
+                        await WaitWhileOwnedByAsync(account.IgUserId, owner, timings.IdleAfterFatal, epoch, ct)
                             .ConfigureAwait(false);
                         continue;
                     }
@@ -278,6 +304,11 @@ internal sealed class InstagramAccountLoop
 
                     if (ct.IsCancellationRequested) return;
 
+                    // Poller bitti; bundan sonraki beklemeler için sıra numarası yeniden okunur. Poller
+                    // sağlıklı çalışırken gelen yenileme ona dokunmadı; saatler sonra çıktığında
+                    // beklemesini de atlatmamalı.
+                    epoch = _services.Wake.Epoch;
+
                     // 5) Kalıcı hata (token/izin) → hemen tekrar denemek anlamsız.
                     if (poller.FatalReason is { } reason)
                     {
@@ -291,7 +322,7 @@ internal sealed class InstagramAccountLoop
                         Track(
                             () => health.Report(_pageId, InstagramAccountState.Faulted, reason, RetryAt()),
                             from: _observer.TakeStateBeforeFatal());
-                        if (await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, ct)
+                        if (await WaitUnlessTokenChangedAsync(timings.IdleAfterFatal, page.PageAccessToken, epoch, ct)
                                 .ConfigureAwait(false))
                         {
                             // Bekleme atlandı ya da kesildi: yeniden deneme ŞİMDİ başlıyor, girdideki saat
@@ -322,7 +353,7 @@ internal sealed class InstagramAccountLoop
                         crashed
                             ? InstagramChatHostedService.ComputeBackoff(consecutiveCrashes)
                             : timings.IdleAfterPollerExit,
-                        ct).ConfigureAwait(false);
+                        epoch, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -334,7 +365,11 @@ internal sealed class InstagramAccountLoop
                     log.LogError(ex,
                         "[InstagramChatHostedService] page {PageId} loop error; sleeping before retry",
                         _pageId);
-                    try { await IdleAsync(timings.IdleAfterPollerExit, ct).ConfigureAwait(false); }
+                    try
+                    {
+                        await IdleAsync(timings.IdleAfterPollerExit, _services.Wake.Epoch, ct)
+                            .ConfigureAwait(false);
+                    }
                     catch (OperationCanceledException) { return; }
                 }
             }
@@ -365,7 +400,20 @@ internal sealed class InstagramAccountLoop
         return null;
     }
 
-    private Task IdleAsync(TimeSpan duration, CancellationToken ct) => Task.Delay(duration, _services.Time, ct);
+    /// <summary>
+    /// Uyandırılabilir bekleme. "Sohbeti yenile" beklemeyi keserse bunu <see cref="_woken"/>'a yazar:
+    /// sıradaki tur hesabı "bağlanıyor"a alır.
+    /// </summary>
+    /// <param name="duration">En çok beklenecek süre.</param>
+    /// <param name="epoch">Bu turun denemesinden önce okunan uyandırma sıra numarası.</param>
+    /// <param name="ct">Döngünün belirteci; beklemeyi iptal eder.</param>
+    /// <returns>Bekleme uyandırmayla kesildiyse true, süre dolduysa false.</returns>
+    private async Task<bool> IdleAsync(TimeSpan duration, long epoch, CancellationToken ct)
+    {
+        var woken = await _services.Wake.DelayAsync(duration, _services.Time, ct, epoch).ConfigureAwait(false);
+        if (woken) _woken = true;
+        return woken;
+    }
 
     /// <summary>
     /// Poller'ı kurar ve "çalışıyor" diye kaydeder; başlatmaz. Kapı yokken poller doğrudan sohbet
@@ -463,10 +511,13 @@ internal sealed class InstagramAccountLoop
     /// </summary>
     /// <param name="wait">Token değişmezse beklenecek toplam süre.</param>
     /// <param name="usedToken">Bu turun 1. adımında okunup çözümlemeye ya da poller'a verilen token.</param>
+    /// <param name="epoch">Bu turun denemesinden önce okunan uyandırma sıra numarası.</param>
     /// <param name="ct">Oturum belirteci; beklemeyi iptal eder.</param>
-    /// <returns>Bekleme atlandıysa ya da kesildiyse true, süre dolduysa false. İkisinde de tur
-    /// baştan başlar; önbelleği yeni turdaki <see cref="ForgetAccountIfTokenChanged"/> boşaltır.</returns>
-    private async Task<bool> WaitUnlessTokenChangedAsync(TimeSpan wait, string usedToken, CancellationToken ct)
+    /// <returns>Bekleme atlandıysa ya da kesildiyse (token değişti ya da "Sohbeti yenile" uyandırdı)
+    /// true, süre dolduysa false. İkisinde de tur baştan başlar; önbelleği yeni turdaki
+    /// <see cref="ForgetAccountIfTokenChanged"/> boşaltır.</returns>
+    private async Task<bool> WaitUnlessTokenChangedAsync(
+        TimeSpan wait, string usedToken, long epoch, CancellationToken ct)
     {
         var interval = _services.Timings.WatchInterval;
         for (var remaining = wait; remaining > TimeSpan.Zero;)
@@ -476,7 +527,7 @@ internal sealed class InstagramAccountLoop
                 return true;
 
             var step = remaining < interval ? remaining : interval;
-            await IdleAsync(step, ct).ConfigureAwait(false);
+            if (await IdleAsync(step, epoch, ct).ConfigureAwait(false)) return true;
             remaining -= step;
         }
 
@@ -495,8 +546,11 @@ internal sealed class InstagramAccountLoop
     /// <param name="igUserId">Atlanan Sayfanın çözülen Instagram hesabı.</param>
     /// <param name="owner">Hesabı yoklayan Sayfa (PageId).</param>
     /// <param name="wait">Sahip yerinde kalırsa beklenecek toplam süre.</param>
+    /// <param name="epoch">Bu turun denemesinden önce okunan uyandırma sıra numarası; "Sohbeti yenile"
+    /// beklemeyi keser.</param>
     /// <param name="ct">Oturum belirteci; beklemeyi iptal eder.</param>
-    private async Task WaitWhileOwnedByAsync(string igUserId, string owner, TimeSpan wait, CancellationToken ct)
+    private async Task WaitWhileOwnedByAsync(
+        string igUserId, string owner, TimeSpan wait, long epoch, CancellationToken ct)
     {
         var interval = _services.Timings.WatchInterval;
         for (var remaining = wait; remaining > TimeSpan.Zero;)
@@ -506,7 +560,7 @@ internal sealed class InstagramAccountLoop
                 return;
 
             var step = remaining < interval ? remaining : interval;
-            await IdleAsync(step, ct).ConfigureAwait(false);
+            if (await IdleAsync(step, epoch, ct).ConfigureAwait(false)) return;
             remaining -= step;
         }
     }

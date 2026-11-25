@@ -246,4 +246,45 @@ public sealed class InstagramHealthPresenterTests
         Row(blank).Label.Should().Be(blank.PageName);
         Row(H(State.Faulted, wasLive: true, detail: " ")).Tooltip.Should().Be(Reauth);
     }
+
+    // ── Öbür platformlarla birlikte (tasarım: Sohbeti yenile §5.4) ─────────────────────────────────────────────────
+    [Fact] public void Tek_hesap_dusup_baska_platform_canliyken_yayin_kesildi_olur()
+    {
+        // YouTube sürerken düşen tek Instagram hesabı: öbür Instagram hesabı yok, ama yayın başka kaynakta sürüyor.
+        var ended = H(State.BroadcastEnded, sinceAgo: 60, contactAgo: 5, wasLive: true);
+        var view = InstagramHealthPresenter.Evaluate([ended], Now, sessionActive: true, otherSourceLive: true);
+        view.Rows.Single().Should().Be(At(ended, "yayın kesildi (21:13)", Severity.Warning,
+            "Bu hesabın yayını kapandı; yorumları gelmiyor. Öbür kaynaklar yayında."));
+        view.TopDotTooltip.Should().Be($"Instagram @{ended.Username}: yayın kesildi (21:13).");
+        Row(ended).StateText.Should().Be("yayın bitti (21:13)");   // öbür kaynak canlı değilken bugünkü gibi
+    }
+    [Fact] public void Baska_hesap_canliyken_ipucu_diger_hesabi_anar_baska_platform_eklense_de()
+    {
+        var ended = H(State.BroadcastEnded, sinceAgo: 60, contactAgo: 5, wasLive: true, primary: false);
+        InstagramHealthPresenter.Evaluate([Healthy(), ended], Now, sessionActive: true, otherSourceLive: true).Rows[1].Tooltip
+            .Should().Be("Bu hesabın yayını kapandı; yorumları gelmiyor. Diğer hesap yayında.");
+    }
+    [Fact] public void Baska_platform_canli_diye_yayin_bekleyen_hesap_sararmaz()
+    {
+        // O gece Instagram'da yayın yapmayan yayıncı, YouTube'u canlı diye uyarı görmez.
+        var waiting = H(State.WaitingForBroadcast, sinceAgo: 600, contactAgo: 5);
+        InstagramHealthPresenter.Evaluate([waiting], Now, sessionActive: true, otherSourceLive: true).Rows.Single()
+            .Should().Be(At(waiting, "yayın bekleniyor", Severity.Neutral, "Bu hesapta canlı yayın açılınca yorumlar akmaya başlar."));
+    }
+    [Fact] public void Sorun_ve_baglaniyor_bayraklari_durumlara_gore()
+    {
+        var starting = H(State.Starting, sinceAgo: 5, primary: false);
+        var silent = H(State.Live, sinceAgo: 300, contactAgo: 18, wasLive: true, primary: false);
+        var waiting = H(State.WaitingForBroadcast, sinceAgo: 10, contactAgo: 5, primary: false);
+        var limited = H(State.RateLimited, contactAgo: 30, retryIn: 60, primary: false);
+        var view = Eval(Healthy(), starting, silent, waiting, limited);
+        view.ConnectingPageIds.Should().BeEquivalentTo([starting.PageId]);
+        view.ProblemPageIds.Should().BeEquivalentTo([silent.PageId, limited.PageId]);   // canlı, bağlanan ve yayın bekleyen sorun değildir
+    }
+    [Fact] public void Yayini_kesilen_hesap_sorundur_yayini_biten_degildir()
+    {
+        var ended = H(State.BroadcastEnded, sinceAgo: 60, contactAgo: 5, wasLive: true, primary: false);
+        Eval(Healthy(), ended).ProblemPageIds.Should().BeEquivalentTo([ended.PageId]);
+        Eval(ended).ProblemPageIds.Should().BeEmpty();
+    }
 }

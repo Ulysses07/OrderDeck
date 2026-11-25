@@ -36,6 +36,8 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
     private readonly ViewerCountTracker? _viewers;
+    private readonly ChatSourceMonitor? _sources;
+    private readonly ChatReconnectSignal? _reconnect;
     private readonly ILogger<ExtensionBridgeServer> _log;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -94,7 +96,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     //
     // Çözüm: platform başına TEK etkin kaynak. İlk mesajını ulaştıran bağlantı
     // etkin olur; diğer sekmeler bağlı kalır ama mesajları sayılıp atlanır —
-    // yani pasif sekme kopukluk anında hazır bekleyen bir YEDEK. Devir iki
+    // yani pasif sekme kopukluk anında hazır bekleyen bir YEDEK. Devir üç
     // yoldan olur:
     //   1. Etkin bağlantı kapanır → kaydı anında silinir, sıradaki mesajını
     //      ulaştıran devralır (anlık failover, kayıpsız — pasif sekme zaten
@@ -104,6 +106,9 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     //      geçtiyse yeni kaynak devralır. TikTok canlı URL'si her yayında aynı
     //      (@kullanici/live) olduğu için URL ile ayırt etmek mümkün değil —
     //      tek güvenilir sinyal sessizlik.
+    //   3. Operatör "Sohbeti yenile"ye basar → kilit bırakılır
+    //      (ReleaseActiveSources); sıradaki mesajını ulaştıran sekme hemen
+    //      etkin olur, 2. yoldaki bekleme atlanır.
     //
     // Sakin yayında flip-flop olmaz: aynı yayının sekmeleri AYNI olayları
     // gönderdiği için etkin sekmenin her kabulü damgayı tazeler; kopya, damga
@@ -224,6 +229,92 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// "Sohbeti yenile": tek etkin kaynak kilidini bırakır; sıradaki mesajını ulaştıran sekme
+    /// hemen etkin olur. Etkin sekme açık ama donmuşsa (bağlantı canlı, yorum gelmiyor) yedek
+    /// sekmenin devralması için <c>sourceStaleAfterMs</c> beklenmez.
+    ///
+    /// <para>Yalnız kilidi bırakır: sekmeyi yeniden yüklemez, sayfadaki okuyucuya dokunmaz
+    /// (sunucudan uzantıya komut gönderen bir yol yok). Son sahip kaydı durur, devir günlükte
+    /// görünür; devir penceresi kopya süzgeci çalışmayı sürdürür, yani yenileme çift sipariş
+    /// üretmez. Çağıranı bekletmez.</para>
+    /// </summary>
+    public void ReleaseActiveSources()
+    {
+        int released;
+        lock (_sourceLock)
+        {
+            released = _activeSources.Count;
+            _activeSources.Clear();
+        }
+
+        // Önek öbür sohbet servisleriyle aynı: sahada tek "[ChatReconnect]" araması dört kaynağı gösterir.
+        if (released > 0)
+            _log.LogInformation(
+                "[ChatReconnect] tiktok: köprüde etkin kaynak kilidi bırakıldı ({Count} platform); " +
+                "sıradaki mesajını ulaştıran sekme devralır", released);
+        else
+            _log.LogInformation("[ChatReconnect] tiktok: köprüde bırakılacak etkin kaynak kilidi yoktu");
+    }
+
+    private void OnReconnectRequested(object? sender, EventArgs e) => ReleaseActiveSources();
+
+    // ── TikTok sekmesi izleme (Sohbeti yenile §5.4) ──────────────────────────
+    //
+    // Sohbet şeridindeki TikTok satırının kaynağı. "Sekme bağlı" = kendini
+    // TikTok canlı yayın sekmesi olarak tanıtmış açık bir bağlantı var
+    // (uzantının bağlanınca gönderdiği `connected` iletisi; sekme yalnız canlı
+    // yayın sayfasındayken bağlanır). Açık soket SAYILMAZ: uzantının arka planı
+    // ve açılır penceresi de aynı uca kısa ömürlü yoklama soketleri açar.
+    //
+    // Köprünün tek kaynağı TikTok olduğu için yalnız onun durumu yazılır.
+    // Kendini başka platform diye tanıtan bağlantı, o platformun kendi
+    // servisinin yazdığı durumu ezemez; şeride keyfi bir ad da sokamaz.
+    //
+    // Deneme sürümünde köprü sessizdir (mesajlar atılır), satır da yoktur.
+    // Lisans durumu uygulama açıkken değişebildiği, açılışta da sekmeden SONRA
+    // belli olabildiği için durum her `connected`, her kapanış ve her sohbet
+    // mesajında yeniden hesaplanır (SyncTabState).
+    private const string TabPlatform = "tiktok";
+    private readonly object _tabLock = new();
+    private readonly HashSet<object> _tabConnections = new();
+    private ChatSourceState? _reportedTabState;
+
+    /// <summary>TikTok satırının durumunu izleyiciye yazar; değişmediyse dokunmaz.
+    /// Bildirim kilit altında yapılır: eşzamanlı bir kapanış ile bir bağlanış izleyiciye
+    /// ters sırayla yazıp satırı yanlış durumda bırakamaz.</summary>
+    private void SyncTabState()
+    {
+        if (_sources is null) return;
+
+        lock (_tabLock)
+        {
+            var state =
+                _trialProbe?.IsTrialMode == true ? ChatSourceState.Stopped
+                : _tabConnections.Count > 0 ? ChatSourceState.Live
+                : ChatSourceState.NoBroadcast;
+
+            // Hiç sekme bağlanmadıysa söylenecek bir şey yok: TikTok kullanmayan
+            // yayıncının izleyicisinde TikTok girdisi oluşmaz.
+            if (_reportedTabState is null && state != ChatSourceState.Live) return;
+            if (_reportedTabState == state) return;
+
+            _reportedTabState = state;
+            _sources.Report(TabPlatform, state);
+        }
+    }
+
+    /// <summary>Kapanan bağlantı bir sekmeyse kaydını siler.</summary>
+    private void ForgetTab(object connId)
+    {
+        bool removed;
+        lock (_tabLock) removed = _tabConnections.Remove(connId);
+        if (!removed) return;
+
+        _log.LogInformation("TikTok canlı yayın sekmesi köprüden ayrıldı");
+        SyncTabState();
+    }
+
     /// <summary>Uzantının bağlandığı tek yol; başka yola gelen yükseltme reddedilir.</summary>
     private const string WebSocketPath = "/extension";
 
@@ -245,18 +336,27 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
     public int Port { get; private set; }
 
+    /// <param name="sources">Sohbet kaynağı durum izleyicisi; verilirse TikTok sekmesinin durumu
+    /// oraya yazılır (bkz. "TikTok sekmesi izleme").</param>
+    /// <param name="reconnect">"Sohbeti yenile" sinyali; verilirse her istekte
+    /// <see cref="ReleaseActiveSources"/> çağrılır.</param>
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
         ILogger<ExtensionBridgeServer>? log = null,
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
         ViewerCountTracker? viewers = null,
         int sourceStaleAfterMs = 60_000,
-        int handoverDedupeWindowMs = 10_000)
+        int handoverDedupeWindowMs = 10_000,
+        ChatSourceMonitor? sources = null,
+        ChatReconnectSignal? reconnect = null)
     {
         _bus = bus;
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
         _viewers = viewers;
+        _sources = sources;
+        _reconnect = reconnect;
+        if (_reconnect is not null) _reconnect.Requested += OnReconnectRequested;
         // R7-08 bayatlama eşiği. 60 sn: gerçek bir canlı satış yayınında
         // 60 sn boyunca TEK yorum bile gelmemesi fiilen "yayın bitti" demek;
         // daha kısası, seyrek sohbetli sakin bir yayında gereksiz devir
@@ -498,10 +598,14 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref _activeWebSocketCount);
+            // Sıra bilinçli: önce bağlantının kayıtları silinir, sayaç EN SON
+            // düşer. Sayaca bakan (sihirbaz, testler) "bağlantı gitti" dediğinde
+            // sekme kaydı ve etkin kaynak kilidi de gitmiş olur.
+            ForgetTab(connId);
             // Kopan bağlantı etkin kaynaksa anında bırakır — pasif sekme bir
             // sonraki mesajında bayatlama beklemeden devralır.
             ReleaseSources(connId);
+            Interlocked.Decrement(ref _activeWebSocketCount);
         }
     }
 
@@ -569,6 +673,10 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
                 if (msg is { Type: "chat", Platform: not null, Username: not null, Text: not null })
                 {
+                    // Lisans durumu sekme bağlıyken değişmiş olabilir; şeritteki
+                    // TikTok satırı aşağıdaki deneme süzgeciyle aynı kararı görsün.
+                    SyncTabState();
+
                     // Deneme sürümünde köprü sessiz. Eskiden "instagram" hariç
                     // tutuluyordu; IG uzantıdan kaldırıldığı (resmi Graph API
                     // devraldı) ve el sıkışma artık yalnız tiktok.com'u kabul
@@ -609,8 +717,8 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                             msg.Platform, _sourceStaleAfterMs);
                     else if (tookOverClosed)
                         _log.LogInformation(
-                            "R7-08: {Platform} etkin kaynağı kapanmıştı; yeni bağlantı devraldı — " +
-                            "{WindowMs}ms devir penceresinde kopyalar süzülecek",
+                            "R7-08: {Platform} etkin kaynağı kapanmış ya da kilidi bırakılmıştı; " +
+                            "yeni bağlantı devraldı — {WindowMs}ms devir penceresinde kopyalar süzülecek",
                             msg.Platform, _handoverDedupeWindowMs);
 
                     // Spam filter — runs AFTER trial mode + payload-shape checks
@@ -711,6 +819,24 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                     _viewers?.Report(msg.Platform, msg.Count.Value);
                     _log.LogDebug("Viewer count [{Platform}]: {Count}", msg.Platform, msg.Count.Value);
                 }
+                else if (msg is { Type: "connected", Platform: not null })
+                {
+                    // Sekmenin kendini tanıtması (bkz. "TikTok sekmesi izleme").
+                    // İletideki adres okunmaz ve günlüğe yazılmaz: yayıncının
+                    // kullanıcı adını taşır.
+                    if (string.Equals(msg.Platform, TabPlatform, StringComparison.OrdinalIgnoreCase))
+                    {
+                        bool added;
+                        lock (_tabLock) added = _tabConnections.Add(connId);
+                        if (added)
+                            _log.LogInformation("TikTok canlı yayın sekmesi köprüye bağlandı");
+                        SyncTabState();
+                    }
+                    else
+                    {
+                        _log.LogDebug("Köprü: TikTok dışı bir platform için 'connected' iletisi yok sayıldı");
+                    }
+                }
             }
             catch (JsonException ex)
             {
@@ -730,6 +856,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_reconnect is not null) _reconnect.Requested -= OnReconnectRequested;
         await StopAsync(CancellationToken.None);
         if (_listener.IsListening) _listener.Close();
     }

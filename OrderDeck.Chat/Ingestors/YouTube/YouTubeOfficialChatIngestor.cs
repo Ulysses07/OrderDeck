@@ -17,9 +17,8 @@ namespace OrderDeck.Chat.Ingestors.YouTube;
 /// Lifecycle scraper ile simetrik (StartAsync/StopAsync/Completion) ki hosted
 /// service iki yolu da aynı şekilde yönetebilsin.
 /// </summary>
-public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
+public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IYouTubeChatIngestor
 {
-    private const int MaxSeenIds = 5000;
     // SUPER_CHAT_EVENT (stream_list.proto LiveChatMessageSnippet.Type)
     private const int SuperChatType = 15;
 
@@ -34,14 +33,16 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
     // 30 sn → ~540 çağrı/4.5sa yayın; chat'ten ayrı, hata toleranslı.
     private static readonly TimeSpan ViewerPollInterval = TimeSpan.FromSeconds(30);
 
-    private readonly HashSet<string> _seenIds = new(MaxSeenIds);
-    private readonly Queue<string> _seenOrder = new(MaxSeenIds);
+    // Çift-yayın koruması. Okuyucuya dışarıdan verilir ki okuyucu yeniden kurulunca
+    // (yenileme, yayın oturumunu bitirip açma) sıfırlanmasın: bkz. YouTubeSeenMessages.
+    private readonly YouTubeSeenMessages _seen;
 
     private GrpcChannel? _channel;
     private CancellationTokenSource? _cts;
     private Task? _runner;
     private Task? _viewerRunner;
     private string? _liveChatId;
+    private volatile int _endReason = (int)YouTubeIngestorEnd.Cancelled;
     private readonly TaskCompletionSource _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -51,13 +52,18 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
     /// hosted service bunu await edip yeniden resolve eder.</summary>
     public Task Completion => _completion.Task;
 
+    /// <inheritdoc />
+    public YouTubeIngestorEnd EndReason => (YouTubeIngestorEnd)_endReason;
+
     /// <param name="liveChatId">Biliniyorsa (liveBroadcasts.list zaten dönüyor)
     /// geçilir ve videos.list ile ikinci bir çözümleme yapılmaz — 1 birim tasarruf.</param>
+    /// <param name="seen">Gösterilmiş mesaj belleği. Servis, kurduğu bütün okuyuculara aynı örneği
+    /// verir; verilmezse okuyucu kendi (kendi ömrüyle sınırlı) belleğini kullanır.</param>
     public YouTubeOfficialChatIngestor(
         string videoId, string apiKey, IChatBus bus,
         ILogger<YouTubeOfficialChatIngestor> log, HttpClient http,
         SpamFilter? spamFilter = null, ViewerCountTracker? viewers = null,
-        string? liveChatId = null)
+        string? liveChatId = null, YouTubeSeenMessages? seen = null)
     {
         _videoId = videoId;
         _apiKey = apiKey;
@@ -67,13 +73,14 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
         _spamFilter = spamFilter;
         _viewers = viewers;
         _liveChatId = string.IsNullOrWhiteSpace(liveChatId) ? null : liveChatId;
+        _seen = seen ?? new YouTubeSeenMessages();
     }
 
     public async Task StartAsync(CancellationToken ct)
     {
         _liveChatId ??= await ResolveLiveChatIdAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrEmpty(_liveChatId))
-            throw new InvalidOperationException(
+            throw new YouTubeNoLiveChatException(
                 "activeLiveChatId yok — yayın canlı değil ya da chat kapalı");
 
         _log.LogInformation("[YouTube Official] bağlanılıyor (streamList) liveChatId={LiveChatId}", _liveChatId);
@@ -135,6 +142,8 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
         var metadata = new Metadata { { "x-goog-api-key", _apiKey } };
         string? pageToken = null;
         var reconnects = 0;
+        var offline = false;
+        Exception? error = null;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -156,6 +165,7 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
                     if (resp.HasOfflineAt && resp.OfflineAt.Length > 0)
                     {
                         _log.LogInformation("[YouTube Official] yayın offline (offline_at={OfflineAt})", resp.OfflineAt);
+                        offline = true;
                         return;
                     }
                 }
@@ -166,24 +176,58 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
                 _log.LogDebug("[YouTube Official] stream sonu; reconnect #{N}", reconnects);
             }
         }
-        catch (OperationCanceledException) { /* normal kapanış */ }
+        catch (OperationCanceledException ex) { error = ex; /* normal kapanış */ }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.FailedPrecondition)
         {
             // gRPC FAILED_PRECONDITION: chat kapalı VEYA bitti (ayırt edilemez).
+            error = ex;
             _log.LogInformation("[YouTube Official] chat kapalı/bitti (FAILED_PRECONDITION)");
+        }
+        catch (RpcException ex) when (ct.IsCancellationRequested)
+        {
+            // İptal edilen çağrı RpcException(Cancelled) atabilir: hata değil, normal kapanış.
+            error = ex;
         }
         catch (RpcException ex)
         {
+            error = ex;
             _log.LogWarning(ex, "[YouTube Official] gRPC hata {Status}; runner çıkıyor", ex.StatusCode);
         }
         catch (Exception ex)
         {
+            error = ex;
             _log.LogWarning(ex, "[YouTube Official] beklenmeyen hata; runner çıkıyor");
         }
         finally
         {
+            // Sebep, tamamlanma bildirilmeden ÖNCE yazılır: Completion'ı bekleyen döngü onu okur.
+            _endReason = (int)ClassifyEnd(error, offline, ct.IsCancellationRequested);
             _completion.TrySetResult();
         }
+    }
+
+    /// <summary>
+    /// Okuyucunun çıkış sebebi. Saf: test doğrudan çağırır.
+    /// <para>İptal her şeyin önündedir: yenileme ve oturum bitişi okuyucuyu iptalle keser ve iptal
+    /// edilen gRPC çağrısı <see cref="OperationCanceledException"/> yerine
+    /// <c>RpcException(Cancelled)</c> atabilir; bu "hata" sayılırsa her yenileme hata sayacını
+    /// büyütür.</para>
+    /// </summary>
+    /// <param name="error">Akışı bitiren istisna; akış istisnasız bittiyse null.</param>
+    /// <param name="offline">Akış "yayın çevrimdışı" işaretini gönderdi mi.</param>
+    /// <param name="cancelled">Okuyucunun iptal belirteci tetiklenmiş mi.</param>
+    internal static YouTubeIngestorEnd ClassifyEnd(Exception? error, bool offline, bool cancelled)
+    {
+        if (cancelled) return YouTubeIngestorEnd.Cancelled;
+        if (offline) return YouTubeIngestorEnd.BroadcastEnded;
+
+        return error switch
+        {
+            null or OperationCanceledException => YouTubeIngestorEnd.Cancelled,
+            // Sohbet kapatıldı ya da yayın bitti; gRPC ikisini ayırt etmez.
+            RpcException { StatusCode: StatusCode.FailedPrecondition } => YouTubeIngestorEnd.BroadcastEnded,
+            _ => YouTubeIngestorEnd.Failed,
+        };
     }
 
     private void PublishMapped(LiveChatMessage item)
@@ -192,10 +236,7 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
         if (msg is null) return;
 
         // Çift-yayın koruması (reconnect/backlog örtüşmesine karşı), id-bazlı.
-        if (!_seenIds.Add(msg.ExternalId!)) return;
-        _seenOrder.Enqueue(msg.ExternalId!);
-        while (_seenOrder.Count > MaxSeenIds)
-            _seenIds.Remove(_seenOrder.Dequeue());
+        if (!_seen.TryAdd(msg.ExternalId!)) return;
 
         if (_spamFilter is not null)
         {

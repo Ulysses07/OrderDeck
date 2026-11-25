@@ -109,6 +109,20 @@
   <StreamGeometry x:Key="OD.Path.ChevronDown">
     M5.4,9.5 L6.8,8.1 L12,13.3 L17.2,8.1 L18.6,9.5 L12,16.1 Z
   </StreamGeometry>
+  <!-- Yenile: birbirini kovalayan iki yay, uçlarında ok başı. TEK oklu değil:
+       meşgul halkası (çeyreği açık tek yay) ile karışmasın; düğme meşgulken
+       ikonun yerinde o halka döner. Yaylar 8,6 / 6,4 yarıçaplı halka dilimi
+       (kalınlık 2,2). -->
+  <StreamGeometry x:Key="OD.Path.Refresh">
+    F1 M4.552,7.7 A8.6,8.6 0 0 1 19.448,7.7 L17.543,8.8 A6.4,6.4 0 0 0 6.457,8.8 Z
+    M20.195,11.194 L21.093,6.75 L15.897,9.75 Z
+    M19.448,16.3 A8.6,8.6 0 0 1 4.552,16.3 L6.457,15.2 A6.4,6.4 0 0 0 17.543,15.2 Z
+    M3.805,12.806 L2.907,17.25 L8.103,14.25 Z
+  </StreamGeometry>
+  <!-- Onay işareti: yenileme sorunsuz bitince düğmede kısa süre görünür. -->
+  <StreamGeometry x:Key="OD.Path.Check">
+    M4.722,13.278 L10.04,18.6 L19.32,8.233 L17.68,6.767 L9.96,15.4 L6.278,11.722 Z
+  </StreamGeometry>
 
   <!--
     İkon Path'i. Fill'i en yakın Button'ın Foreground'ından alır: NavButton'ın

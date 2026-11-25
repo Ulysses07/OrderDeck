@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.Chat.Bridge;
 using OrderDeck.Core.Chat;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Chat;
@@ -777,5 +780,344 @@ public class ExtensionBridgeServerTests
         msg.Text.Should().HaveLength(4_000);
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    // ── TikTok sekmesi izleme (tasarım: Sohbeti yenile §5.4) ─────────────────
+    //
+    // NEDEN: şeritteki TikTok satırı "köprüye bir soket bağlı" demek değil, "kendini TikTok canlı
+    // yayın sekmesi olarak tanıtmış bir bağlantı açık" demek. Uzantının arka planı ve açılır
+    // penceresi de aynı uca kısa ömürlü yoklama soketleri açar; açık soket saymak satırı yanlış
+    // yere yeşil yapardı. Köprü durumu yalnız `connected` iletisinden türetir.
+
+    private static string SerializeConnected(string platform) =>
+        JsonSerializer.Serialize(new
+        {
+            type = "connected",
+            platform,
+            url = "https://www.tiktok.com/live",
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+
+    private static string NewUser() => $"@u{Guid.NewGuid():N}";
+
+    /// <summary>Koşul sağlanana dek yoklar. Üst sınır bekleme süresi değildir: koşul sağlanınca
+    /// hemen döner.</summary>
+    private static async Task Eventually(Func<bool> condition, string because)
+    {
+        var deadline = DateTime.UtcNow + TestPatience.Upper;
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new Xunit.Sdk.XunitException($"Koşul süresinde sağlanmadı: {because}");
+            await Task.Delay(20);
+        }
+    }
+
+    /// <summary>
+    /// Bağlantının o ana dek gönderdiği her şeyin işlenmesini bekler: aynı soketten bir izleyici
+    /// sayısı yollar ve sayacın onu gördüğünü yoklar (bir bağlantının çerçeveleri sırayla işlenir).
+    /// "Bir şey OLMADI" diyen testler, iletinin henüz işlenmediği bir ana bakıp boşuna geçmesin.
+    /// </summary>
+    private static async Task Drain(ClientWebSocket ws, ViewerCountTracker viewers, int marker)
+    {
+        await SendRaw(ws, JsonSerializer.Serialize(new { type = "viewers", platform = "tiktok", count = marker }));
+        await Eventually(
+            () => viewers.GetSnapshot(TimeSpan.FromMinutes(1)).Total == marker,
+            "köprü bağlantının önceki çerçevelerini işledi");
+    }
+
+    private static ChatSourceHealth? TikTok(ChatSourceMonitor sources) =>
+        sources.Snapshot().SingleOrDefault(e => e.Platform == "tiktok");
+
+    private static int Count(List<ChatMessage> received)
+    {
+        lock (received) return received.Count;
+    }
+
+    private sealed class TrialSwitch(bool isTrialMode) : ITrialModeProbe
+    {
+        public bool IsTrialMode { get; set; } = isTrialMode;
+    }
+
+    [Fact]
+    public async Task Connected_message_marks_the_platform_live()
+    {
+        var sources = new ChatSourceMonitor();
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        using var tab = await ConnectAsync(server);
+        await SendRaw(tab, SerializeConnected("tiktok"));
+
+        await Eventually(() => TikTok(sources)?.State == ChatSourceState.Live, "sekme kendini tanıttı");
+
+        await tab.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_socket_that_never_says_connected_is_not_a_tab()
+    {
+        // Uzantının arka planı ve açılır penceresi köprüyü böyle yoklar: bağlanır, kapatır.
+        var sources = new ChatSourceMonitor();
+        var viewers = new ViewerCountTracker();
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, viewers: viewers, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        using (var probe = await ConnectAsync(server, "chrome-extension://abcdefghijklmnopabcdefghijklmnop"))
+        {
+            await Drain(probe, viewers, marker: 3);
+            await probe.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        }
+        await Eventually(() => server.ActiveWebSocketCount == 0, "yoklama soketinin kapanışı işlendi");
+
+        sources.Snapshot().Should().BeEmpty("açık soket saymak 'TikTok sekmesi bağlı' demek değildir");
+    }
+
+    [Fact]
+    public async Task Connected_message_naming_another_platform_is_ignored()
+    {
+        // Köprünün tek kaynağı TikTok. Kendini başka platform diye tanıtan bir bağlantı, o
+        // platformun kendi servisinin yazdığı durumu ezememeli; şeride keyfi bir ad da sokamamalı.
+        var sources = new ChatSourceMonitor();
+        var viewers = new ViewerCountTracker();
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, viewers: viewers, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        using var tab = await ConnectAsync(server);
+        await SendRaw(tab, SerializeConnected("youtube"));
+        await Drain(tab, viewers, marker: 5);
+
+        sources.Snapshot().Should().BeEmpty();
+
+        await tab.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Closing_the_last_tab_reports_no_broadcast()
+    {
+        var sources = new ChatSourceMonitor();
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        var tab = await ConnectAsync(server);
+        // Kendini iki kez tanıtan sekme yine TEK sekmedir: kapanınca satır yeşil kalmamalı.
+        await SendRaw(tab, SerializeConnected("tiktok"));
+        await SendRaw(tab, SerializeConnected("tiktok"));
+        await Eventually(() => TikTok(sources)?.State == ChatSourceState.Live, "sekme kendini tanıttı");
+
+        await tab.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        tab.Dispose();
+
+        await Eventually(() => TikTok(sources)?.State == ChatSourceState.NoBroadcast, "son sekme kapandı");
+        TikTok(sources)!.WasLiveThisSession.Should().BeTrue("şerit 'sekme bağlı değil' diyebilsin");
+    }
+
+    [Fact]
+    public async Task Second_tab_keeps_the_platform_live_when_the_first_closes()
+    {
+        var sources = new ChatSourceMonitor();
+        var viewers = new ViewerCountTracker();
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, viewers: viewers, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        var first = await ConnectAsync(server);
+        using var second = await ConnectAsync(server);
+        await SendRaw(first, SerializeConnected("tiktok"));
+        await Drain(first, viewers, marker: 7);
+        await SendRaw(second, SerializeConnected("tiktok"));
+        await Drain(second, viewers, marker: 9);
+
+        await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        first.Dispose();
+        // Köprü sayaçtan düşmeden ÖNCE bağlantının sekme kaydını siler; sayaç 1 ise kayıt silinmiştir.
+        await Eventually(() => server.ActiveWebSocketCount == 1, "ilk sekmenin kapanışı işlendi");
+
+        TikTok(sources)!.State.Should().Be(ChatSourceState.Live, "ikinci sekme hâlâ bağlı");
+
+        await second.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await Eventually(() => TikTok(sources)?.State == ChatSourceState.NoBroadcast, "son sekme de kapandı");
+    }
+
+    [Fact]
+    public async Task Tab_in_trial_mode_has_no_row_until_the_trial_ends()
+    {
+        // Denemede köprü sessiz: mesajları atılan sekmenin satırı yeşil görünmemeli. Lisans sekme
+        // bağlıyken etkinleşirse (uygulama açılırken de olur) satır, sekmenin sonraki mesajında gelir.
+        var sources = new ChatSourceMonitor();
+        var viewers = new ViewerCountTracker();
+        var trial = new TrialSwitch(isTrialMode: true);
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, trialProbe: trial, viewers: viewers, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        using var tab = await ConnectAsync(server);
+        await SendRaw(tab, SerializeConnected("tiktok"));
+        await Drain(tab, viewers, marker: 11);
+        sources.Snapshot().Should().BeEmpty("denemede TikTok satırı yok");
+
+        trial.IsTrialMode = false;
+        await SendRaw(tab, SerializeChat("tiktok", NewUser(), "AB-25", externalId: "tt-trial-1"));
+
+        await Eventually(() => TikTok(sources)?.State == ChatSourceState.Live, "deneme bitti, sekme bağlı");
+
+        await tab.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Entering_trial_mode_removes_the_row_on_the_next_message()
+    {
+        var sources = new ChatSourceMonitor();
+        var trial = new TrialSwitch(isTrialMode: false);
+        await using var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, trialProbe: trial, sources: sources);
+        await server.StartAsync(CancellationToken.None);
+
+        using var tab = await ConnectAsync(server);
+        await SendRaw(tab, SerializeConnected("tiktok"));
+        await Eventually(() => TikTok(sources)?.State == ChatSourceState.Live, "sekme kendini tanıttı");
+
+        trial.IsTrialMode = true;
+        await SendRaw(tab, SerializeChat("tiktok", NewUser(), "AB-25", externalId: "tt-trial-2"));
+
+        await Eventually(
+            () => TikTok(sources)?.State == ChatSourceState.Stopped,
+            "mesajları atılan sekmenin satırı yeşil kalmamalı");
+
+        await tab.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    // ── "Sohbeti yenile": etkin kaynak kilidini bırakma (tasarım §5.2) ───────
+    //
+    // NEDEN: etkin sekme açık ama donmuşsa (bağlantı canlı, yorum gelmiyor) yedek sekme ancak
+    // 60 sn'lik bayatlama dolunca devralır. Yenileme kilidi bırakır: sıradaki mesajını ulaştıran
+    // sekme hemen etkin olur. Devir penceresi süzgeci çalışmayı sürdürür; yenileme çift sipariş
+    // üretmemeli.
+
+    [Fact]
+    public async Task Releasing_sources_lets_another_tab_take_over_immediately()
+    {
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var active = await ConnectAsync(server);
+        using var standby = await ConnectAsync(server);
+
+        await SendRaw(active, SerializeChat("tiktok", NewUser(), "AB-25", externalId: "tt-a-1"));
+        await Eventually(() => Count(received) == 1, "etkin sekmenin mesajı yayımlandı");
+        await SendRaw(standby, SerializeChat("tiktok", NewUser(), "CD-10", externalId: "tt-s-1"));
+        await Eventually(() => server.PassiveSourceDroppedCount == 1, "yedek sekmenin mesajı atlandı");
+
+        server.ReleaseActiveSources();
+
+        await SendRaw(standby, SerializeChat("tiktok", NewUser(), "EF-5", externalId: "tt-s-2"));
+        await Eventually(() => Count(received) == 2, "kilit bırakılınca yedek sekme hemen devraldı");
+        lock (received) received[1].Text.Should().Be("EF-5");
+
+        // Devralan artık etkin: eski etkin sekme yedeğe düşer, iki sekme birden yayımlamaz.
+        await SendRaw(active, SerializeChat("tiktok", NewUser(), "GH-7", externalId: "tt-a-2"));
+        await Eventually(() => server.PassiveSourceDroppedCount == 2, "eski etkin sekme artık yedek");
+        Count(received).Should().Be(2);
+
+        await active.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await standby.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Handover_duplicate_is_still_filtered_after_release()
+    {
+        // Etkin sekme yorumu ulaştırdı; kilit bırakıldı; öbür sekmenin AYNI yoruma ait kopyası
+        // (sekme-yerel, farklı externalId) geldi. İkinci siparişe dönüşmemeli.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var active = await ConnectAsync(server);
+        using var standby = await ConnectAsync(server);
+        var user = NewUser();
+
+        await SendRaw(active, SerializeChat("tiktok", user, "AB-25", externalId: "tt-run1-a"));
+        await Eventually(() => Count(received) == 1, "etkin sekmenin mesajı yayımlandı");
+
+        server.ReleaseActiveSources();
+
+        await SendRaw(standby, SerializeChat("tiktok", user, "AB-25", externalId: "tt-run2-a"));
+        await Eventually(() => server.HandoverDedupedCount == 1, "gecikmiş kopya süzüldü");
+        Count(received).Should().Be(1);
+
+        await active.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await standby.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Reconnect_signal_releases_sources()
+    {
+        var bus = new ChatBus(ringBufferSize: 10);
+        var reconnect = new ChatReconnectSignal();
+        var log = new CapturingLogger<ExtensionBridgeServer>();
+        await using var server = new ExtensionBridgeServer(bus, port: 0, log: log, reconnect: reconnect);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var active = await ConnectAsync(server);
+        using var standby = await ConnectAsync(server);
+
+        await SendRaw(active, SerializeChat("tiktok", NewUser(), "AB-25", externalId: "tt-sig-a"));
+        await Eventually(() => Count(received) == 1, "etkin sekmenin mesajı yayımlandı");
+
+        reconnect.Request();
+
+        await SendRaw(standby, SerializeChat("tiktok", NewUser(), "CD-10", externalId: "tt-sig-s"));
+        await Eventually(() => Count(received) == 2, "yenileme sinyali kilidi bıraktı");
+
+        // Tasarım §5.7: her yenileme isteği ve kaynağın karşılığı günlüğe bir satır yazar.
+        // Öbür servislerle aynı önek: sahada tek "[ChatReconnect]" araması dört kaynağı da gösterir.
+        log.Entries.Should().ContainSingle(
+            e => e.Message.StartsWith("[ChatReconnect] tiktok: ", StringComparison.Ordinal));
+
+        await active.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await standby.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Refresh_with_nothing_to_release_still_logs_one_line()
+    {
+        // "Kimin yapacak işi yoktu" da günlükte görünür: sahada "yeniledim, bir şey olmadı"
+        // sorusunun cevabı bu satır.
+        var log = new CapturingLogger<ExtensionBridgeServer>();
+        await using var server = new ExtensionBridgeServer(new ChatBus(ringBufferSize: 10), port: 0, log: log);
+
+        server.ReleaseActiveSources();
+
+        // Öbür servislerle aynı önek: sahada tek "[ChatReconnect]" araması dört kaynağı da gösterir.
+        log.Entries.Should().ContainSingle(
+            e => e.Message.StartsWith("[ChatReconnect] tiktok: ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Disposed_bridge_no_longer_listens_to_the_reconnect_signal()
+    {
+        var reconnect = new ChatReconnectSignal();
+        var log = new CapturingLogger<ExtensionBridgeServer>();
+        var server = new ExtensionBridgeServer(
+            new ChatBus(ringBufferSize: 10), port: 0, log: log, reconnect: reconnect);
+        await server.DisposeAsync();
+
+        reconnect.Request();
+
+        log.Entries.Should().NotContain(e => e.Message.Contains("[ChatReconnect]"));
     }
 }

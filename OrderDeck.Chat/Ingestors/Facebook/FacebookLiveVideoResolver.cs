@@ -7,8 +7,30 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Chat.Facebook;
+using OrderDeck.Chat.Ingestors.Instagram;
 
 namespace OrderDeck.Chat.Ingestors.Facebook;
+
+/// <summary>Canlı yayın aramasının sonucunun türü.</summary>
+public enum FacebookLiveLookupStatus
+{
+    /// <summary>Sayfa canlı; video kimliği sonuçta.</summary>
+    Live,
+
+    /// <summary>Sayfa şu an canlı değil.</summary>
+    NotLive,
+
+    /// <summary>Sayfa token'ı geçersiz ya da izin eksik: beklemek düzeltmez.</summary>
+    AuthProblem,
+
+    /// <summary>Geçici hata (ağ, sunucu, hız sınırı).</summary>
+    Failed,
+}
+
+/// <summary>Canlı yayın aramasının sonucu.</summary>
+/// <param name="Status">Sonucun türü.</param>
+/// <param name="VideoId">Canlı yayının video kimliği; yalnız <see cref="FacebookLiveLookupStatus.Live"/>'da.</param>
+public readonly record struct FacebookLiveLookup(FacebookLiveLookupStatus Status, string? VideoId = null);
 
 /// <summary>
 /// Resolves the currently-LIVE video id for a connected Page. The Live
@@ -38,9 +60,35 @@ public sealed class FacebookLiveVideoResolver
     /// <summary>
     /// Returns the id of the Page's most-recent LIVE_NOW broadcast, or null
     /// if the Page isn't currently live. Errors are swallowed → null so the
-    /// hosted service treats them the same as "offline" and just retries.
+    /// caller treats them the same as "offline" and just retries. Bekçi
+    /// (watchdog) bunu kullanır; ana döngü hatanın türünü ayırt eden
+    /// <see cref="ResolveDetailedAsync"/>'i kullanır.
     /// </summary>
     public async Task<string?> ResolveAsync(
+        string pageId, string pageAccessToken, CancellationToken ct)
+    {
+        try
+        {
+            var lookup = await ResolveDetailedAsync(pageId, pageAccessToken, ct).ConfigureAwait(false);
+            return lookup.Status == FacebookLiveLookupStatus.Live ? lookup.VideoId : null;
+        }
+        catch (System.OperationCanceledException)
+        {
+            return null; // bu çağrının sözleşmesi: hiçbir şey fırlatmaz
+        }
+    }
+
+    /// <summary>
+    /// Sayfanın canlı yayınını arar ve sonucu türüyle bildirir: canlı (video kimliğiyle), canlı
+    /// değil, oturum ya da izin sorunu, geçici hata.
+    ///
+    /// <para>Oturum ve izin sorunu (Graph'ın 190/463 ve 200/10 kodları) "canlı değil"den ayrılır:
+    /// beklemek onu düzeltmez, operatör izinleri güncellemelidir. Hız sınırı ve sunucu hatası
+    /// geçici hatadır.</para>
+    /// </summary>
+    /// <exception cref="System.OperationCanceledException"><paramref name="ct"/> iptal edildi
+    /// (yenileme süren aramayı keser).</exception>
+    public async Task<FacebookLiveLookup> ResolveDetailedAsync(
         string pageId, string pageAccessToken, CancellationToken ct)
     {
         // Graph API only accepts the canonical "LIVE" status here — older docs
@@ -60,7 +108,12 @@ public sealed class FacebookLiveVideoResolver
                 _log.LogDebug(
                     "[FacebookLiveVideoResolver] {Status} {Reason}: {Body}",
                     (int)resp.StatusCode, resp.ReasonPhrase, body);
-                return null;
+
+                var kind = InstagramGraphError.Classify((int)resp.StatusCode, body);
+                return new FacebookLiveLookup(
+                    kind is InstagramErrorKind.TokenExpired or InstagramErrorKind.PermissionDenied
+                        ? FacebookLiveLookupStatus.AuthProblem
+                        : FacebookLiveLookupStatus.Failed);
             }
 
             var parsed = await resp.Content.ReadFromJsonAsync<LiveVideosResponse>(
@@ -79,15 +132,19 @@ public sealed class FacebookLiveVideoResolver
                     // the subfield is unexpectedly absent.
                     var videoId = v.Video?.Id ?? v.Id;
                     if (!string.IsNullOrEmpty(videoId))
-                        return videoId;
+                        return new FacebookLiveLookup(FacebookLiveLookupStatus.Live, videoId);
                 }
             }
-            return null;
+            return new FacebookLiveLookup(FacebookLiveLookupStatus.NotLive);
+        }
+        catch (System.OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (System.Exception ex)
         {
             _log.LogDebug(ex, "[FacebookLiveVideoResolver] resolve failed (treating as offline)");
-            return null;
+            return new FacebookLiveLookup(FacebookLiveLookupStatus.Failed);
         }
     }
 

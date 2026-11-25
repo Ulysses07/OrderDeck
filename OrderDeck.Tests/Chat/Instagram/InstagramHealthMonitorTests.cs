@@ -461,4 +461,36 @@ public sealed class InstagramHealthMonitorTests
 
         monitor.Snapshot().Single().Since.Should().BeOnOrAfter(before).And.BeOnOrBefore(DateTimeOffset.UtcNow);
     }
+
+    // ── "Sohbeti yenile": bekleyen hesabın "bağlanıyor"a alınması ───────────────────────────────────────
+
+    [Fact]
+    public void MarkRetrying_moves_any_state_to_starting_and_keeps_session_liveness()
+    {
+        // Olağan Starting bildirimi yalnız durmuş girdide etkilidir (poller her kurulduğunda süren durum
+        // silinmesin). Yenilemeyle uyandırılan hesap bilinçli istisnadır: satır "bağlanıyor"a döner,
+        // sebebi ve yeniden deneme saati silinir; "bu oturumda canlıydı" bilgisi kalır.
+        var id = Started();
+        Round(id, Kind.Ok);
+        Round(id, Kind.Fatal, "sebep");
+        _monitor.Report(id, State.Faulted, "sebep", Now.AddMinutes(5));
+        Tick(9);
+
+        _monitor.MarkRetrying(id);
+
+        Entry(id).Should().Match<InstagramAccountHealth>(h =>
+            h.State == State.Starting && h.Detail == null && h.RetryAt == null && h.Since == Now
+            && h.WasLiveThisSession);
+    }
+
+    [Fact]
+    public void MarkRetrying_ignores_an_unknown_page()
+    {
+        Started();
+        var before = _monitor.Snapshot();
+
+        _monitor.MarkRetrying(New("p"));
+
+        _monitor.Snapshot().Should().Equal(before);
+    }
 }

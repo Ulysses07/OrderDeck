@@ -109,6 +109,9 @@ internal static class MainShellTestHarness
     /// <param name="instagramHealth">Instagram hesaplarının sağlık izleyicisi (sohbet şeridi, üst nokta, kenar
     /// çubuğu); null = yok, üç yüzey bugünkü gibi.</param>
     /// <param name="viewers">İzleyici sayacı (kenar çubuğunun bağlantı satırları); null = yok.</param>
+    /// <param name="chatSources">YouTube, Facebook ve TikTok'un durum izleyicisi (sohbet şeridi, üst nokta, kenar
+    /// çubuğu); null = yok, platform satırı çıkmaz.</param>
+    /// <param name="chatReconnect">"Sohbeti yenile" sinyali; null = yenileme komutu çalıştırılamaz.</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
         ILabelPrinter? printerOverride = null,
@@ -126,7 +129,9 @@ internal static class MainShellTestHarness
         Func<InMemorySqlite, LabelService, OrderDeck.App.Services.Sales.ILabelEditor>? labelEditor = null,
         Func<InMemorySqlite, RemoteSessionsViewModel>? remoteSessions = null,
         OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor? instagramHealth = null,
-        OrderDeck.Core.Chat.ViewerCountTracker? viewers = null)
+        OrderDeck.Core.Chat.ViewerCountTracker? viewers = null,
+        OrderDeck.Core.Chat.ChatSourceMonitor? chatSources = null,
+        OrderDeck.Core.Chat.ChatReconnectSignal? chatReconnect = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -192,7 +197,8 @@ internal static class MainShellTestHarness
             paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo),
             orderSync: orderSync?.Invoke(db), salesPull: salesPull?.Invoke(db),
             labelEditor: editor, remoteSessions: remoteSessions?.Invoke(db),
-            viewers: viewers, instagramHealth: instagramHealth);
+            viewers: viewers, instagramHealth: instagramHealth,
+            chatSources: chatSources, chatReconnect: chatReconnect);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey) { Bus = bus };
     }

@@ -194,6 +194,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// yapılandırılmış kayıt tutuyor, taze kayıt = bağlı.
     /// Instagram sağlık izleyicisi verildiyse Instagram satırı "en az bir hesap canlı" bilgisini son nabzın
     /// değerlendirmesinden okur (burada değerlendirme koşmaz) ve sayı göstermez (§8.6.4).
+    /// Sohbet kaynağı izleyicisi verildiyse YouTube, Facebook ve TikTok satırlarının yeşili de son
+    /// değerlendirmeden okunur (sohbet şeridiyle çelişmesin; Facebook böylece yeşil olabilir); izleyici sayısı
+    /// yalnız bağlı ve kaydı olan platformda gösterilir.
     /// </summary>
     public void RefreshConnections()
     {
@@ -207,6 +210,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             {
                 c.IsConnected = _instagramView?.AnyAccountLive ?? false;
                 c.ShowViewerCount = false;
+            }
+            else if (_chatSources is not null && c.Platform != "instagram")
+            {
+                c.IsConnected = IsChatSourceLive(c.Platform);
+                c.ShowViewerCount = c.IsConnected && row is not null;
             }
             else
             {
@@ -1144,7 +1152,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Sync.SalesChangesPullService? salesPull = null,
         Services.Sales.ILabelEditor? labelEditor = null,
         RemoteSessionsViewModel? remoteSessions = null,
-        OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor? instagramHealth = null)
+        OrderDeck.Chat.Ingestors.Instagram.InstagramHealthMonitor? instagramHealth = null,
+        OrderDeck.Core.Chat.ChatSourceMonitor? chatSources = null,
+        OrderDeck.Core.Chat.ChatReconnectSignal? chatReconnect = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1178,8 +1188,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _giveaways.WinnersDrawn += OnGiveawayWinnersDrawn;
         _bridge = bridge;
         _viewers = viewers;
-        // Kurucu aşağıda EnsureChatFlushTimer() üzerinden UpdateChatHealth'i eşzamanlı çağırır: izleyici ondan önce.
+        // Kurucu aşağıda EnsureChatFlushTimer() üzerinden UpdateChatHealth'i eşzamanlı çağırır: izleyiciler ondan önce.
         _instagramHealth = instagramHealth;
+        _chatSources = chatSources;
+        _chatReconnect = chatReconnect;
         _youTubeModeration = youTubeModeration;
         _facebookModeration = facebookModeration;
         Banner = banner;
@@ -1364,8 +1376,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         // 5 sn'lik nabız: SettingsStore.Load() önbeleksiz (her çağrıda disk
         // okuması) — bu yüzden 1 sn'lik hero zamanlayıcısına DEĞİL buraya bindi.
-        // Instagram sağlığı bir kez değerlendirilir; kenar çubuğu ve üst nokta bu sonucu okur.
-        EvaluateInstagramHealth(hasActiveSession);
+        // Sohbet kaynakları (platformlar + Instagram) bir kez değerlendirilir; şerit, kenar çubuğu ve üst nokta
+        // bu sonucu okur.
+        EvaluateChatStatus(hasActiveSession);
         RefreshConnections();
         RefreshPrinterStatus(printerName);
 
@@ -1404,14 +1417,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 : $"Chat takibi açık ({sourceList}) — son mesaj 60sn'den uzun süre önce, scraper takılmış olabilir";
         }
 
-        // Instagram'da üst noktayı sarartan durum (§8.6.4): "ok" sararır ve ipucu yalnız Instagram cümlesidir
-        // ("diğer kaynaklar akıyor" denmez: "ok" susan hesabın kendi mesajlarından da gelebilir); "idle" aynı kalır,
-        // Instagram cümlesi mevcut ipucunun önüne yazılır. "off"ta (oturum yok) buraya gelinmez.
-        if (_instagramView?.TopDotTooltip is { } instagramTooltip)
+        // Bir sohbet kaynağında üst noktayı sarartan durum (Instagram §8.6.4; 2026-11-24 §5.4 ile YouTube, Facebook
+        // ve TikTok da): "ok" sararır ve ipucu yalnız kaynağın cümlesidir ("diğer kaynaklar akıyor" denmez: "ok"
+        // susan kaynağın kendi mesajlarından da gelebilir); "idle" aynı kalır, cümle mevcut ipucunun önüne yazılır.
+        // "off"ta (oturum yok) buraya gelinmez.
+        if (ChatStatusTopDotTooltip() is { } sourceTooltip)
         {
             ChatHealthTooltip = ChatHealthState == "ok"
-                ? instagramTooltip
-                : instagramTooltip + "\n" + ChatHealthTooltip;
+                ? sourceTooltip
+                : sourceTooltip + "\n" + ChatHealthTooltip;
             ChatHealthState = "idle";
         }
     }
@@ -3016,6 +3030,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _chatHealthTimer = null;
         _heroTimer?.Stop();
         _heroTimer = null;
+        StopChatRefreshTimer();
 
         _giveaways.WinnersDrawn -= OnGiveawayWinnersDrawn;
         _intakeSync.SubmissionsSynced -= OnIntakeSubmissionsSynced;
