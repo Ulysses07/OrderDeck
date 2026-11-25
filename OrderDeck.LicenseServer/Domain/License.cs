@@ -52,8 +52,8 @@ public sealed class License
     /// </summary>
     public DateTimeOffset? PersonBalancePoolSince { get; set; }
 
-    // Banka havalesi onayı (spec 2026-10-10 §2.7): üç alanı da yalnız `bank-questions` CLI'ı yazar. Kolon DEFAULT 0:
-    // S2a öncesi imaj bu kolonları tanımaz, açtığı lisans kapalı doğar.
+    // Banka havalesi onayı (spec 2026-10-10 §2.7): üç alanı da yalnız `bank-questions` CLI'ı yazar. İki bayrak DEFAULT 0,
+    // Since boş: S2a öncesi imaj bu kolonları tanımaz, açtığı lisans kapalı doğar.
 
     /// <summary>Havale soruları açık mı. Yalnız <c>bank-questions</c> CLI'ı yazar (spec §2.7).</summary>
     public bool BankQuestionsEnabled { get; set; }

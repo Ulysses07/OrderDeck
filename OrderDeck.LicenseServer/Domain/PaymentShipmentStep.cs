@@ -87,7 +87,8 @@ public sealed class PaymentShipmentStep
     public Guid LicenseId { get; set; }
 
     /// <summary>Müşteri satırı, <see cref="Order.CustomerId"/> biçiminde (GUID'siz yerel müşteri düşmesin). BIN2:
-    /// karşılaştırma ordinal.</summary>
+    /// karşılaştırma ordinal. <c>Orders.CustomerId</c> varsayılan harmandadır: SQL'de doğrudan karşılaştırma 468 verir,
+    /// değeri parametreyle geçir ya da COLLATE yaz.</summary>
     public string CustomerKey { get; set; } = "";
 
     public PaymentShipmentStepState State { get; set; }

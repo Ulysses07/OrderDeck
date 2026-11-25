@@ -23,11 +23,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
     /// </summary>
     public partial class BankDecisionsS2a : Migration
     {
-        /// <summary>Dekontun müşterisini bağdan TÜRETİR: boşu da doluyu da yazar, değişmeyen satıra dokunmaz (S2a planı, Karar
-        /// 3; S2b göçü metni kopyalar). Bağ seçimi <c>PaymentMatchReconciler.ResolveWpfCustomerAsync</c> ile aynı: LeftAt'e
-        /// bakılmaz, en yeni JoinedAt'li MÜŞTERİLİ bağ (eşitlikte Id, oradaki sıra belirsiz). Asıl kayda en çok 3 adım
-        /// (<c>CustomerIdResolver.MaxHops</c>), zincir lisansın dışına çıkmaz. UpdatedAt yazılmaz (payments/since
-        /// imleci).</summary>
+        /// <summary>Dekontun müşterisini bağdan TÜRETİR: boşu da doluyu da yazar, değişmeyen satıra ve shopper'sız dekonta
+        /// (bağı yok) dokunmaz (S2a planı, Karar 3; S2b göçü metni kopyalar). Bağ seçimi
+        /// <c>PaymentMatchReconciler.ResolveWpfCustomerAsync</c> ile aynı: LeftAt'e bakılmaz, en yeni JoinedAt'li MÜŞTERİLİ bağ
+        /// (eşitlikte Id, oradaki sıra belirsiz). Asıl kayda en çok 3 adım (<c>CustomerIdResolver.MaxHops</c>); başka lisansın
+        /// kaydından öteye izlenmez (varılan Id yazılır, <c>CustomerIdResolver</c> ile aynı). UpdatedAt yazılmaz
+        /// (payments/since imleci).</summary>
         public const string BackfillPaymentCustomers = """
             UPDATE p
             SET p.[WpfCustomerId] = COALESCE(h3.[MergedIntoId], h2.[MergedIntoId], h1.[MergedIntoId], l.[WpfCustomerId])
