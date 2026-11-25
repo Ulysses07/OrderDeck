@@ -308,6 +308,20 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task PaymentApprove_deleted_shopper_does_not_push()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (shopperId, _) = await SeedShopperWithLinkAsync(licenseId, deleted: true);
+        var paymentId = await SeedPendingPaymentAsync(licenseId, shopperId, amount: 50m);
+        _factory.Push.Clear();
+
+        var resp = await client.PostAsync($"/api/panel/payments/{paymentId}/approve", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        _factory.Push.SentToShoppers.Should().BeEmpty();
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private async Task<Guid> SeedPendingPaymentAsync(
