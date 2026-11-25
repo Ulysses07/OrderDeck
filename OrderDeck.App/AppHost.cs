@@ -806,6 +806,7 @@ public sealed class AppHost : IDisposable
         // Servisler kurulurken çözülür: eksik kayıt kapanışta değil DI testinde (CustomerSyncDiTests)
         // düşsün.
         services.AddSingleton(sp => OrderDeck.App.Services.Sync.SyncFlushService.ForClose(
+            sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
             sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
             sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
             sp.GetRequiredService<Services.Sync.PaymentSyncService>(),

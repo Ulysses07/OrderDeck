@@ -96,9 +96,9 @@ public sealed record PaymentRecordFlush(int Sent, int Kept, int Dropped, int Rem
 /// Bekleyen ödeme kayıtlarının gönderimi (spec 2026-10-13 §3.2, §4.7, §6.4 "Akışın sonu" ve "Ödeme geçmişi", §8.4-1;
 /// W3-05). Kuyruğa iki tür girer (<see cref="PendingPaymentRecordRepository"/>): gönderilemeyen <c>finish</c>
 /// (<see cref="EnqueueFinish"/>) ve mod Off'taki kirasız kayıt (<see cref="EnqueueRecord"/>). İkisi de iki kipte gider;
-/// sürücüleri geri doldurma turu (<see cref="SalesBackfillService"/>, 60 sn, geri doldurmanın durumundan bağımsız) ve mod
-/// On açılışının 1. adımıdır (<see cref="SalesOpeningFlush"/>, İLK kuyruk). Hepsi TEK kapıdan: aynı kayıt aynı anda iki
-/// kez gitmez.
+/// sürücüleri geri doldurma turu (<see cref="SalesBackfillService"/>, 60 sn, geri doldurmanın durumundan bağımsız), mod
+/// On açılışının 1. adımı (<see cref="SalesOpeningFlush"/>, İLK kuyruk) ve kapanıştaki "gönder ve kapat"ın ilk adımıdır
+/// (<see cref="SyncFlushService.ForClose"/>). Hepsi TEK kapıdan: aynı kayıt aynı anda iki kez gitmez.
 ///
 /// <para><b>Sıra ve bütçe:</b> kuyruk eskiden yeniye işlenir. <c>finish</c> kayıt başına bir istektir; art arda gelen
 /// kirasız kayıtlar tek <c>payment-requests/backfill</c> partisinde, en çok <see cref="PaymentRequestLimits.MaxBackfillBatch"/>
