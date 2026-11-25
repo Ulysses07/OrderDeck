@@ -1290,17 +1290,15 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
     {
         { "yalniz-esik", 500m, null },
         { "yalniz-ucret", null, 60m },
-        { "esik-sifir", 0m, 60m },
-        { "ucret-sifir", 500m, 0m },
-        { "esik-eksi", -500m, 60m },
         { "ucret-eksi", 500m, -60m },
     };
 
-    /// <summary>Yarım, sıfır ya da eksi ayar (yazım uçları reddeder; satırda bulunursa) kapalı sayılır: kargosuz tutar
-    /// 200 alır.</summary>
+    /// <summary>Yarım ya da eksi ücretli ayar (yazım uçları reddeder; satırda bulunursa) kapalı sayılır: kargosuz tutar
+    /// 200 alır. Sıfır ücret ile sıfır ve eksi eşik bu uçta ayırt edilemez (kural sorulmasa da kargo 0 çıkar); sınırları
+    /// <c>ShippingRulesTests</c>'te.</summary>
     [Theory]
     [MemberData(nameof(HalfShippingSettings))]
-    public async Task Yarim_ya_da_pozitif_olmayan_kargo_ayari_kapali_sayilir(
+    public async Task Yarim_ya_da_eksi_ucretli_kargo_ayari_kapali_sayilir(
         string @case, decimal? threshold, decimal? fee)
     {
         var kit = await Kit.CreateAsync(_factory);

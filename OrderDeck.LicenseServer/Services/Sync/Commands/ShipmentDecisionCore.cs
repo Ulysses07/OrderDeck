@@ -5,7 +5,8 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
 /// <summary>
 /// Kargo kararını uygulamanın çekirdeği — spec 2026-10-13 §7.2 (Y5), §7.3, U12, M13. Kilidi, hedefin yüklenmesini ve
-/// denetimini (kargolanmış, bayat sürüm) çağıran yapar (<see cref="ShipmentDecisionCommandHandler"/>).
+/// denetimini (kargolanmış, bayat sürüm) çağıran yapar (<see cref="ShipmentDecisionCommandHandler"/>). Kaydetmez: işlem,
+/// SaveChanges ve jeton çakışması da çağıranındır.
 /// </summary>
 internal static class ShipmentDecisionCore
 {
@@ -17,8 +18,10 @@ internal static class ShipmentDecisionCore
 
     /// <summary>
     /// Kararı hedefe ve hedef açıksa (Pending/Held) müşterinin öbür açık dosyalarına uygular (U12, tek havuz). Kargoya
-    /// verirken şu anda iptal edilmiş bağlar çözülür ve tutar, durum değişmeden önce, bir kez türetilip donar. Her
-    /// dosyada komut damgası basılır, sürüm bir artar (durum değişmese de).
+    /// verirken türetilmiş dosyalarda şu anda iptal edilmiş bağlar çözülür ve tutar, durum değişmeden önce, bir kez
+    /// türetilip donar; kabul edilmiş (türetilmemiş) dosyada bağ kalır, tutar saklanan değeriyle donar
+    /// (<see cref="ShipmentShipping"/>). Her dosyada komut damgası basılır; dosyaya kapsamda ilk dokunan buysa sürüm bir
+    /// artar (durum değişmese de; bağlamadan sonrası için <see cref="ShipmentBindCore.BindAsync"/>).
     /// </summary>
     /// <param name="customer">Asıl müşteri (çözülmüş); hedefin müşterisi taşınmamış bir kopya olabilir.</param>
     /// <param name="target">İzlenen, kargolanmamış hedef; bağlı siparişlerden ÖNCE yüklenmiş olmalı (jeton sırası).</param>

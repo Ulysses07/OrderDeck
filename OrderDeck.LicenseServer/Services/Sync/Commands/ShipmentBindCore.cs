@@ -6,20 +6,25 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 /// <summary>
 /// Siparişleri müşterinin kargo dosyasına bağlamanın çekirdeği — spec 2026-10-13 §4.6, §7.1, DM7. Kilidi, yüklemeyi
 /// (dosyalar adaylardan ÖNCE) ve neyin bağlanacağını (aday kümesi, <c>expected</c>) çağıran yapar
-/// (<see cref="AttachShipmentCommandHandler"/>).
+/// (<see cref="AttachShipmentCommandHandler"/>). Kaydetmez: işlem, SaveChanges, jeton çakışması ve dosya Id'sinin ön
+/// denetimden sonra eşzamanlı alınması (<see cref="SalesCommandScope.InsertedShipmentIds"/>) da çağıranındır. Ret
+/// <see cref="SalesCommandRejection"/> olarak atılır.
 /// </summary>
 internal static class ShipmentBindCore
 {
     /// <summary>
     /// Siparişleri en yeni türetilmiş açık dosyaya bağlar; yoksa dosyayı <paramref name="proposedShipmentId"/> ile açar
-    /// (Id sunucuda varsa 409 <c>content-conflict</c>; hiçbir şey yazılmaz). Kabul edilmiş (türetilmemiş) dosya hedef
-    /// olmaz (§4.10-6). Bağlardan sonra dosya bir kez türetilir, ardından komut damgası basılır: sürüm bir artar.
+    /// (Id sunucuda varsa <see cref="SalesCommandRejection.ShipmentContentConflict"/>; hiçbir şey yazılmaz). Kabul
+    /// edilmiş (türetilmemiş) dosya hedef olmaz (§4.10-6). Bağlardan sonra dosya bir kez türetilir, ardından komut
+    /// damgası basılır: sürüm bir artar. Aynı kapsamda ardından <see cref="ShipmentDecisionCore.ApplyAsync"/> kargoya
+    /// verirse dosya orada yeniden türetilir ve sürümü bir daha artar.
     /// </summary>
     /// <param name="customer">Asıl müşteri (çözülmüş).</param>
     /// <param name="open">Müşterinin izlenen açık dosyaları, en yenisi başta. Açılan dosya başına eklenir: çağıranın
     /// havuz hesabı bu listeyi okur.</param>
-    /// <param name="orders">Bağlanacak, kapsamın izlediği siparişler; boş olamaz (boş kümede dosya açılmaz kararı
-    /// çağıranın).</param>
+    /// <param name="orders">Bağlanacak, kapsamın izlediği bağsız (<c>ShipmentId</c> boş) siparişler: çekirdek yalnız
+    /// hedefi türetir, bağı başka dosyadan alınan siparişin eski dosyasını türetmez (o, servisin K7 adımıdır). Boş olamaz
+    /// (boş kümede dosya açılmaz kararı çağıranın).</param>
     /// <param name="originReplicaId">Açılan dosyanın kaynak kopyası.</param>
     /// <returns>Siparişlerin bağlandığı dosya.</returns>
     public static async Task<Shipment> BindAsync(
