@@ -125,8 +125,8 @@ public sealed record PaymentRecordFlush(int Sent, int Kept, int Dropped, int Rem
 ///
 /// <para><b>Durum satırı (I-3):</b> kuyruk bekleyen sayıya girer (<see cref="SyncOutboxRepository"/>). Tam gönderim
 /// (<c>finishesOnly</c> değil) kuyruk boşsa ya da işlenip takılan kayıt kalmadıysa <see cref="SyncStatusTracker.MarkPushOk"/>
-/// yazar (bütçeye sığmayan takılma değildir). Zarfı ya da lisansı hazır olmayan ve takılan kaydı olan gönderim yazmaz:
-/// kayıt beklerken <see cref="SyncStatusFormatter.OfflineAfter"/> dolunca satır "Gönderilemiyor" olur.</para>
+/// yazar (bütçeye sığmayan takılma değildir). Zarf ya da lisans hazır değilse, ya da takılan kayıt varsa yazmaz: kayıt
+/// beklerken <see cref="SyncStatusFormatter.OfflineAfter"/> dolunca satır "Gönderilemiyor" olur.</para>
 /// </summary>
 public sealed class PaymentRecordSender
 {
