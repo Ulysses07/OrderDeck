@@ -199,6 +199,8 @@ public sealed class ShopperPurgeService
         //    işi saymaz (hareketlerin ve ödeme denetimlerinin kuralı): tekrarlanan
         //    silmede ödemeler Payment.ShopperId bağıyla yeniden bulunur, kişisel
         //    alanı zaten boş olan sayılmaz. Sayım boşaltmadan ÖNCE.
+        //    Dekontun müşterisi (WpfCustomerId) de boşalır: bağ S2a geri doldurmasıyla geldi (banka havalesi onayı, spec
+        //    2026-10-10 §12) ve projeksiyon kullanıcı adını koruduğu için kişiye çözülürdü. Banka satırını bulma S4'te.
         var paymentsWithPersonal = payments.Where(HasPersonalFields).ToList();
         foreach (var p in payments)
         {
@@ -207,6 +209,7 @@ public sealed class ShopperPurgeService
             p.RecipientName = null;
             p.MediaObjectKey = null;
             p.MediaContentType = null;
+            p.WpfCustomerId = null;
             p.UpdatedAt = now;
 
             // Damga YALNIZCA silinecek bir şey kalmadığında. Dosya hâlâ
@@ -308,7 +311,8 @@ public sealed class ShopperPurgeService
         //     kural satırın lisansındaki her kimliğe uygulanır (ScrubMatch). UpdatedAt eşleşmenin eşzamanlılık jetonudur;
         //     çakışma (arada silinen hareket ya da hafıza dahil) SaveAsync'te bir kez yeniden denenir. Kullanıcı adı
         //     (ScrubPersonal) ve Payment.ShopperId bağı avukat
-        //     kararına kadar BİLEREK kalır; anahtarlar o yüzden boşaltmadan önce alındı (usernames, adım 3).
+        //     kararına kadar BİLEREK kalır (dekontun müşterisi, Payment.WpfCustomerId, adım 2'de boşaldı); anahtarlar o
+        //     yüzden boşaltmadan önce alındı (usernames, adım 3).
         var purgedCustomers = projectionKeys.ToLookup(k => k.LicenseId, k => k.WpfCustomerId);
         var ibanMemories = new List<CustomerIbanMemory>();
         var scrubbedMatches = new HashSet<PaymentMatch>();
@@ -478,7 +482,7 @@ public sealed class ShopperPurgeService
     /// <summary>Ödemede adım 2'nin silecek kişisel alanı kaldı mı.</summary>
     private static bool HasPersonalFields(Payment p)
         => !string.IsNullOrEmpty(p.PayerName) || p.RecipientIban is not null || p.RecipientName is not null
-            || p.MediaObjectKey is not null || p.MediaContentType is not null;
+            || p.MediaObjectKey is not null || p.MediaContentType is not null || p.WpfCustomerId is not null;
 
     /// <summary>Shopper satırında adım 6'nın silecek kişisel alanı (kaydın hedefindeki alanlar) kaldı mı.</summary>
     private static bool HasPersonalFields(Shopper s)

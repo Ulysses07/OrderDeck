@@ -523,6 +523,8 @@ public sealed class CustomerIdentityMergeJob
                 || !WpfCustomerLinkMatcher.PhoneProves(canonical.Phone, link.Shopper.Phone, link.Shopper.PhoneVerifiedAt))
             {
                 link.WpfCustomerId = null; // beklemeye: normal kanıt akışları yeniden bağlar
+                // Dekontu da müşterisiz: birleştirici onu yukarıda asıl kayda çevirdi (UnbindPaymentsAsync).
+                await _merger.UnbindPaymentsAsync(licenseId, link.ShopperId, canonical.Id, ct);
                 groupUnbound++;
             }
         }

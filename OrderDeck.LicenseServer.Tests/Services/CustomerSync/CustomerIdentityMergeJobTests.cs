@@ -469,6 +469,100 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         (await db.Orders.CountAsync(o => o.CustomerId == wpf.Id.ToString("N"))).Should().Be(2);
     }
 
+    // ── Banka havalesi onayı S2a (spec 2026-10-10 §2.3): geçici kopyadan taşınan bağlantının dekontu ──────────
+    // Birleştirici dekontun müşterisini asıl kayda çevirir; bağlantı orada kanıt veremeyip beklemeye düşerse o shopper'ın
+    // asıl kayda bağlı dekontu da müşterisiz kalır. Kalsaydı kanıtsız kişinin dekontu gerçek müşterinin olurdu.
+
+    private static Payment ShopperReceipt(Guid license, Guid shopperId, Guid customerId, DateTimeOffset at) => new()
+    {
+        // ReferansNo lisansta tekil: her dekontta üretilir.
+        Id = Guid.NewGuid(), LicenseId = license, ShopperId = shopperId, WpfCustomerId = customerId,
+        ReferansNo = $"r-{Guid.NewGuid():N}", Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+    };
+
+    /// <summary>Aynı shopper'ın geçici satıra bağlı ayrılmış ve etkin iki bağlantısı da düşer. Asıl kayda bağlı başka
+    /// shopper'ın dekontu, aynı shopper'ın başka müşteriye ve başka lisansa bağlı dekontu kalır; UpdatedAt ilerlemez.</summary>
+    [Fact]
+    public async Task Kanitsiz_gecici_baglantinin_dekontu_musterisiz_kalir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var otherLic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var canonicalPhone = NewPhone();
+        var wpf = Row(lic, "gizem", t0.AddDays(3));
+        wpf.FullName = "Yayıncının Kaydı";
+        wpf.Phone = canonicalPhone;
+        var provisional = ProvisionalRow(lic, "Gizem", t0, NewPhone());
+        var elsewhere = Row(lic, "baska-kayit", t0);
+        db.WpfCustomerProjections.AddRange(wpf, provisional, elsewhere);
+        db.Orders.AddRange(OrderFor(lic, provisional, t0), OrderFor(lic, wpf, t0.AddDays(1)));
+        var leftLinkId = AddVerifiedShopperLink(db, lic, provisional, provisional.Phone!, left: true);
+        // AddVerifiedShopperLink yalnız bağ Id'sini döner; dekont ve ikinci bağ ShopperId ister.
+        var shopperId = db.ShopperBroadcasterLinks.Local.Single(l => l.Id == leftLinkId).ShopperId;
+        var activeLinkId = Guid.NewGuid();
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = activeLinkId, ShopperId = shopperId, LicenseId = lic, Platform = provisional.Platform,
+            Username = provisional.Username, WpfCustomerId = provisional.Id, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        var otherLinkId = AddVerifiedShopperLink(db, lic, wpf, canonicalPhone);
+        var otherShopperId = db.ShopperBroadcasterLinks.Local.Single(l => l.Id == otherLinkId).ShopperId;
+        var cut = ShopperReceipt(lic, shopperId, provisional.Id, t0);
+        var othersOnCanonical = ShopperReceipt(lic, otherShopperId, wpf.Id, t0);
+        var onAnotherCustomer = ShopperReceipt(lic, shopperId, elsewhere.Id, t0);
+        var onAnotherLicense = ShopperReceipt(otherLic, shopperId, wpf.Id, t0); // Id yalnız test kurgusuyla aynı
+        db.Payments.AddRange(cut, othersOnCanonical, onAnotherCustomer, onAnotherLicense);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.FailedGroups.Should().Be(0);
+        report.PaymentsToMove.Should().Be(1);
+        report.LinksUnbound.Should().Be(2, "ayrılmış ve etkin iki bağlantı da asıl kaydın telefonunu kanıtlamıyor");
+        db.ChangeTracker.Clear();
+        (await LinkTargetAsync(db, leftLinkId)).Should().BeNull();
+        (await LinkTargetAsync(db, activeLinkId)).Should().BeNull();
+        (await LinkTargetAsync(db, otherLinkId)).Should().Be(wpf.Id);
+        var rows = await db.Payments.AsNoTracking()
+            .Where(p => p.LicenseId == lic || p.LicenseId == otherLic).ToDictionaryAsync(p => p.Id);
+        rows.Should().HaveCount(4);
+        rows[cut.Id].WpfCustomerId.Should().BeNull("kanıtsız kişinin dekontu gerçek müşteriye geçmez");
+        rows[othersOnCanonical.Id].WpfCustomerId.Should().Be(wpf.Id, "başka shopper'ın dekontu");
+        rows[onAnotherCustomer.Id].WpfCustomerId.Should().Be(elsewhere.Id, "başka müşteriye bağlı dekont");
+        rows[onAnotherLicense.Id].WpfCustomerId.Should().Be(wpf.Id, "başka lisansın dekontu");
+        rows.Values.Should().OnlyContain(p => (p.UpdatedAt - t0).Duration() < TimeSpan.FromMilliseconds(1),
+            "payments/since imleci UpdatedAt'tir");
+    }
+
+    [Fact]
+    public async Task Kanitli_gecici_baglantinin_dekontu_asil_kayda_gecer()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var phone = NewPhone();
+        var wpf = Row(lic, "kevser", t0);
+        wpf.Phone = phone;
+        var provisional = ProvisionalRow(lic, "KEVSER", t0.AddDays(1), phone);
+        db.WpfCustomerProjections.AddRange(wpf, provisional);
+        db.Orders.Add(OrderFor(lic, wpf, t0));
+        var linkId = AddVerifiedShopperLink(db, lic, provisional, phone);
+        var shopperId = db.ShopperBroadcasterLinks.Local.Single(l => l.Id == linkId).ShopperId;
+        var payment = ShopperReceipt(lic, shopperId, provisional.Id, t0);
+        db.Payments.Add(payment);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.LinksUnbound.Should().Be(0);
+        db.ChangeTracker.Clear();
+        (await LinkTargetAsync(db, linkId)).Should().Be(wpf.Id);
+        (await db.Payments.AsNoTracking().SingleAsync(p => p.Id == payment.Id)).WpfCustomerId.Should().Be(wpf.Id);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

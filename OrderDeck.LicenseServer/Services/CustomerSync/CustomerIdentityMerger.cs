@@ -189,6 +189,22 @@ public sealed class CustomerIdentityMerger
             balances, moving.Count, matches.Count, convs.Count, payments.Count);
     }
 
+    /// <summary>
+    /// Kanıtı düşen Shopper bağlantısının eşi (spec 2026-10-10 §2.3, §12): o shopper'ın bu lisansta müşterisi
+    /// <paramref name="customerId"/> olan dekontlarında Payment.WpfCustomerId boşalır. Kalsaydı kanıtsız kişinin dekontu
+    /// birleştirmeyle gerçek müşteriye geçerdi. Karar izlenen değerden verilir: aynı kayıtta birleştiricinin taşıdığı dekont
+    /// veritabanında hâlâ eski kimliktedir. SaveChanges çağırmaz; UpdatedAt ilerlemez (payments/since imleci), Status jetonuna
+    /// dokunulmaz.
+    /// </summary>
+    public async Task UnbindPaymentsAsync(Guid licenseId, Guid shopperId, Guid customerId, CancellationToken ct)
+    {
+        var payments = await _db.Payments
+            .Where(p => p.LicenseId == licenseId && p.ShopperId == shopperId && p.WpfCustomerId != null)
+            .ToListAsync(ct);
+        foreach (var p in payments.Where(p => p.WpfCustomerId == customerId))
+            p.WpfCustomerId = null;
+    }
+
     /// <summary>Aynı özetli iki bağdan kalan ve düşen: BankConfirm önce, sonra eski CreatedAt, sonra küçük Id ("N" ordinal).</summary>
     private static (CustomerIbanMemory Keep, CustomerIbanMemory Drop) PreferBond(CustomerIbanMemory a, CustomerIbanMemory b)
     {

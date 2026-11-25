@@ -1324,6 +1324,42 @@ public sealed class ShopperPurgeServiceTests
         records.Should().ContainSingle(r => r.Target == ShopperPurgeService.MediaTarget).Which.RowCount.Should().Be(2);
     }
 
+    [Fact]
+    public async Task Odemenin_musteri_bagi_silmede_bosalir_tekrar_silme_saymaz()
+    {
+        // Banka havalesi onayı S2a (spec 2026-10-10 §12): dekontun müşterisini (Payment.WpfCustomerId) göç bağdan yazar;
+        // projeksiyon kullanıcı adını koruduğu için kalsaydı bağ kişiye çözülürdü. Silme onu adım 2'de boşaltır ve kişisel
+        // alan sayar: başka kişisel alanı kalmamış dekont da (önceki silmenin boşalttığı, bağı göçün yazdığı) kaydedilir. Her
+        // lisans kendi satırında; tekrarlanan silme yapılmamış işi saymaz.
+        using var db = NewDb();
+        var (shopper, license, purgedId) = SeedLinkedShopper(db);
+        var second = SeedLicense(db);
+        var bondOnly = new Payment
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, ShopperId = shopper.Id, WpfCustomerId = purgedId,
+            ReferansNo = $"r-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Payments.Add(bondOnly);
+        var receipt = SeedPayment(db, shopper, second, $"payments/{Guid.NewGuid():N}.pdf");
+        receipt.WpfCustomerId = Guid.NewGuid();
+        await db.SaveChangesAsync();
+        var service = Build(db).Service;
+
+        await service.PurgeAsync(shopper.Id, default);
+
+        (await db.Payments.AsNoTracking().Where(p => p.ShopperId == shopper.Id).ToListAsync())
+            .Should().HaveCount(2).And.OnlyContain(p => p.WpfCustomerId == null);
+        List<DataDestructionRecord> PaymentRecords() => db.DataDestructionRecords.AsNoTracking()
+            .Where(r => r.Target == "Payments.PersonalFields").ToList();
+        var first = PaymentRecords();
+        first.Should().ContainSingle(r => r.LicenseId == license.Id).Which.RowCount.Should().Be(1, "yalnız müşteri bağı dolu");
+        first.Should().ContainSingle(r => r.LicenseId == second.Id).Which.RowCount.Should().Be(1);
+
+        await service.PurgeAsync(shopper.Id, default);
+
+        PaymentRecords().Should().HaveCount(2, "tekrarlanan silmede boşaltılacak alan kalmadı");
+    }
+
     /// <summary>Görev 16'dan sonraki elle eşleme denetim satırı; ayrıntı sayfanın AuditService'le yazdığı metin
     /// (<c>AdminBankaEslestirmePageTests</c> aynı metni sabitler).</summary>
     private static AuditLogEntry ManualMatchAudit(Guid txId, Guid wpfCustomerId) => new()
