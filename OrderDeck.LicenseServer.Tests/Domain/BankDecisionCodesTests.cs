@@ -25,6 +25,10 @@ public sealed class BankDecisionCodesTests
         Names<BankAskReason>("UsernameOnly", "NameOnly", "IbanNotConfirmed", "IbanShared", "IbanOtherCustomer", "IbanDisputed", "IbanHashUnverified",
             "CustomerNotCanonical", "NoExpectation", "AmountMismatch", "AmbiguousExpectations", "ExpectationUnreliable", "RequestInProgress",
             "SalesSyncNotReady", "PendingReceipt", "UnlinkedApprovedPayment", "ReceiptOtherCustomer", "TooOld"); // Parse bilinmeyeni atlar: adı değişen neden sessizce kaybolur
+        Names<PaymentAllocationKind>("Payment", "Waived", "Cancelled", "OffBank");
+        Names<PaymentShipmentStepState>("Waiting", "NeedsDecision", "Bound", "BoundNeedsDecision", "Reverting", "Closed");
+        Names<PaymentShipmentStepReason>("SessionLive", "ModeOff", "Shortage", "RecipientPays", "OrderSetUnknown", "OrdersChanged", "NothingToBind", "Threshold", "RetryExhausted");
+        Names<PaymentShipmentStepDecision>("Normal", "Hold", "ShipNow", "RecipientPays");
         ((int)PaymentSource.Receipt, (int)PaymentMatchDecision.None).Should().Be((0, 0), "DB varsayılanı CLR varsayılanıyla aynı");
     }
 

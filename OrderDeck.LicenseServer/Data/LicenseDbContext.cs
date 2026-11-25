@@ -123,6 +123,9 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
     public DbSet<BankDecisionEvent> BankDecisionEvents => Set<BankDecisionEvent>();
     public DbSet<BankIbanState> BankIbanStates => Set<BankIbanState>();
+    public DbSet<PaymentExpectationAllocation> PaymentExpectationAllocations => Set<PaymentExpectationAllocation>();
+    public DbSet<PaymentShipmentStep> PaymentShipmentSteps => Set<PaymentShipmentStep>();
+    public DbSet<PaymentShipmentStepOrder> PaymentShipmentStepOrders => Set<PaymentShipmentStepOrder>();
     public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
     public DbSet<BankSubjectRequest> BankSubjectRequests => Set<BankSubjectRequest>();
     public DbSet<ObifinCopyDeletion> ObifinCopyDeletions => Set<ObifinCopyDeletion>();
@@ -1431,6 +1434,53 @@ public class LicenseDbContext : DbContext
             // BankTransaction'daki hash kısıtının aynısı.
             b.ToTable(tb => tb.HasCheckConstraint("CK_BankIbanStates_IbanHash_Hex64",
                 "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'"));
+        });
+
+        // Ödeme tahsisi (spec 2026-10-10 §2.2) ve kargo adımı (§4.6.3). Lisansa Payments üzerinden kaskadlanırlar (ödemesiz tahsis
+        // hariç: onu yayıncı silmesi açıkça siler, S4); Licenses'a FK BİLEREK yok (ikinci kaskad yolu, 1785). İstek, sipariş ve
+        // dosya bağları da FK'SIZ.
+        mb.Entity<PaymentExpectationAllocation>(b =>
+        {
+            b.HasKey(a => a.Id);
+            // Cascade AÇIKÇA: isteğe bağlı FK'nın varsayılanı ClientSetNull'dır, yayıncı silmesi 547 alırdı.
+            b.HasOne(a => a.Payment).WithMany().HasForeignKey(a => a.PaymentId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(a => a.Amount).HasPrecision(18, 2);
+            b.HasIndex(a => new { a.LicenseId, a.ExpectationId });
+            b.ToTable(tb => tb.HasCheckConstraint("CK_PaymentExpectationAllocations_Kind_Payment",
+                "([Kind] = N'Payment' AND [PaymentId] IS NOT NULL) OR ([Kind] <> N'Payment' AND [PaymentId] IS NULL)"));
+        });
+
+        mb.Entity<PaymentShipmentStep>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.HasOne(s => s.Payment).WithMany().HasForeignKey(s => s.PaymentId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(s => s.CustomerKey).HasMaxLength(64).IsRequired().UseCollation("Latin1_General_100_BIN2");
+            b.Property(s => s.State).HasConversion<string>().HasMaxLength(24).IsRequired();
+            b.Property(s => s.Reason).HasConversion<string>().HasMaxLength(24);
+            b.Property(s => s.Decision).HasConversion<string>().HasMaxLength(16);
+            b.Property(s => s.Version).IsConcurrencyToken();
+            // Ödeme × müşteri satırı başına tek açık adım. Kapanan ve çözülen engellemez: geri alınan dekont, bağı henüz
+            // çözülmemişken de aynı ödemeyle yeniden onaylanabilir.
+            b.HasIndex(s => new { s.PaymentId, s.CustomerKey })
+                .IsUnique()
+                .HasFilter("[State] <> N'Closed' AND [State] <> N'Reverting'")
+                .HasDatabaseName("UX_PaymentShipmentSteps_Open");
+            // Üstteki filtreli indeks EF'in FK indeksini bastırır; kaskad ve geri alma PaymentId ile arar.
+            b.HasIndex(s => s.PaymentId);
+            // Koşucunun taradığı adımlar.
+            b.HasIndex(s => s.NextAttemptAt)
+                .HasFilter("[State] IN (N'Waiting', N'Reverting')")
+                .HasDatabaseName("IX_PaymentShipmentSteps_Due");
+            b.HasIndex(s => new { s.LicenseId, s.State });
+        });
+
+        mb.Entity<PaymentShipmentStepOrder>(b =>
+        {
+            b.HasKey(o => new { o.StepId, o.OrderId });
+            b.HasOne(o => o.Step).WithMany(s => s.Orders).HasForeignKey(o => o.StepId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(o => o.PriceAtApproval).HasPrecision(18, 2);
+            b.HasIndex(o => new { o.LicenseId, o.OrderId });
         });
 
         // Kalıcı imha kaydı (Silme Yönetmeliği md. 7/3). Lisansa FK BİLEREK yok: lisans silinse de kayıt yaşar.
