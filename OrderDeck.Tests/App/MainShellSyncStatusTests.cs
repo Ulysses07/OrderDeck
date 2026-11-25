@@ -341,6 +341,24 @@ public sealed class MainShellSyncStatusTests
     }
 
     [Fact]
+    public void Kapanista_bekleyen_odeme_kaydi_da_sorulur()
+    {
+        // Gitmemiş finish: kira sunucuda dolunca kayıt "sonucu bilinmiyor" olurdu.
+        using var outboxDb = MigratedDb();
+        new PendingPaymentRecordRepository(outboxDb).Enqueue(Guid.NewGuid().ToString("N"),
+            PendingPaymentRecordKinds.Finish, "{}", createdAt: 100);
+        var tracker = new SyncStatusTracker();
+        using var h = MainShellTestHarness.Build(syncStatus: tracker, pendingCounter: EmptyCounter(outboxDb));
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        h.Dialogs.ThreeWayResult = _ => true;
+
+        h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(CloseSyncChoice.FlushThenClose);
+
+        h.Dialogs.ThreeWayConfirmations.Should().ContainSingle()
+            .Which.Message.Should().StartWith("1 kayıt henüz sunucuya gitmedi.");
+    }
+
+    [Fact]
     public void Kapanis_uyarisi_durum_satiriyla_ayni_sayaci_ve_anlik_goruntuyu_kullanir()
     {
         // Çevrimdışı bilgisayarda "gönder ve kapat"ın işe yaramayacağı uyarının kendisinden okunur;

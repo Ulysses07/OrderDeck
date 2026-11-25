@@ -97,6 +97,34 @@ public sealed class SyncOutboxRepositoryTests : IDisposable
         _outbox.CountPending(allCustomersPushed).Should().Be(0, "kargo gönderildi");
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Bekleyen_odeme_kaydinin_iki_turu_de_iki_kipte_sayilir(int mode)
+    {
+        const long allCustomersPushed = long.MaxValue;
+        using (var c = _db.Open())
+            c.Execute("UPDATE SalesSyncState SET Mode = @mode WHERE Id = 1", new { mode });
+        var records = new PendingPaymentRecordRepository(_db);
+        var finish1 = Guid.NewGuid().ToString("N");
+        var finish2 = Guid.NewGuid().ToString("N");
+        var record = Guid.NewGuid().ToString("N");
+        records.Enqueue(finish1, PendingPaymentRecordKinds.Finish, "{}", createdAt: 100);
+        records.Enqueue(finish2, PendingPaymentRecordKinds.Finish, "{}", createdAt: 101);
+        records.Enqueue(record, PendingPaymentRecordKinds.Record, "{}", createdAt: 102);
+
+        _outbox.CountPending(allCustomersPushed).Should().Be(3, "kip kapısı yok: kuyruk iki kipte de gider");
+
+        records.RecordAttempt(finish1, "Offline");
+        _outbox.CountPending(allCustomersPushed).Should().Be(3, "denenmiş ama gitmemiş kayıt da bekliyor");
+        records.Delete(finish1);
+        _outbox.CountPending(allCustomersPushed).Should().Be(2, "gönderilen kayıt kuyruktan düşer");
+        records.Delete(record);
+        _outbox.CountPending(allCustomersPushed).Should().Be(1);
+        records.Delete(finish2);
+        _outbox.CountPending(allCustomersPushed).Should().Be(0);
+    }
+
     [Fact]
     public void Dikkat_sayaci_atlanan_akis_ogesini_ve_acik_anahtarli_miras_isi_sayar()
     {
