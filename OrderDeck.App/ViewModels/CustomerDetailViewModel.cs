@@ -478,6 +478,7 @@ public sealed class BalanceTransactionRow
         "purchase-deduction" => "Ödemede kullanıldı",
         "manual-adjustment" => "Manuel ayar",
         "reversal" => "İptal edildi",
+        "bank-overpayment" => "Havale fazlası",
         _ => kind,
     };
 }
