@@ -1105,7 +1105,7 @@ Her PR ayrı açılır; bir sonraki ancak öncekinin master'a girmesinden sonra 
    - (a) Banka §9 "karışık sürüm" kuralı bütün PC'lerin Ws+ olmasını da istemelidir. Mod On'un koşulu bunu zaten sağlar.
    - (b) Banka W2'nin beklenti üretim noktası, kendi kuyruğu yerine bu spec'in `payment-requests/{id}/finish(delivered)` kaydından sunucuda türetilebilir. Bu kayıt sahip satırını (`OwnerWpfCustomerId`), kapsamı ve net tutarı zaten taşıyor; banka'nın `(WpfCustomerId, ScopeKey)` anahtarına doğrudan eşlenir.
    - (c) Havale onayındaki kargo yönergesi, S2'nin sunucu kargo servisiyle sunucuda uygulanabilir. Banka §8 W3'teki "yönerge sunucudan gelir" bu servise dayanır. Lisans geneli eşik (§6.2) de sunucuda okunabilir.
-   - **25.11.2026:** (a)-(c) banka spec'ine işlendi (`2026-10-10-banka-havale-onay-design.md` §4.6, §5-5, §18). (c)'de yönerge "Evet"te taşınmaz: sunucu bağlar, karar masaüstünde sorulur.
+   - **25.11.2026:** (a)-(c) banka spec'ine işlendi (`2026-10-10-banka-havale-onay-design.md` §4.6, §5-5, §18). (c)'de yönerge "Evet"te taşınmaz: sunucu bağlar, karar masaüstünde sorulur. Banka onayı seçilen istek kaydına yalnız `Version` jetonunu artırarak dokunur (aynı isteği iki onay kapatmasın, banka §5.3); araya giren `finish` jeton çakışmasında bugünkü gibi bir kez yeniden değerlendirilir (§6.4).
 
 ## 14. Tasarım incelemesi — bulgu eşlemesi
 
