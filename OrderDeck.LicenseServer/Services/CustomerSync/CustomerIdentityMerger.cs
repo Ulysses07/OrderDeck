@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
 
 namespace OrderDeck.LicenseServer.Services.CustomerSync;
 
@@ -21,6 +22,15 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// 2026-10-06): tutar asıl kaydın satırına eklenir (yoksa açılır), kopyanınki
 /// 0'lanır ama satır kalır. Sıfır bakiyeli kopya satırı da damgalanır (ortak bakiye M12).
 /// Gerekçe RepointReferencesAsync'in bakiye bloğunda.
+///
+/// IBAN bağı (banka havalesi onayı, spec 2026-10-10 §9): asıl kayıtta aynı özetli bağ varsa ikisi tek satıra iner; ikisi
+/// de asıl kayda geçseydi geniş tekil (LicenseId, IbanHash, WpfCustomerId) kaydı 2601'le düşürürdü. Çift ancak dar tekil
+/// (LicenseId, IbanHash) düşünce (S3b) doğar. Kalan satırı <see cref="PreferBond"/> seçer, son doğrulaması ikisinin en
+/// yenisidir (KVKK K-6: süre son doğrulanmış havaleden işler). Düşen satıra imha kaydı YAZILMAZ: bağ kalan satırda yaşar.
+///
+/// Dekontun müşterisi (Payment.WpfCustomerId) çevrilir, başka alanı yazılmaz. Payment.Status eşzamanlılık jetonudur: okuma
+/// ile kayıt arasında karara bağlanan dekont DbUpdateConcurrencyException üretir. Onu çağıran ele alır: müşteri senkronu
+/// partiyi taze okumayla bir kez yeniden uygular (ikincide 409), birleştirme işi grubu geri alır ve sayar.
 /// </summary>
 public sealed class CustomerIdentityMerger
 {
@@ -28,6 +38,7 @@ public sealed class CustomerIdentityMerger
     public CustomerIdentityMerger(LicenseDbContext db) => _db = db;
 
     /// <summary>Taşınan/birleştirilen satır sayıları.</summary>
+    /// <param name="IbanMemories">Kopyanın bütün bağları: taşınan da, tekilleşen (kendisi ya da asıl kayıttaki ikizi silinen) de.</param>
     /// <param name="Balances">
     /// 1 yalnız kopyanın SIFIR OLMAYAN bir bakiyesi asıl kayda eklendiğinde; kopyanın bakiye satırı zaten 0'sa
     /// sayılmaz — satır yalnız damgalanır (ortak bakiye M12: jetonu ilerler, tutarı değişmez). A7'nin günlüklediği
@@ -35,7 +46,7 @@ public sealed class CustomerIdentityMerger
     /// </param>
     public sealed record RepointCounts(
         int Orders, int Shipments, int Links, int BalanceTransactions,
-        int Balances, int IbanMemories, int PaymentMatches, int WaConversations);
+        int Balances, int IbanMemories, int PaymentMatches, int WaConversations, int Payments);
 
     public async Task<RepointCounts> RepointReferencesAsync(
         Guid licenseId, Guid fromId, Guid toId, CancellationToken ct)
@@ -47,7 +58,7 @@ public sealed class CustomerIdentityMerger
         // AYNI nesneyi sıfırlar — net sonuç bakiyenin sıfırlanıp kaybolması.
         // Erken çıkış hiçbir satırı okumadan/izlemeden sıfır sayaçla döner.
         if (fromId == toId)
-            return new RepointCounts(0, 0, 0, 0, 0, 0, 0, 0);
+            return new RepointCounts(0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         var now = DateTimeOffset.UtcNow;
         var fromHex = fromId.ToString("N");
@@ -126,9 +137,32 @@ public sealed class CustomerIdentityMerger
             _db.Entry(fromBal).Property(b => b.UpdatedAt).IsModified = true;
         }
 
-        var ibans = await _db.CustomerIbanMemories
+        var moving = await _db.CustomerIbanMemories
             .Where(m => m.LicenseId == licenseId && m.WpfCustomerId == fromId).ToListAsync(ct);
-        foreach (var m in ibans) m.WpfCustomerId = toId;
+        if (moving.Count > 0)
+        {
+            var hashes = moving.Select(m => m.IbanHash).Distinct().ToList();
+            // Karar Local'den: aynı SaveChanges'te önceki kopyadan taşınmış satır veritabanında hâlâ eski kimliktedir. Local,
+            // Deleted'ı içermez.
+            await _db.CustomerIbanMemories
+                .Where(m => m.LicenseId == licenseId && m.WpfCustomerId == toId && hashes.Contains(m.IbanHash))
+                .LoadAsync(ct);
+            foreach (var m in moving)
+            {
+                var twin = _db.CustomerIbanMemories.Local.FirstOrDefault(x => x != m
+                    && x.LicenseId == licenseId && x.WpfCustomerId == toId && x.IbanHash == m.IbanHash);
+                if (twin is null)
+                {
+                    m.WpfCustomerId = toId;
+                    continue;
+                }
+                var (keep, drop) = PreferBond(m, twin);
+                if (drop.LastConfirmedAt is { } at && (keep.LastConfirmedAt ?? keep.CreatedAt) < at)
+                    keep.LastConfirmedAt = at;
+                keep.WpfCustomerId = toId;
+                _db.CustomerIbanMemories.Remove(drop);
+            }
+        }
 
         var matches = await _db.PaymentMatches
             .Where(m => m.LicenseId == licenseId
@@ -141,11 +175,28 @@ public sealed class CustomerIdentityMerger
             m.UpdatedAt = now; // jeton; SaveChanges'teki StampPaymentMatchVersions zaten yeniden damgalar
         }
 
+        // UpdatedAt İLERLETİLMEZ: payments/since imleci odur, ilerlese dekontlar bütün bilgisayarlara yeniden inerdi. Status
+        // jetondur, dokunulmaz.
+        var payments = await _db.Payments
+            .Where(p => p.LicenseId == licenseId && p.WpfCustomerId == fromId).ToListAsync(ct);
+        foreach (var p in payments) p.WpfCustomerId = toId;
+
         var convs = await _db.WaConversations
             .Where(c => c.LicenseId == licenseId && c.WpfCustomerId == fromId).ToListAsync(ct);
         foreach (var c in convs) c.WpfCustomerId = toId;
 
         return new RepointCounts(orders.Count, shipments.Count, links.Count, txs.Count,
-            balances, ibans.Count, matches.Count, convs.Count);
+            balances, moving.Count, matches.Count, convs.Count, payments.Count);
+    }
+
+    /// <summary>Aynı özetli iki bağdan kalan ve düşen: BankConfirm önce, sonra eski CreatedAt, sonra küçük Id ("N" ordinal).</summary>
+    private static (CustomerIbanMemory Keep, CustomerIbanMemory Drop) PreferBond(CustomerIbanMemory a, CustomerIbanMemory b)
+    {
+        var aConfirmed = a.LearnedFrom == IbanMemorySource.BankConfirm;
+        var bConfirmed = b.LearnedFrom == IbanMemorySource.BankConfirm;
+        var keepA = aConfirmed != bConfirmed ? aConfirmed
+            : a.CreatedAt != b.CreatedAt ? a.CreatedAt < b.CreatedAt
+            : string.CompareOrdinal(a.Id.ToString("N"), b.Id.ToString("N")) < 0;
+        return keepA ? (a, b) : (b, a);
     }
 }

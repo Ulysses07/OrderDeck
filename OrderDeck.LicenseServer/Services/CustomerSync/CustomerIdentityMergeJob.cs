@@ -235,6 +235,7 @@ public sealed class CustomerIdentityMergeJob
         public int IbanMemoriesToMove { get; init; }
         public int PaymentMatchesToMove { get; init; }
         public int WaConversationsToMove { get; init; }
+        public int PaymentsToMove { get; init; }
     }
 
     /// <summary>Projeksiyonu olan lisanslar (CLI <c>--all</c>).</summary>
@@ -325,6 +326,7 @@ public sealed class CustomerIdentityMergeJob
             IbanMemoriesToMove = tally.IbanMemories,
             PaymentMatchesToMove = tally.PaymentMatches,
             WaConversationsToMove = tally.WaConversations,
+            PaymentsToMove = tally.Payments,
         };
     }
 
@@ -422,6 +424,8 @@ public sealed class CustomerIdentityMergeJob
                     || (m.ActualWpfCustomerId != null && otherIds.Contains(m.ActualWpfCustomerId.Value))), ct);
         var waConversations = await _db.WaConversations
             .CountAsync(c => c.LicenseId == licenseId && c.WpfCustomerId != null && otherIds.Contains(c.WpfCustomerId.Value), ct);
+        var payments = await _db.Payments
+            .CountAsync(p => p.LicenseId == licenseId && p.WpfCustomerId != null && otherIds.Contains(p.WpfCustomerId.Value), ct);
         // Geçici (Shopper'ın açtığı) satırın silinmişliği kişiye YAYILMAZ:
         // o satır kişinin değil kaydolanın beyanı — sahte bir hesabın KVKK
         // silmesi gerçek müşterinin asıl kaydını silmesin (A5c).
@@ -436,6 +440,7 @@ public sealed class CustomerIdentityMergeJob
         tally.IbanMemories += ibanMemories;
         tally.PaymentMatches += paymentMatches;
         tally.WaConversations += waConversations;
+        tally.Payments += payments;
         if (others.Any(c => Conflicting(canonical.Phone, c.Phone))) tally.PhoneConflicts++;
         if (others.Any(c => AddressConflicting(canonical, c))) tally.AddressConflicts++;
         if (others.Any(c => Conflicting(canonical.Email, c.Email))) tally.EmailConflicts++;
@@ -614,7 +619,7 @@ public sealed class CustomerIdentityMergeJob
     private sealed class Tally
     {
         public int Copies, Orders, Shipments, Links, Balances, Purged, Failed, Unbound;
-        public int BalanceTransactions, IbanMemories, PaymentMatches, WaConversations;
+        public int BalanceTransactions, IbanMemories, PaymentMatches, WaConversations, Payments;
         public int PhoneConflicts, AddressConflicts, EmailConflicts, NameConflicts, NotesConflicts, GroupConflicts;
         public int AtSpelledCanonicals;
     }

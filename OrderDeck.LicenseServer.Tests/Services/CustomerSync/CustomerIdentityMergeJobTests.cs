@@ -927,6 +927,13 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
             Id = Guid.NewGuid(), LicenseId = lic, CustomerPhone = NewPhone(), PhoneNumberId = $"pn-{Guid.NewGuid():N}",
             Status = "open", WpfCustomerId = copy.Id, CreatedAt = t0,
         });
+        // Asıl kayda zaten bağlı dekont taşınacak sayılmaz.
+        foreach (var customer in new[] { copy.Id, canonical.Id })
+            db.Payments.Add(new Payment
+            {
+                Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = customer, ReferansNo = $"r-{Guid.NewGuid():N}",
+                Amount = 10m, PaidAt = t0, CreatedAt = t0, UpdatedAt = t0,
+            });
         await db.SaveChangesAsync();
 
         var dryRun = await Job(db).RunAsync(lic, apply: false, default);
@@ -935,6 +942,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         dryRun.IbanMemoriesToMove.Should().Be(1);
         dryRun.BalanceTransactionsToMove.Should().Be(1);
         dryRun.WaConversationsToMove.Should().Be(1);
+        dryRun.PaymentsToMove.Should().Be(1);
 
         (await Job(db).RunAsync(lic, apply: true, default)).FailedGroups.Should().Be(0);
         db.ChangeTracker.Clear();
@@ -943,6 +951,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         (await db.CustomerIbanMemories.CountAsync(m => m.WpfCustomerId == canonical.Id)).Should().Be(1);
         (await db.CustomerBalanceTransactions.CountAsync(t => t.WpfCustomerId == canonical.Id)).Should().Be(1);
         (await db.WaConversations.CountAsync(c => c.WpfCustomerId == canonical.Id)).Should().Be(1);
+        (await db.Payments.CountAsync(p => p.WpfCustomerId == canonical.Id)).Should().Be(2);
     }
 
     [Fact]

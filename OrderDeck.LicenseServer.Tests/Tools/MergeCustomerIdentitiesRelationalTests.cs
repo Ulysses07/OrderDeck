@@ -120,6 +120,28 @@ public sealed class MergeCustomerIdentitiesRelationalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Kuru_calistirma_dekont_musterisini_lisanslar_arasinda_toplar()
+    {
+        var at = DateTimeOffset.UtcNow.AddDays(-1);
+        foreach (var seed in new[] { await SeedPersonAsync(), await SeedPersonAsync() })
+        {
+            await using var seedDb = NewDb();
+            seedDb.Payments.Add(new Payment
+            {
+                Id = Guid.NewGuid(), LicenseId = seed.LicenseId, WpfCustomerId = seed.Copy,
+                ReferansNo = $"r-{Guid.NewGuid():N}", Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+            });
+            await seedDb.SaveChangesAsync();
+        }
+        await using var db = NewDb();
+
+        var (exit, text) = await RunCliAsync(db, license: null, apply: false);
+
+        exit.Should().Be(0);
+        text.Should().Contain("TOPLAM (2 lisans)").And.Contain("dekont müşterisi=2");
+    }
+
+    [Fact]
     public async Task Uygulama_0_doner_B1_kapisi_sifir_ciktida_kisisel_veri_yok()
     {
         var seed = await SeedPersonAsync(copyBalance: 30m);
