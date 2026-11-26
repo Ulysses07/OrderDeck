@@ -49,7 +49,8 @@ public sealed class CustomerIdResolver
     /// <see cref="MaxHops"/> adım, IgnoreQueryFilters) ve aynı varış; ek olarak zincirin izlediği kopyaların bayrakları
     /// (<see cref="CustomerChain"/>). Kanıt isteyen iki okuyucu içindir: bağlantıdan müşteriye çözücü
     /// (<c>ShopperCustomerResolver</c>) geçici kopyadan telefon kanıtı olmadan çıkmaz; kişi düzeyi IBAN okuyucusu
-    /// (<c>PaymentMatcher</c>) geçici ya da silinmiş kopyadan geçen bağı asıl kayda saymaz (tasarım §2.5). Zincir kuralı
+    /// (<c>PaymentMatcher</c>) geçici ya da silinmiş kopyadan geçen bağı asıl kayda saymaz (tasarım §2.5; IBAN bağında
+    /// geçici kopya S2b planı Karar 7'dir, tasarım orada yalnız silinmiş kopyayı söyler). Zincir kuralı
     /// tek yerde, bu sınıfta kalır: o okuyucular <c>MergedIntoId</c>'yi kendileri izlemez. Döngü
     /// <see cref="CanonicalOfAsync(Guid, IEnumerable{Guid}, CancellationToken)"/>'unkinin eşidir, yalnız okunan sütun
     /// fazladır; o metot ve çağıranları bayrak okumaz, sorguları değişmez. İkisinin aynı kayda vardığını

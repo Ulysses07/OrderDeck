@@ -35,7 +35,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <para><b>IBAN kümesi (tasarım §2.4, §2.5; S2b).</b> IBAN katmanı tek bağ değil kişi kümesi okur: <c>(LicenseId, IbanHash)</c>'in
 /// bütün bağları (sırasız tek satır okuması yok). Her bağ <see cref="CustomerIdResolver.ChainOfAsync"/> ile asıl kayda çözülür; zinciri
 /// geçici ya da silinmiş kopyadan geçen ya da aday olmayan bir kayda (silinmiş, başka lisansın, adım sınırında kalan) varan bağ
-/// sayılmaz. Kişi başına son doğrulaması (<c>LastConfirmedAt ?? CreatedAt</c>) en yeni bağın asıl kaydı alınır, kişiler de buna göre
+/// sayılmaz (silinmiş kopya tasarım §2.5'tir; geçici kopya S2b planı Karar 7'dir: göç telefon kanıtını sınayamaz, bağ kanıtsız
+/// kişinin havalesinden öğrenilmiş olabilir). Kişi başına son doğrulaması (<c>LastConfirmedAt ?? CreatedAt</c>) en yeni bağın asıl kaydı alınır, kişiler de buna göre
 /// sıralanır (en yeni önde, eşitlikte "N" ordinal artan; bellekte). Kullanıcı adının kişisi kümedeyse öneri odur (0.98; küme birden çok
 /// kişi olsa da, küme büyüklüğü kanıta girmez), değilse çelişki; kullanıcı adı yokken tek kişilik küme 0.85, birden çok kişilik küme
 /// öneri üretmez (<c>iban-memory-shared:{n}</c>, kişi sayısı). Hangi kişi olduğu tahmin edilmez: adaylar
