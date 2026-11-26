@@ -411,6 +411,46 @@ public sealed class SalesShipmentCommandsTests : IClassFixture<SalesSyncConfigur
         (await kit.LogsAsync()).Should().BeEmpty();
     }
 
+    /// <summary>
+    /// Açık dosya yalnız kabul edilmiş (türetilmemiş) olduğunda birleştirilmiş kopyanın Id'siyle gelen komut yeni dosyayı
+    /// asıl kaydın adına açar; kaynağı çağıran kopyadır (siparişlerin kaynağı değil). Havuzda yeni dosya başta, kabul
+    /// edilmiş dosya ardındadır; kabul edilmiş dosyaya dokunulmaz.
+    /// </summary>
+    [Fact]
+    public async Task Attach_kabul_edilmis_dosyanin_yanina_asil_kaydin_dosyasini_acar_havuzda_basta()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var canonical = Guid.NewGuid();
+        var alias = Guid.NewGuid();
+        await kit.SeedProjectionAsync(canonical);
+        await kit.SeedProjectionAsync(alias, mergedInto: canonical);
+        var customer = canonical.ToString("N");
+        var caller = Guid.NewGuid();
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var accepted = await kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 400m, derived: false);
+        var k1 = await kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.Price = 300m; });
+        var proposed = Guid.NewGuid();
+
+        var resp = await kit.SendAsync(
+            kit.AttachShipment(Guid.NewGuid(), alias.ToString("N"), proposed, [k1], replicaId: caller));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var reply = await Kit.ReadAsync(resp);
+        reply.Result.GetProperty("shipmentId").GetGuid().Should().Be(proposed);
+        reply.Result.GetProperty("pool").GetDecimal().Should().Be(700m);
+        Guids(reply.Result, "poolShipmentIds").Should().Equal(proposed, accepted.Id);
+        (await kit.ShipmentAsync(proposed)).Should().BeEquivalentTo(new
+        {
+            CustomerId = customer,
+            Status = ShipmentStatus.Pending,
+            CumulativeAmount = 300m,
+            Version = 1,
+            OriginReplicaId = (Guid?)caller,
+        });
+        (await kit.ShipmentAsync(accepted.Id)).Should().BeEquivalentTo(
+            new { CumulativeAmount = 400m, accepted.Version, CommandedAt = (DateTimeOffset?)null });
+    }
+
     /// <summary>§10.2: <c>attach-shipment</c> bildirim üretmez — durum değişmez, etiket kuralı uygulanmaz, push yok.</summary>
     [Fact]
     public async Task Attach_bildirim_uretmez()
@@ -724,6 +764,125 @@ public sealed class SalesShipmentCommandsTests : IClassFixture<SalesSyncConfigur
 
         (await LabelCountAsync(kit, conversationId)).Should().Be(1, "Pending → Held durum değişikliği");
         _factory.Push.Sent.Where(n => n.CustomerId == kit.CustomerId).Should().BeEmpty();
+    }
+
+    /// <summary>Durum değişikliği hangi dosyada olursa olsun (yalnız hedefte ya da yalnız U12 dosyasında) etiket kuralı
+    /// uygulanır.</summary>
+    [Theory]
+    [InlineData(ShipmentStatus.Pending, ShipmentStatus.Held)]
+    [InlineData(ShipmentStatus.Held, ShipmentStatus.Pending)]
+    public async Task Decision_tek_dosyanin_durumu_degisse_de_etiket_kurali_uygulanir(
+        ShipmentStatus targetStatus, ShipmentStatus otherStatus)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var (customer, conversationId) = await SeedLabelRuleAsync(kit);
+        var target = await kit.SeedShipmentAsync(customer, targetStatus, 300m, derived: true,
+            createdAt: StartedAt.AddHours(5));
+        await kit.SeedShipmentAsync(customer, otherStatus, 100m, derived: true);
+
+        (await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), target.Id, "hold", 1)))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await LabelCountAsync(kit, conversationId)).Should().Be(1);
+    }
+
+    /// <summary>§7.2: bağ yalnız kargoya verirken çözülür. Bekletme ve alıcı ödemeli kararı bağlı, iptal edilmiş siparişe
+    /// dokunmaz ve tutarı yeniden türetmez (saklanan değer kalır).</summary>
+    [Theory]
+    [InlineData("hold", ShipmentStatus.Held)]
+    [InlineData("recipient-pays", ShipmentStatus.RecipientPays)]
+    public async Task Decision_ship_now_disinda_iptalli_bagi_cozmez_tutari_turetmez(
+        string decision, ShipmentStatus expected)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var customer = NewCustomer();
+        var released = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var file = await kit.SeedShipmentAsync(customer, ShipmentStatus.Pending, 999m, derived: true);
+        await kit.SeedOrderAsync(released, o => { o.CustomerId = customer; o.ShipmentId = file.Id; o.Price = 300m; });
+        var cancelled = await kit.SeedOrderAsync(released, o =>
+        {
+            o.CustomerId = customer;
+            o.ShipmentId = file.Id;
+            o.Price = 250m;
+            o.CancelledAt = StartedAt.AddHours(4);
+        });
+
+        var resp = await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), file.Id, decision, 1));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var reply = await Kit.ReadAsync(resp);
+        Guids(reply.Result, "changed").Should().BeEmpty();
+        reply.Orders.Should().BeEmpty();
+        (await kit.ShipmentAsync(file.Id)).Should().BeEquivalentTo(new
+        {
+            Status = expected,
+            CumulativeAmount = 999m,
+            Version = 2,
+            ShippedAt = (DateTimeOffset?)null,
+        });
+        (await kit.OrderAsync(cancelled.Id)).Should().BeEquivalentTo(
+            new { ShipmentId = (Guid?)file.Id, SyncVersion = 1, ShipmentSetAt = (DateTimeOffset?)null });
+    }
+
+    /// <summary>
+    /// U12, birleştirilmiş kopya: hedef henüz taşınmamış bir kopyanın dosyasıysa karar hem kopyanın hem asıl kaydın öbür
+    /// açık dosyalarına uyar. Kararın sırası hedef (en eskisi olsa da), sonra en yenisi başta öbürleri.
+    /// </summary>
+    [Fact]
+    public async Task Decision_kopyadaki_dosyada_asil_kaydin_acik_dosyalarina_da_uyar_hedef_basta()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var canonical = Guid.NewGuid();
+        var alias = Guid.NewGuid();
+        await kit.SeedProjectionAsync(canonical);
+        await kit.SeedProjectionAsync(alias, mergedInto: canonical);
+        var target = await kit.SeedShipmentAsync(alias.ToString("N"), ShipmentStatus.Pending, 10m, derived: true,
+            createdAt: StartedAt.AddHours(3));
+        var older = await kit.SeedShipmentAsync(canonical.ToString("N"), ShipmentStatus.Held, 20m, derived: true,
+            createdAt: StartedAt.AddHours(4));
+        var newer = await kit.SeedShipmentAsync(canonical.ToString("N"), ShipmentStatus.Pending, 30m, derived: true,
+            createdAt: StartedAt.AddHours(5));
+        var aliasSibling = await kit.SeedShipmentAsync(alias.ToString("N"), ShipmentStatus.Pending, 40m, derived: true,
+            createdAt: StartedAt.AddHours(6));
+
+        var resp = await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), target.Id, "hold", 1));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        (await Kit.ReadAsync(resp)).Result.GetProperty("decided").EnumerateArray()
+            .Select(d => d.GetProperty("id").GetGuid())
+            .Should().Equal(target.Id, aliasSibling.Id, newer.Id, older.Id);
+        foreach (var file in new[] { target, older, newer, aliasSibling })
+            (await kit.ShipmentAsync(file.Id)).Should().BeEquivalentTo(
+                new { Status = ShipmentStatus.Held, Version = 2, file.CumulativeAmount, file.CustomerId });
+    }
+
+    /// <summary>Karar yalnız kendi anını yazar: alıcı ödemeli ve kargoya verme ilk bekletmenin <c>HeldAt</c>'ini korur,
+    /// alıcı ödemeli <c>ShippedAt</c> yazmaz.</summary>
+    [Fact]
+    public async Task Decision_obur_kararin_anina_dokunmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var file = await kit.SeedShipmentAsync(NewCustomer(), ShipmentStatus.Pending, 300m, derived: true);
+
+        (await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), file.Id, "hold", 1)))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var heldAt = (await kit.ShipmentAsync(file.Id)).HeldAt;
+        heldAt.Should().NotBeNull();
+        (await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), file.Id, "recipient-pays", 2)))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await kit.ShipmentAsync(file.Id)).Should().BeEquivalentTo(new
+        {
+            Status = ShipmentStatus.RecipientPays,
+            HeldAt = heldAt,
+            ShippedAt = (DateTimeOffset?)null,
+        });
+
+        (await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), file.Id, "ship-now", 3)))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var shipped = await kit.ShipmentAsync(file.Id);
+        shipped.Should().BeEquivalentTo(new { Status = ShipmentStatus.Shipped, HeldAt = heldAt, Version = 4 });
+        shipped.ShippedAt.Should().NotBeNull().And.Be(shipped.CommandedAt);
     }
 
     /// <summary>Bu lisansta olmayan dosya (başka lisansın dosyası dahil) 400 <c>unknown-shipment</c>; geçersiz karar ve

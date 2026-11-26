@@ -4,6 +4,7 @@ using System.Linq;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.Core.Sales;
 
@@ -196,7 +197,7 @@ public sealed class ShipmentService
                 PooledAmount: pooled);
 
         var threshold = shipping.FreeShippingThreshold!.Value;
-        var reached = pooled >= threshold;
+        var reached = ShippingRules.ReachesThreshold(pooled, threshold);
         var remaining = reached ? 0m : threshold - pooled;
 
         return new ShipmentDecisionContext(

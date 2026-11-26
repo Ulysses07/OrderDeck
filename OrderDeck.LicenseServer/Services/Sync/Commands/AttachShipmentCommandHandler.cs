@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
-using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
@@ -110,39 +109,9 @@ public sealed class AttachShipmentCommandHandler : ISalesCommandHandler
             if (candidates.Count == 0)
                 return Pooled(new SalesCommandOutcome([], []), open);
 
-            var target = open.FirstOrDefault(s => s.AmountDerivedAt is not null);
-            if (target is null)
-            {
-                if (await scope.ShipmentIdTakenAsync(payload.ProposedShipmentId, ct))
-                    throw SalesCommandRejection.ShipmentContentConflict(payload.ProposedShipmentId);
-
-                target = new Shipment
-                {
-                    Id = payload.ProposedShipmentId,
-                    LicenseId = scope.LicenseId,
-                    CustomerId = customer,
-                    Status = ShipmentStatus.Pending,
-                    CumulativeAmount = 0m,
-                    CreatedAt = scope.Now,
-                    UpdatedAt = scope.Now,
-                    AmountDerivedAt = scope.Now,
-                    OriginReplicaId = scope.ReplicaId,
-                };
-                scope.AddShipment(target);
-                open.Insert(0, target);
-            }
-
-            foreach (var order in candidates)
-            {
-                order.ShipmentId = target.Id;
-                order.ShipmentSetAt = scope.Now;
-                scope.MarkChanged(order, OrderUnit.Shipment);
-            }
-
-            // Bağlar yazıldıktan sonra tek türetme (sürüm bir artar); ardından komut damgası.
-            await scope.DeriveShipmentsAsync([target], ct);
-            target.CommandedAt = scope.Now;
-            scope.MarkShipmentChanged(target);
+            // Açılan dosya open'ın başına eklenir: havuz onu da sayar.
+            var target = await ShipmentBindCore.BindAsync(
+                scope, customer, open, candidates, payload.ProposedShipmentId, scope.ReplicaId, ct);
 
             return Pooled(
                 new SalesCommandOutcome(candidates.Select(o => o.Id).ToList(), []) { ShipmentId = target.Id },

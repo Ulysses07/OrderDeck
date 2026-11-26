@@ -1,3 +1,5 @@
+using OrderDeck.Shared.Sales;
+
 namespace OrderDeck.Core.Settings;
 
 public sealed class AppSettings
@@ -269,8 +271,7 @@ public sealed class ShippingSettings
     public decimal? ShippingFee { get; set; }
 
     /// <summary>İki alan da pozitif değer içeriyor ve feature aktif mi?</summary>
-    public bool IsEnabled =>
-        FreeShippingThreshold is > 0 && ShippingFee is > 0;
+    public bool IsEnabled => ShippingRules.IsEnabled(FreeShippingThreshold, ShippingFee);
 }
 
 public sealed class GiveawayAnimationSettings
