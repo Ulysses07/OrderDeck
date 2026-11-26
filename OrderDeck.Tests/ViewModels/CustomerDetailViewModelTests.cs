@@ -13,6 +13,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -486,6 +487,18 @@ public class CustomerDetailViewModelTests
         h.Vm.SelectedLabels.Clear();
         h.Vm.CancelSelectedCommand.CanExecute(null).Should().BeFalse();
         h.Vm.UncancelSelectedCommand.CanExecute(null).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("bank-overpayment", "Havale fazlası")]
+    [InlineData("refund-full", "Hatalı ürün iadesi")]
+    [InlineData("yeni-tur", "yeni-tur")]   // tanınmayan tür ham adıyla
+    public void Bakiye_hareketinin_turu_turkce_etiketle_gosterilir(string kind, string expected)
+    {
+        var row = BalanceTransactionRow.FromDto(new CustomerBalanceTransactionDto(
+            Guid.NewGuid(), 25m, kind, null, null, null, null, DateTimeOffset.UtcNow));
+
+        row.KindLabel.Should().Be(expected);
     }
 
     /// <summary>Tüm balance HTTP istekleri için sessiz 404 — VM'in

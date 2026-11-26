@@ -15,7 +15,8 @@ public readonly record struct SyncAttention(int SkippedFeedItems, int OpenLegacy
 /// <summary>
 /// Henüz sunucuya gitmemiş kayıtların toplamı — kapanış uyarısı ve durum
 /// satırı için. Her tablo kendi servisinin outbox ölçütüyle sayılır
-/// (SyncedAt IS NULL; müşteri için SyncSeq > biçim-2 gönderim imleci). Yeni bir
+/// (SyncedAt IS NULL; müşteri için SyncSeq > biçim-2 gönderim imleci; bekleyen ödeme kaydı
+/// gönderilince silinir, kuyruktaki her satır sayılır: iki türü de iki kipte gider). Yeni bir
 /// gönderilen tablo eklenince BURAYA da eklenmeli — ve gönderim servisi durum izleyicisine
 /// kaydolup başarılı turlarını yazmalı (<c>SyncStatusTracker.RegisterPush</c>/<c>MarkPushOk</c>,
 /// D2 incelemesi I-3), yoksa düşen gönderimi durum satırı göremez.
@@ -37,7 +38,8 @@ public sealed class SyncOutboxRepository
                  + (SELECT COUNT(*) FROM Label         WHERE SyncedAt IS NULL)
                  + (SELECT COUNT(*) FROM Payment       WHERE SyncedAt IS NULL)
                  + (SELECT COUNT(*) FROM Shipment      WHERE SyncedAt IS NULL)
-                 + (SELECT COUNT(*) FROM Customer      WHERE SyncSeq > @c AND PurgedAt IS NULL)",
+                 + (SELECT COUNT(*) FROM Customer      WHERE SyncSeq > @c AND PurgedAt IS NULL)
+                 + (SELECT COUNT(*) FROM PendingPaymentRecord)",
             new { c = customerPushCursor });
     }
 

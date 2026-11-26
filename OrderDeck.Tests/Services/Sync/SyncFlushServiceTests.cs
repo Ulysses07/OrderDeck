@@ -19,6 +19,7 @@ using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -276,15 +277,7 @@ public sealed class SyncFlushServiceTests
         var license = new FixedLicense(key);
         var clock = new SystemClock();
         var settingsPath = Path.Combine(Path.GetTempPath(), $"od-flush-{Guid.NewGuid():N}.json");
-        var flush = SyncFlushService.ForClose(
-            new WpfCustomerProjectionSyncService(api, new CustomerSyncRepository(db), new SyncCursorRepository(db),
-                license, clock, NullLogger<WpfCustomerProjectionSyncService>.Instance),
-            new SessionOrderSyncService(api, sessions, labels, license, TestSalesEnvelope.For(db, license),
-                new HandoverGate(), new SalesPushApply(db), clock, NullLogger<SessionOrderSyncService>.Instance),
-            new PaymentSyncService(api, new PaymentRepository(db), new SyncCursorRepository(db), license, clock,
-                NullLogger<PaymentSyncService>.Instance),
-            new ShipmentSyncService(api, new ShipmentRepository(db), new SettingsStore(settingsPath), new AppSettings(),
-                license, TestSalesEnvelope.For(db, license), clock, NullLogger<ShipmentSyncService>.Instance));
+        var flush = ForClose(db, api, license, clock, Sender(db, api, license, clock), settingsPath);
 
         try
         {
@@ -297,5 +290,210 @@ public sealed class SyncFlushServiceTests
 
         ordersSent.Should().Be(300);
         labels.GetUnsynced(1000).Should().BeEmpty();
+    }
+
+    private static PaymentRecordSender Sender(
+        IDbConnectionFactory db, LicenseApiClient api, ICurrentLicenseProvider license, IClock clock)
+        => new(api, new PendingPaymentRecordRepository(db), TestSalesEnvelope.For(db, license), license, clock,
+            NullLogger<PaymentRecordSender>.Instance);
+
+    /// <summary>AppHost'taki kapanış gönderimi, gerçek servislerle.</summary>
+    private static SyncFlushService ForClose(IDbConnectionFactory db, LicenseApiClient api,
+        ICurrentLicenseProvider license, IClock clock, PaymentRecordSender paymentRecords, string settingsPath)
+        => SyncFlushService.ForClose(
+            paymentRecords,
+            new WpfCustomerProjectionSyncService(api, new CustomerSyncRepository(db), new SyncCursorRepository(db),
+                license, clock, NullLogger<WpfCustomerProjectionSyncService>.Instance),
+            new SessionOrderSyncService(api, new SessionRepository(db), new LabelRepository(db), license,
+                TestSalesEnvelope.For(db, license), new HandoverGate(), new SalesPushApply(db), clock,
+                NullLogger<SessionOrderSyncService>.Instance),
+            new PaymentSyncService(api, new PaymentRepository(db), new SyncCursorRepository(db), license, clock,
+                NullLogger<PaymentSyncService>.Instance),
+            new ShipmentSyncService(api, new ShipmentRepository(db), new SettingsStore(settingsPath), new AppSettings(),
+                license, TestSalesEnvelope.For(db, license), clock, NullLogger<ShipmentSyncService>.Instance));
+
+    // ── bekleyen ödeme kayıtları (B-W0) ──────────────────────────────────
+
+    /// <summary>Gerçek servislerle kapanış gönderimi; HTTP betikli. Müşteri ve oturum bekliyor: ödeme kaydı adımından
+    /// sonrakilerin koştuğu isteklerinden görülür.</summary>
+    private sealed class CloseHarness : IDisposable
+    {
+        private readonly string _settingsPath = Path.Combine(Path.GetTempPath(), $"od-flush-{Guid.NewGuid():N}.json");
+        private readonly List<string> _requests = new();
+        private readonly Guid _licenseId = Guid.NewGuid();
+        private readonly string _key = $"lisans-{Guid.NewGuid():N}";
+
+        public InMemorySqlite Db { get; } = new();
+        public PendingPaymentRecordRepository Records { get; }
+        public PaymentRecordSender Sender { get; }
+        public SyncFlushService Flush { get; }
+
+        /// <summary>Bir <c>finish</c>'in yanıtı (testin senaryosu); null = 200 yankı.</summary>
+        public Func<Guid, Task<HttpResponseMessage>?>? OnFinish { get; set; }
+
+        public CloseHarness()
+        {
+            new MigrationRunner(Db).Run();
+            new CustomerRepository(Db).Insert(new Customer(Guid.NewGuid().ToString("N"), "tiktok", "ornek_musteri",
+                "Örnek Müşteri", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+            new SessionRepository(Db).Insert(new StreamSession(Guid.NewGuid().ToString("N"), "Örnek yayın",
+                1_700_000_000L, null, new[] { "tiktok" }, null));
+            var api = new LicenseApiClient(
+                new HttpClient(new FakeHttpMessageHandler(RespondAsync)) { BaseAddress = new Uri("https://test.local") },
+                new LicenseTokenStore());
+            var license = new FixedLicense(_key);
+            var clock = new SystemClock();
+            Records = new PendingPaymentRecordRepository(Db);
+            Sender = SyncFlushServiceTests.Sender(Db, api, license, clock);
+            Flush = ForClose(Db, api, license, clock, Sender, _settingsPath);
+        }
+
+        /// <summary>Lisans çözümü dışındaki istekler, sırayla (<c>finish</c>, <c>backfill</c> ya da yol).</summary>
+        public IReadOnlyList<string> Requests
+        {
+            get { lock (_requests) return _requests.ToList(); }
+        }
+
+        public int Finishes => Requests.Count(r => r == "finish");
+
+        /// <summary>Oturum adımı koştu: ödeme kaydı adımı onu engellemedi.</summary>
+        public bool LaterStepsRan => Requests.Any(r => r.EndsWith("/sessions/sync", StringComparison.Ordinal));
+
+        public Guid QueueFinish()
+        {
+            var id = Guid.NewGuid();
+            Sender.EnqueueFinish(new PendingPaymentFinish(id, PaymentRequestStates.Delivered, 550m, 50m, false))
+                .Should().BeTrue();
+            return id;
+        }
+
+        public void QueueRecord()
+        {
+            var owner = Guid.NewGuid().ToString("N");
+            Sender.EnqueueRecord(new PaymentRequestBackfillItem(Guid.NewGuid(), owner, [owner], "cumulative",
+                [Guid.NewGuid()], PaymentRequestStates.Delivered, 120m, null, false,
+                DateTimeOffset.FromUnixTimeSeconds(1_760_000_000L))).Should().BeTrue();
+        }
+
+        public int Attempts(Guid recordId) => Records.Get(PendingPaymentRecordCodec.Key(recordId))!.Attempts;
+
+        private async Task<HttpResponseMessage> RespondAsync(HttpRequestMessage req)
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, $"[{{\"id\":\"{_licenseId}\",\"licenseKey\":\"{_key}\"}}]");
+            var finish = path.EndsWith("/finish", StringComparison.Ordinal);
+            var backfill = path.EndsWith("/payment-requests/backfill", StringComparison.Ordinal);
+            lock (_requests) _requests.Add(finish ? "finish" : backfill ? "backfill" : path);
+            if (finish)
+            {
+                var id = Guid.Parse(path.Split('/')[^2]);
+                return OnFinish?.Invoke(id) is { } scripted ? await scripted : FinishOk(id);
+            }
+            if (backfill)
+            {
+                using var body = JsonDocument.Parse(await req.Content!.ReadAsStringAsync());
+                var records = body.RootElement.GetProperty("records").EnumerateArray()
+                    .Select(r => new { recordId = r.GetProperty("recordId").GetGuid(), status = "applied" }).ToList();
+                return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new { records }));
+            }
+            if (path.EndsWith("/sessions/sync", StringComparison.Ordinal)) return FakeHttpMessageHandler.Json(200, "[]");
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        public static HttpResponseMessage FinishOk(Guid id) => FakeHttpMessageHandler.Json(200,
+            JsonSerializer.Serialize(new { recordId = id, state = "delivered", finishedAt = DateTimeOffset.UtcNow }));
+
+        public void Dispose()
+        {
+            Db.Dispose();
+            File.Delete(_settingsPath);
+        }
+    }
+
+    [Fact]
+    public async Task Gonder_ve_kapat_bekleyen_odeme_kayitlarini_ilk_adimda_bosaltir()
+    {
+        // Bir gönderim en çok 10 istek atar (lisans çözümü dahil): 25 finish tek turda bitmez, yinelenir.
+        using var h = new CloseHarness();
+        var finishes = Enumerable.Range(0, 25).Select(_ => h.QueueFinish()).ToList();
+        h.QueueRecord();
+        h.QueueRecord();
+
+        await h.Flush.FlushAsync(SyncFlushService.CloseBudget).WaitAsync(TimeSpan.FromSeconds(60));
+
+        h.Records.Count().Should().Be(0);
+        h.Finishes.Should().Be(finishes.Count, "her finish bir kez gider");
+        h.Requests.Take(26).Should().Equal(Enumerable.Repeat("finish", 25).Append("backfill"),
+            "kuyruk öbür adımlardan önce boşalır; iki türü de gider");
+        h.Requests.Skip(26).Should().NotContain(new[] { "finish", "backfill" });
+        h.LaterStepsRan.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("cevrimdisi", 1)]
+    [InlineData("sunucu-hatasi", 1)]
+    [InlineData("ret", 3)]      // öbür kayıtlar yine denenir; turda ilerleme yok
+    public async Task Gonderilemeyen_odeme_kaydi_donguyu_dondurmez_kapanisi_tutmaz(string scenario, int expectedRequests)
+    {
+        using var h = new CloseHarness
+        {
+            OnFinish = _ => scenario switch
+            {
+                "cevrimdisi" => Task.FromException<HttpResponseMessage>(new HttpRequestException("fake offline")),
+                "sunucu-hatasi" => Task.FromResult(FakeHttpMessageHandler.Problem(500, "fake-fault")),
+                _ => Task.FromResult(FakeHttpMessageHandler.Problem(400, "invalid-request")),
+            },
+        };
+        for (var i = 0; i < 3; i++) h.QueueFinish();
+
+        await h.Flush.FlushAsync(SyncFlushService.CloseBudget).WaitAsync(TimeSpan.FromSeconds(60));
+
+        h.Finishes.Should().Be(expectedRequests, "kuyrukta kalan (Kept) ilerleme sayılmaz: ikinci tur yok");
+        h.Records.Count().Should().Be(3, "kayıtlar kaybolmaz, sonraki açılışta gider");
+        h.LaterStepsRan.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Son_durumla_dusen_odeme_kaydi_ilerleme_sayilir_reddedilen_kalir()
+    {
+        // İlk gönderimde yalnız düşenler var (Sent 0): Dropped ilerleme sayılmasaydı arkadaki kayıtlar kalırdı.
+        using var h = new CloseHarness();
+        var rejected = h.QueueFinish();
+        var dropped = Enumerable.Range(0, 12).Select(_ => h.QueueFinish()).ToHashSet();
+        var ok = h.QueueFinish();
+        h.OnFinish = id => id == rejected ? Task.FromResult(FakeHttpMessageHandler.Problem(400, "invalid-request"))
+            : dropped.Contains(id) ? Task.FromResult(FakeHttpMessageHandler.Problem(404, "record-not-found"))
+            : null;
+
+        await h.Flush.FlushAsync(SyncFlushService.CloseBudget).WaitAsync(TimeSpan.FromSeconds(60));
+
+        h.Records.Get(PendingPaymentRecordCodec.Key(ok)).Should().BeNull();
+        h.Records.Count().Should().Be(1, "yalnız reddedilen kaldı");
+        h.Attempts(rejected).Should().Be(3, "iki ilerleyen tur ve ilerlemeyen son tur");
+        h.Finishes.Should().Be(12 + 1 + 3);
+        h.LaterStepsRan.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Yanit_vermeyen_sunucuda_odeme_kaydi_adimi_payinda_birakilir()
+    {
+        // Belirteci dinlemeyen istek: adım payı (kalan sürenin eşit bölümü, 10 sn / 5) dolunca bırakılır.
+        using var h = new CloseHarness();
+        var release = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var id = h.QueueFinish();
+        h.OnFinish = _ => release.Task;
+
+        await h.Flush.FlushAsync(TimeSpan.FromSeconds(10)).WaitAsync(TimeSpan.FromSeconds(60));
+
+        h.Finishes.Should().Be(1);
+        h.LaterStepsRan.Should().BeTrue("payı dolan adım sıradakileri engellemez");
+        h.Records.Count().Should().Be(1);
+
+        // Bırakılan gönderim veritabanı kapanmadan bitsin: sıradaki gönderim kapıda onu bekler.
+        h.OnFinish = null;
+        release.SetResult(CloseHarness.FinishOk(id));
+        await h.Sender.FlushAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(60));
+        h.Records.Count().Should().Be(0);
     }
 }

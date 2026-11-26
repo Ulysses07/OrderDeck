@@ -38,8 +38,9 @@ public sealed record PendingPaymentRecordRow(
 /// <summary>
 /// Bekleyen ödeme kayıtları (göç 049'un <c>PendingPaymentRecord</c> tablosu; spec 2026-10-13 §3.2, §4.7, §6.4): sunucuya
 /// o an gönderilemeyen <c>finish</c>'ler ve mod Off'ta her teslim ya da belirsiz gönderimden sonra yazılan kirasız
-/// kayıtlar. Gönderici bunları geri doldurma turunda (60 sn, iki kipte) ve mod On açılışının 1. adımında İLK sırada
-/// gönderir (§8.4-1).
+/// kayıtlar. Gönderici bunları geri doldurma turunda (60 sn, iki kipte), mod On açılışının 1. adımında İLK sırada
+/// (§8.4-1) ve kapanıştaki "gönder ve kapat"ın ilk adımında gönderir; <c>finish</c>'ler ödeme isteğinin ön gönderiminde
+/// ve akış sonunda da gider.
 ///
 /// <para><b>Moddan bağımsız:</b> <c>PendingSalesCommand</c>'ın aksine kip kapısı yok — <c>finish</c>, liste ve
 /// <c>backfill</c> iki kipte çalışır (§4.7). Satırın varlığı görülen kipi değiştirmez.</para>

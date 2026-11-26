@@ -25,13 +25,15 @@ public sealed record FlushStep(string Name, Func<CancellationToken, Task> Run, d
 /// <summary>
 /// "Gönder ve kapat" (Faz 0, D5): gönderim servislerini sırayla, toplam süre sınırıyla koşar.
 /// Servisler zamanlayıcıyla da koşuyor olabilir; müşteri gönderimi tek tur kilidinden geçer (C6 —
-/// süren turu bekler, aynı parti iki kez gitmez), diğerlerinde aynı anda iki tur zararsız (sunucu
-/// tarafı upsert'ler idempotent, onaylar Revision CAS'li). Gönderim yanıtındaki yönlendirmeler yerel
-/// taşıma yapar; ödeme akışındaki müşteri ertelenir (U13) — zararsız.
+/// süren turu bekler, aynı parti iki kez gitmez), bekleyen ödeme kayıtları göndericinin tek kapısından,
+/// diğerlerinde aynı anda iki tur zararsız (sunucu tarafı upsert'ler idempotent, onaylar Revision
+/// CAS'li). Gönderim yanıtındaki yönlendirmeler yerel taşıma yapar; ödeme akışındaki müşteri ertelenir
+/// (U13) — zararsız.
 ///
-/// <para><b>Kuyruğu boşaltma:</b> müşteri gönderimi tur içinde parti parti boşaltır; oturum+etiket
-/// (50/100), ödeme (50) ve kargo (50) turda TEK parti gönderir — kapanışta <see cref="Drain"/> ile
-/// gönderdikçe yinelenir.</para>
+/// <para><b>Kuyruğu boşaltma:</b> müşteri gönderimi tur içinde parti parti boşaltır; bekleyen ödeme
+/// kayıtları gönderimde en çok <see cref="PaymentRecordSender.MaxRequestsPerFlush"/> istek atar,
+/// oturum+etiket (50/100), ödeme (50) ve kargo (50) turda TEK parti gönderir — kapanışta
+/// <see cref="Drain"/> ile gönderdikçe (ödeme kaydında kuyruktan düştükçe) yinelenir.</para>
 ///
 /// <para><b>Bütçe payı:</b> müşteri adımı toplam bütçenin en çok yarısını alır
 /// (<see cref="CustomerShare"/>; D5b'den ya da ilk biçim-2 gönderiminden sonra kuyruğu çok büyük
@@ -75,10 +77,13 @@ public sealed class SyncFlushService
         _log = log ?? NullLogger<SyncFlushService>.Instance;
     }
 
-    /// <summary>Kapanış gönderimi: bekleyen sayıya (D1) giren her gönderim, bu sırayla. Sunucu
-    /// siparişleri oturumdan sonra kabul ediyor (unknown-session); müşteriler siparişlerden önce
-    /// yönlensin diye en başta.</summary>
+    /// <summary>Kapanış gönderimi: bekleyen sayıya (D1) giren her gönderim, bu sırayla. Bekleyen ödeme
+    /// kayıtları en başta, mod On açılışındaki gibi (<see cref="SalesOpeningFlush"/>): normalde birkaç
+    /// satır, ama gitmeyen <c>finish</c>'in kirası sunucuda dolunca kayıt "sonucu bilinmiyor" olur.
+    /// Sunucu siparişleri oturumdan sonra kabul ediyor (unknown-session); müşteriler siparişlerden önce
+    /// yönlensin diye onlardan önce.</summary>
     public static SyncFlushService ForClose(
+        PaymentRecordSender paymentRecords,
         WpfCustomerProjectionSyncService customers,
         SessionOrderSyncService sessionsAndOrders,
         PaymentSyncService payments,
@@ -86,6 +91,12 @@ public sealed class SyncFlushService
         ILogger<SyncFlushService>? log = null)
         => new(new FlushStep[]
         {
+            // Kuyrukta kalan (Kept) ilerleme değil: reddedilen ya da çevrimdışı kayıt döngüyü boşuna döndürmesin.
+            new("ödeme kaydı", Drain(async ct =>
+            {
+                var r = await paymentRecords.FlushAsync(ct).ConfigureAwait(false);
+                return r.Sent + r.Dropped;
+            })),
             new("müşteri", ct => customers.SyncOnceAsync(ct), CustomerShare),
             new("oturum ve etiket", Drain(async ct =>
             {

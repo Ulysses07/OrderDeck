@@ -376,6 +376,47 @@ public sealed class PaymentRecordSenderTests : IDisposable
             .Select(r => r.GetProperty("recordId").GetGuid()).Should().Equal(good.RecordId);
     }
 
+    // ── durum satırı (I-3) ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Gonderim_durum_izleyicisine_yalniz_takilan_kayit_yoksa_yazar()
+    {
+        var tracker = new SyncStatusTracker();
+        var api = new LicenseApiClient(
+            new HttpClient(new FakeHttpMessageHandler(RespondAsync)) { BaseAddress = new Uri("https://test.local") },
+            new LicenseTokenStore());
+        var sender = new PaymentRecordSender(api, _repo, _envelope, _license, new Clock(), _log, tracker);
+        DateTimeOffset? PushOk() => tracker.Snapshot().PushOkAt![PaymentRecordSender.PushStatusName];
+        PushOk().Should().BeNull("kurulurken kaydolur, hiç başarılı turu yok");
+        var finish = QueueFinish();
+        QueueRecord();
+
+        _license.CurrentLicenseKey = null;
+        await sender.FlushAsync(CancellationToken.None);
+        PushOk().Should().BeNull("istek gitmedi, kuyruk dolu");
+
+        _license.CurrentLicenseKey = _lisans;
+        _finish = _ => Offline();
+        await sender.FlushAsync(CancellationToken.None);
+        PushOk().Should().BeNull("gönderim düştü — çekme iyi olsa da durum satırı bunu söylemeli");
+
+        _finish = _ => Respond(FakeHttpMessageHandler.Problem(400, "invalid-request"));
+        (await sender.FlushAsync(CancellationToken.None)).Sent.Should().Be(1, "kirasız kayıt gitti");
+        Row(finish.RecordId).Should().NotBeNull();
+        PushOk().Should().BeNull("reddedilen finish kuyrukta: durum satırı sağlıklı göstermemeli");
+
+        _finish = null;
+        await sender.FlushAsync(CancellationToken.None, finishesOnly: true);
+        PushOk().Should().BeNull("yalnız finish'ler: kuyruğun tamamını anlatmaz");
+
+        QueueRecord();
+        await sender.FlushAsync(CancellationToken.None);
+        var sent = PushOk();
+        sent.Should().NotBeNull();
+        await sender.FlushAsync(CancellationToken.None);
+        PushOk().Should().BeOnOrAfter(sent!.Value, "gönderecek bir şey olmayan tur da sağlıklı");
+    }
+
     // ── zarf ve kapı ──────────────────────────────────────────────────────
 
     [Fact]
