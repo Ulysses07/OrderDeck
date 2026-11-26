@@ -431,6 +431,31 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Elle_esleme_TL_disi_havalede_IBAN_ogretmez_bildirim_para_birimini_anar()
+    {
+        // Tasarım §3 (S2b Görev 3): TL/TRY dışı hareket de dışlanır; elle eşleme kararı yazar, IBAN öğretmez. Bildirim yalnız
+        // dışlanan işlem kodunu (POS) ansaydı USD havaleyi eşleyen yönetici yanlış neden görürdü.
+        var (lic, txId, wpfId) = await SeedAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var tx = await db.BankTransactions.SingleAsync(t => t.Id == txId);
+            tx.Currency = "USD"; tx.CounterpartyIbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}"; tx.CounterpartyIbanHashValid = true;
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        (await PostAsync(client, "ManualMatch", lic, txId, customerId: wpfId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        (await ToastAsync(client, PathFor(lic), "success")).Should().Be(IndexModel.MatchedExcludedMessage)
+            .And.Contain("TL/TRY dışı para birimi");
+        (await MatchAsync(txId))!.ActualWpfCustomerId.Should().Be(wpfId, "karar yazılır");
+        using var check = _factory.Services.CreateScope();
+        (await check.ServiceProvider.GetRequiredService<LicenseDbContext>().CustomerIbanMemories
+            .CountAsync(m => m.LicenseId == lic)).Should().Be(0, "dışlanan hareketin IBAN'ı öğretilmez");
+    }
+
+    [Fact]
     public async Task Elle_esleme_baska_lisansin_silinmis_kopya_ya_da_bilinmeyen_musteri_kimligini_reddeder_kullanici_adina_dusmez()
     {
         // Kimlik formdan gelir: hareketin lisansında olmayan, KVKK'yla silinmiş ya da kopya kimlik reddedilir. Formdaki geçerli

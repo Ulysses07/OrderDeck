@@ -14,7 +14,9 @@ public enum ManualMatchIbanOutcome
     NoValidIban,
     /// <summary>Özet KVKK Ö-7 kesme anından (22.10.2026) önce çekilmiş: maskeli değerden üretilmiş olabilir, öğretmez.</summary>
     LegacyHash,
-    /// <summary>Dışlanan işlem kodlu hareket (POS tahsilatı vb.): karşı IBAN müşterinin değil.</summary>
+    /// <summary>Eşleştiricinin dışladığı hareket (<see cref="PaymentMatcher.IsExcluded"/>): dışlanan işlem kodu (POS tahsilatı vb.;
+    /// karşı IBAN genellikle üye iş yeri havuz hesabıdır) ya da TL/TRY dışı para birimi. Müşteri havalesi sayılmaz, IBAN'ı
+    /// öğretilmez.</summary>
     Excluded,
     /// <summary>IBAN başka bir müşteriye kayıtlı: bağ ezilmez.</summary>
     ConflictOtherCustomer,

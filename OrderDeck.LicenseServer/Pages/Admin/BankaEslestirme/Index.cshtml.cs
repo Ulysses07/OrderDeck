@@ -32,10 +32,10 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// salt okur, açık kalır). Bağdaştırıcı, eşleştirici ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri
 /// sayfayı düşürmez.</para>
 /// <para><b>Elle eşlemenin bildirimi</b> IBAN'ın öğrenilip öğrenilmediğini (öğrenilmediyse nedenini: IBAN yok ya da maskeli,
-/// 22.10 kesmesinden önce çekilmiş, dışlanan kod, başka müşteriye kayıtlı) ve öğrenildiyse ya da tazelendiyse aynı IBAN'dan kaç
-/// kararsız havalenin bu müşteriye ÖNERİLDİĞİNİ söyler (<see cref="ManualMatchedMessage"/>; öneri karar değildir, her biri yine
-/// elle eşlenir). Yalnız "Eşlendi." görünmezlikti (27.10). Öneri sayısı eşiği aşarsa ortak hesap uyarısı da çıkar
-/// (<see cref="ManualMatchedWarning"/>).</para>
+/// 22.10 kesmesinden önce çekilmiş, dışlanan kod ya da para birimi, başka müşteriye kayıtlı) ve öğrenildiyse ya da
+/// tazelendiyse aynı IBAN'dan kaç kararsız havalenin bu müşteriye ÖNERİLDİĞİNİ söyler (<see cref="ManualMatchedMessage"/>;
+/// öneri karar değildir, her biri yine elle eşlenir). Yalnız "Eşlendi." görünmezlikti (27.10). Öneri sayısı eşiği aşarsa
+/// ortak hesap uyarısı da çıkar (<see cref="ManualMatchedWarning"/>).</para>
 /// <para><b>Elle eşle kutusu müşteri aramasıdır</b> (<see cref="OnPostCustomerSearchAsync"/>, istemci
 /// <c>wwwroot/js/banka-eslestirme.js</c>): seçilen müşterinin kimliği formda <see cref="CustomerId"/> olarak gider. Arama
 /// POST'tur: sorgu (ad parçası) URL'ye, dolayısıyla Caddy erişim günlüğüne girmez.</para></summary>
@@ -61,7 +61,7 @@ public class IndexModel : PageModel
     // eşlenir ve bildirim bunu açıkça söyler (ProposalIsNotDecisionNote).
     public const string MatchedNoIbanMessage = "Eşlendi. IBAN öğrenilmedi: banka bu havalenin karşı IBAN'ını göndermemiş ya da maskeli göndermiş.";
     public const string MatchedLegacyIbanMessage = "Eşlendi. IBAN öğrenilmedi: havale 22.10.2026'dan önce çekildi, o zamanki IBAN özeti öğretmek için güvenilir değil. Kişinin daha yeni bir havalesini eşleyin; aynı IBAN'dan gelen eski havaleler de o zaman önerilir.";
-    public const string MatchedExcludedMessage = "Eşlendi. IBAN öğrenilmedi: dışlanan işlem kodlu hareket (POS tahsilatı vb.), karşı IBAN müşterinin değil.";
+    public const string MatchedExcludedMessage = "Eşlendi. IBAN öğrenilmedi: dışlanan hareket (POS tahsilatı vb. işlem kodu ya da TL/TRY dışı para birimi), müşteri havalesi sayılmaz.";
     public const string MatchedIbanConflictMessage = "Eşlendi. IBAN öğrenilmedi: bu IBAN başka bir müşteriye kayıtlı; öneriler değişmedi.";
     public const string MatchedIbanRefreshedMessage = "Eşlendi. Bu IBAN zaten bu müşteriye kayıtlıydı (süresi tazelendi); aynı IBAN'dan bekleyen havaleler bu kayıtla zaten değerlendirilmişti.";
     public const string MatchedReevaluationFailedMessage = "Eşlendi. IBAN bu müşteriye kayıtlı, ama aynı IBAN'dan gelen havaleler şimdi yeniden değerlendirilemedi; saatlik tarama bir saat içinde tamamlar.";
