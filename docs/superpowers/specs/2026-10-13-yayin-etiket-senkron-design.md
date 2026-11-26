@@ -25,7 +25,7 @@ Kaynaklar: LiveDeck `origin/master` a126ff26. Kod ağacı 04f2b3d1 ile aynı, fa
 **Kapsam dışı**
 - Başka bilgisayarın canlı yayınını düzenlemek ya da etiketlerini yayın sürerken görmek (sahip kararı Y1).
 - Çekilişler. Açılıştaki `CancelAllOrphaned` (`OrderDeck.App/AppHost.cs:676`) yerel kalır.
-- Dekont (Payment) satırlarının bilgisayarlar arası inişi. Bu, banka spec'inin W3'ü (`2026-10-10-banka-havale-onay-design.md` §8).
+- Dekont (Payment) satırlarının bilgisayarlar arası inişi. Bu, banka spec'inin W3'üydü (`2026-10-10-banka-havale-onay-design.md` §8). *25.11.2026: W3 düştü, onaylananlar çevrimiçi okunur; hiçbir iş bu satırları indirmez.*
 - PaymentJob durum makinesinin senkronu. Yerel kalır; bilgisayarlar arası koordinasyonu sunucudaki istek kaydı sağlar (§6.4).
 - Panel ve Shopper istemci değişikliği. Sözleşme aynı; yeni alanları yok sayarlar. Panel `GET sessions` toplamının `PrintedAt`'e bakmaması ve Shopper süzgeçleri ayrı iş.
 - Kargo dosyasından elle etiket çıkarma arayüzü. Bağ çözme yalnız kurallarla olur (§7.2).
@@ -1105,6 +1105,7 @@ Her PR ayrı açılır; bir sonraki ancak öncekinin master'a girmesinden sonra 
    - (a) Banka §9 "karışık sürüm" kuralı bütün PC'lerin Ws+ olmasını da istemelidir. Mod On'un koşulu bunu zaten sağlar.
    - (b) Banka W2'nin beklenti üretim noktası, kendi kuyruğu yerine bu spec'in `payment-requests/{id}/finish(delivered)` kaydından sunucuda türetilebilir. Bu kayıt sahip satırını (`OwnerWpfCustomerId`), kapsamı ve net tutarı zaten taşıyor; banka'nın `(WpfCustomerId, ScopeKey)` anahtarına doğrudan eşlenir.
    - (c) Havale onayındaki kargo yönergesi, S2'nin sunucu kargo servisiyle sunucuda uygulanabilir. Banka §8 W3'teki "yönerge sunucudan gelir" bu servise dayanır. Lisans geneli eşik (§6.2) de sunucuda okunabilir.
+   - **25.11.2026:** (a)-(c) banka spec'ine işlendi (`2026-10-10-banka-havale-onay-design.md` §4.6, §5-5, §18). (c)'de yönerge "Evet"te taşınmaz: sunucu bağlar, karar masaüstünde sorulur. Banka onayı ve tahsis yazan öbür yollar, seçilen kişi×kapsamın kayıtlarına yalnız `Version` jetonunu artırarak dokunur (aynı isteği iki onay kapatmasın, banka §5.3); banka isteği `StartedAt` ile sıralar (§2.1), bu spec'in liste sırası değişmez; araya giren `finish` jeton çakışmasında bugünkü gibi bir kez yeniden değerlendirilir (§6.4).
 
 ## 14. Tasarım incelemesi — bulgu eşlemesi
 
