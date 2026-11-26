@@ -38,7 +38,7 @@
 
 1. **IBAN birden çok kişiye düşünce tahmin yok.** Sırasız tek satır okuması kalkar; küme dışı ya da çok kişili küme öneri üretmez, adaylar belirlenimli sıradadır. Görev 5: `Ortak_IBAN_kullanici_adi_yoksa_oneri_yok_adaylar_son_dogrulamaya_gore`, `SharedIbanMatcherRelationalTests.Iki_kisiye_bagli_ozet_her_kosuda_ayni_sirayla_okunur`.
 2. **Karar katmanındaki havaleye hiçbir arka plan yolu dokunmaz.** Biri atlanırsa açık sorunun önerisi yayıncının önünde değişir. Görev 6: beş InMemory kilit testi, `Decision_karsilastirmasi_SQLe_cevrilir`, `Aday_secildikten_sonra_karar_katmanina_giren_hareket_baglanmaz`.
-3. **Geçici kopyadan kanıtsız çıkılmaz, kesilen bağ dekonta geri yazılmaz.** Çözülseydi silme gerçek müşterinin projeksiyonunu siler, kanıtsız kişinin dekontu ona yazılırdı; bayat okumayla yazılsaydı silmenin ve kanıt kaybının boşalttığı dekont asıl kayda döner, okuyucu bunu ayırt edemezdi. Görev 2: `Gecici_kopyadan_kanitsiz_cikilmaz` (Görev 7, 9, 10 aynı çözücüyü çağırır); Görev 9: `Yeniden_yazim_bagi_okuduktan_sonra_silme_commit_olursa_yazmaz`, `Gonderim_cozdukten_sonra_bag_kesilirse_dekont_musterisiz_kalir`.
+3. **Geçici kopyadan kanıtsız çıkılmaz, kesilen bağ dekonta geri yazılmaz.** Çözülseydi silme gerçek müşterinin projeksiyonunu siler, kanıtsız kişinin dekontu ona yazılırdı; bayat okumayla yazılsaydı silmenin ve kanıt kaybının boşalttığı dekont asıl kayda döner, okuyucu bunu ayırt edemezdi. Görev 2: `Gecici_kopyadan_kanitsiz_cikilmaz` (Görev 7, 9, 10 aynı çözücüyü çağırır); Görev 9: `Yeniden_yazim_bagi_okuduktan_sonra_silme_commit_olursa_yazmaz`, `Gonderim_cozdukten_sonra_bag_kesilirse_dekont_musterisiz_kalir`; koşulun iki maddesi tek tek (silme ikisini birden bozar): `Yeniden_yazim_bagi_okuduktan_sonra_bag_bosalirsa_yazmaz`, `Yeniden_yazim_bagi_okuduktan_sonra_hesap_silinirse_yazmaz`, `Gonderim_cozdukten_sonra_hesap_silinirse_dekont_musterisiz_kalir`.
 4. **Göç bir kez koşar: bağ ve karar birlikte, yalnız taşınabilir kopyadan.** Yarım taşıma IBAN talebini, K-6'yı, dekont onayını ve silmeyi bozar (S2a planı Karar 5). Görev 11: `Goc_bag_ve_karari_birlikte_tasir_dekont_musterisini_yeniden_turetir`, `Tasinan_bag_ve_karar_dort_yolda_bulunur`.
 5. **Ölçüm kendini doğrulamaz, eski blok bozulmaz.** Banka onayı ya da karar katmanı sayılırsa eşik kendini doğrular; sürüm karışırsa nüfus değişimi isabet sanılır. Görev 8: `Surumler_ayri_sayilir_hareket_sayilari_ortak`, `Karar_katmanindaki_satir_sayilmaz_dekontla_kapanan_sayilir`, `Banka_odemesine_bagli_satir_dekont_onayli_sayilmaz`.
 
@@ -383,16 +383,26 @@ public async Task Elle_esleme_ayni_kisinin_obur_satirina(int? version, PaymentMa
 [Fact] public async Task Yeniden_yazim_duserse_senkron_yaniti_degismez()
 // HookedApiFactory: yeniden yazımın (InMemory yolu) kaydında, yani partiden ve bağlamadan sonraki kayıtta istisna
 // ⇒ 200, RetroactiveMatches 1, bağ kayıtlı, dekont boş (bugün çağrı yok; yalıtımsız çağrı 500 dönerdi)
+[Fact] public async Task Yeniden_yazim_duserse_telefon_dogrulamasi_yaniti_degismez()
+// ShopperAuthRegisterTests, fikstür HookedApiFactory: bağ kaydedildikten sonraki ilk kayıtta istisna ⇒ 204, bağ kayıtlı, dekont boş
+// (parola sıfırlaması aynı yalıtılmış yardımcıyı çağırır; yalıtımsız çağrı istisnayı yanıta taşırdı)
 // PaymentRederivationRelationalTests (SQL Server)
 [Fact] public async Task Yeniden_yazim_bagi_okuduktan_sonra_silme_commit_olursa_yazmaz()
 // ReadQueryHook: bağlantı okunduktan sonra, ilk [WpfCustomerProjections] okumasından önce ayrı bağlamda gerçek ShopperPurgeService
 // ⇒ dönüş 0, dekontun WpfCustomerId'si boş (WHERE Status = özgün taşıyan izlenen yazım P'yi silinmiş shopper'ın dekontuna geri yazardı)
 [Fact] public async Task Yeniden_yazim_araya_giren_onayla_dusmez()
 // aynı kanca, ayrı bağlamdan ExecuteUpdate Status = Approved ⇒ dönüş 1, WpfCustomerId P, Status Approved, UpdatedAt aynı
+[Fact] public async Task Yeniden_yazim_bagi_okuduktan_sonra_bag_bosalirsa_yazmaz()
+// aynı kanca, bağlantının WpfCustomerId = NULL (kanıt kaybı), shopper canlı ⇒ dönüş 0, dekont boş (bağlantı koşulu tek başına)
+[Fact] public async Task Yeniden_yazim_bagi_okuduktan_sonra_hesap_silinirse_yazmaz()
+// aynı kanca, DeleteMe'nin etkisi (Shoppers.DeletedAt, bağlantının LeftAt'i; bağın müşterisi yerinde) ⇒ dönüş 0, dekont boş
+// (shopper koşulu tek başına)
 // PaymentSubmitConcurrencyTests (SQL Server)
 [Fact] public async Task Gonderim_cozdukten_sonra_bag_kesilirse_dekont_musterisiz_kalir()
 // RaceSaveHook.Once: gönderimin kaydından hemen önce ayrı bağlamdan bağlantı WpfCustomerId = NULL (ReproveLinksAsync'in etkisi)
 // ⇒ kayıttan sonra dekontun WpfCustomerId'si boş; bağlantı değişmeden kalan gönderimde P
+[Fact] public async Task Gonderim_cozdukten_sonra_hesap_silinirse_dekont_musterisiz_kalir()
+// RaceSaveHook.Once: DeleteMe'nin etkisi, bağ yerinde ⇒ dekont boş (shopper koşulu tek başına)
 ```
 
 - [ ] **Step 2: Koş** — `T(ShopperPaymentSubmissionServiceTests|LicensesWpfCustomersSyncControllerTests|ShopperAuthRegisterTests|ShopperAuthResetPasswordTests)` ve `S(PaymentRederivationRelationalTests|PaymentSubmitConcurrencyTests)`. Beklenen: derleme hatası (`RederivePaymentsAsync` yok), sonra yeni testler düşer.
@@ -504,8 +514,8 @@ WHERE p.[ShopperId] IS NOT NULL AND p.[Source] = N'Receipt'
 | Konu | Tohum ⇒ iddia |
 |---|---|
 | Taşınır | A: K (geçici değil, canlı) → P; K'da bağ + öğreten karar (Proposed = Actual = K, `IbanConfirmedAt`) + yalnız önerisi K olan satır. E: K3→K2→K1→P. ⇒ bağ ve satırlar P'de; bağın `CreatedAt`, `LastConfirmedAt`, `LearnedFrom`, `SourceBankTransactionId`'si, satırın `Status`, `UpdatedAt`, `MatcherVersion`'ı aynı |
-| Taşınmaz | B geçici kopya, C' silinmiş geçici kopya, D silinmiş asıl kaydın kopyası, F başka lisansa yönelen kopya, G 4 adımlı zincir, H geçici ara adımlı zincir ⇒ bağ ve satırlar yerinde |
-| Okuyucu eşliği | her durumun özetiyle yeni hareket, `PaymentMatcher.MatchAsync`: A, E ⇒ `iban-memory` önerisi P; B, C', D, F, G, H ⇒ `no-signal` |
+| Taşınmaz | B geçici kopya, C' silinmiş geçici kopya, D silinmiş asıl kaydın kopyası, F başka lisansa yönelen kopya, G 4 adımlı zincir, H geçici ara adımlı zincir; kuralın maddeleri tek tek (C' iki maddeye birden takılır): I silinmiş, geçici olmayan kopya, J ilk ara adımı silinmiş, L ikinci ara adımı silinmiş, M ikinci ara adımı geçici zincir ⇒ bağ ve satırlar yerinde |
+| Okuyucu eşliği | her durumun özetiyle yeni hareket, `PaymentMatcher.MatchAsync`, göçten önce (bağlar kopyada: okuyucunun kopya kuralı) ve sonra: A, E ⇒ `iban-memory` önerisi P; B, C', D, F, G, H, I, J, L, M ⇒ `no-signal`. Önceki koşunun satırları göçün anlık görüntülerinden önce yazılır |
 | Yeniden türetme | S2a senaryosunun (a)-(j) durumları aynen + (k) bağlantı geçici kopyada, telefon kanıtlasa da ⇒ NULL; (l) geçici asıl kayıt ⇒ o; (m) geçici ara adım, telefon kanıtı yok ⇒ NULL; (n) aynı shopper'ın `Source = 'Bank'` satırı ⇒ değişmez; `UpdatedAt`, `Status` aynı |
 | Eşlik | her dekontta `ShopperCustomerResolver.PaymentCustomerAsync` ile aynı; yalnız (k) ayrı: C# P, SQL NULL (Karar 9). (m)'ye kanıt tohumlanmaz: kanıtlı ara adımda C# da P verir |
 | Bir kez | `MoveCopyBonds` yeniden koşulunca `CustomerIbanMemories` (Id → `WpfCustomerId`) ve `PaymentMatches` (Id → Proposed, Actual, `UpdatedAt`) anlık görüntüsü öncekiyle aynı. Dönüş değeri iddia edilmez: `ExecuteNonQuery` `@CopyMap`'e INSERT'i de sayar, kopyalar durduğu için 0 olmaz. `RederivePaymentCustomers` (tek UPDATE) yeniden koşulunca 0 satır; dar ve geniş IBAN tekili duruyor ve tekil |
@@ -593,6 +603,9 @@ public async Task Karar_katmanina_girmis_lisansta_kimlik_degisimi_reddedilir(Pay
 - Geri alma penceresinde shopper silmesi ve IBAN talebi bekletilir (README kalıntı 3).
 - Tek istemci etkisi: `payments/sync` onaylı dekontta dört alanı artık ezmez (yalnız gönderilmemiş eski satırlar etkilenir).
 - Plandan sapma: `BankSubjectScrub` kararsız öneriyi boşaltırken IBAN desteğini de boşaltır (Karar 2'nin silme eşi; KVKK silmesi ve IBAN talebinin ortak kuralı); prod sonucu değişmez, S2b'den önce bayrak hep false.
+- Plandan sapma (Görev 8-13; gerekçeli ve zararsız): (a) elle eşleme bildirimi "bu müşteriye ya da aynı kişinin öbür kaydına" der; bunun için Görev 8'in dosya listesinde olmayan `ManualMatchResult.cs` de değişti. (b) Gönderimde müşteri çözümü düşerse yüklenen PDF geri silinir (`Musteri_cozumu_duserse_yuklenen_pdf_geri_alinir`). (c) `Karar_katmanindaki_satir_sayilmaz_dekontla_kapanan_sayilir` `Enum.GetValues` ile `Unmatched`'ı da kapsar. (d) Görev 13'ün iki ilişkisel interleave'i ham SQL değil EF ile yazıldı; değer dönüştürücü iki yanda aynı. (e) 12b uyarı logu Id ve istisna türüne ek olarak yığın izi taşır; ileti ve PII yok.
+- Ölçüm: deploy anında güncel (kişi düzeyi) kutu neredeyse boş başlar, sayaçlar düşmüş görünür; S2b öncesi satırların kararları "Satır düzeyi (eski)" kutusunda sayılır (tasarım gereği, §4.5).
+- Sahip kararı (görsel; gerçek çizimle tek soru): Faz 2 satırı eşik tutunca yeşil yanar ve "✓ eşik sağlandı" yazar, yanında "bilgi; otomatik onayın kapısı değil (§16-6)" notu durur; tasarım §4.5 "kapı gibi gösterilmez" der. Yeşil ve ✓ kalsın mı, nötr renk ve "eşik sayısına ulaştı (bilgi)" gibi bir metne mi dönsün? Kod özetleri (`PaymentMatchMetrics`) "kapı değil, kapı §16-6" der.
 - Sahip kararı: IBAN talebi, taşınabilir kopyada kalmış bağdan doğan v2 IBAN önerisini silmez (Karar 7; tek yarış yeter, sayısı deploy sonrası sorgusunda). S2b'de `EraseAsync`'e okuyucunun zincir kuralı eklenir ya da S4'te kalır.
 
 Sorgular salt okunur, sahip koşar. `<map>` yerine şu başlık yazılır: `;WITH map (CopyId, LicenseId, CanonicalId) AS (<Görev 11 Step 4'teki @CopyMap SELECT'i, göç dosyasından aynen>)`.
