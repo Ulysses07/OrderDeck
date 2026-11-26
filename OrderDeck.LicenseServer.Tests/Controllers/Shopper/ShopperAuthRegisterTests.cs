@@ -11,10 +11,11 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Shopper;
 
-public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
+// Kanca (HookedApiFactory) boşken fabrika ApiFactory'nin aynısı; yalnız yeniden yazımın yalıtım testi doldurur.
+public class ShopperAuthRegisterTests : IClassFixture<HookedApiFactory>
 {
-    private readonly ApiFactory _factory;
-    public ShopperAuthRegisterTests(ApiFactory factory) => _factory = factory;
+    private readonly HookedApiFactory _factory;
+    public ShopperAuthRegisterTests(HookedApiFactory factory) => _factory = factory;
 
     // ── DTOs matching the controller ────────────────────────────────────────
     private sealed record RegisterRequest(
@@ -453,6 +454,63 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         payment.WpfCustomerId.Should().Be(projectionId);
         payment.UpdatedAt.Should().Be(at);
         (await PaymentAsync(foreignId)).WpfCustomerId.Should().BeNull("bu lisansta bağlantı yok");
+    }
+
+    /// <summary>Yeniden yazımın hata yalıtımı (S2b planı Karar 10): bağ kaydedildikten sonra yeniden yazım düşerse yanıt
+    /// değişmez. Yalıtımsız olsaydı kaydı tamamlanmış doğrulama 500 dönerdi; parola sıfırlamasında kod kayıttan önce tüketildiği
+    /// için aynı kodla yeniden deneme de reddedilirdi. Kanca bağ kaydedildikten sonraki ilk kayıtta (yeniden yazımın InMemory
+    /// kaydı) istisna atar ⇒ 204, bağ kayıtlı, dekont boş. Parola sıfırlaması aynı yalıtılmış çağrıyı
+    /// (<c>RederiveBoundPaymentsAsync</c>) kullanır.</summary>
+    [Fact]
+    public async Task Yeniden_yazim_duserse_telefon_dogrulamasi_yaniti_degismez()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var phone = TestPhone.NewE164();
+        var username = $"u-{Guid.NewGuid():N}";
+        var projectionId = await SeedBroadcasterProjectionAsync(licenseId, username, phone);
+        var client = _factory.CreateClient();
+        var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "Dekontlu Müşteri", phone, $"kayit-{Guid.NewGuid():N}", "Sivas", "tiktok", username));
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
+        var paymentId = await SeedReceiptAsync(licenseId, body!.ShopperId, DateTimeOffset.UtcNow.AddDays(-1));
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", body.AccessToken);
+        (await client.PostAsync("/api/v1/shopper/auth/phone-verification/request", null))
+            .StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var gelenKod = System.Text.RegularExpressions.Regex
+            .Match(_factory.Sms.Sent.Last(m => m.Phone == phone).Text, @"\d{6}").Value;
+        var failed = false;
+        _factory.Hook.BeforeSave = async () =>
+        {
+            if (await LinkTargetAsync(body.ShopperId, licenseId) is null) return;   // kod ve bağlama kayıtları geçer
+            failed = true;
+            throw new InvalidOperationException("yeniden yazımın kaydı düştü");
+        };
+
+        HttpResponseMessage confirm;
+        try
+        {
+            confirm = await client.PostAsJsonAsync("/api/v1/shopper/auth/phone-verification/confirm",
+                new ConfirmPhoneRequest(gelenKod));
+        }
+        finally
+        {
+            _factory.Hook.Reset();
+        }
+
+        failed.Should().BeTrue("kanca yeniden yazımın kaydında tetiklenmeli");
+        confirm.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await LinkTargetAsync(body.ShopperId, licenseId)).Should().Be(projectionId, "bağ kayıtlı");
+        (await PaymentAsync(paymentId)).WpfCustomerId.Should().BeNull("yeniden yazım düştü");
+    }
+
+    private async Task<Guid?> LinkTargetAsync(Guid shopperId, Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return (await db.ShopperBroadcasterLinks.AsNoTracking()
+            .SingleAsync(l => l.ShopperId == shopperId && l.LicenseId == licenseId)).WpfCustomerId;
     }
 
     /// <summary>Shopper'ın müşterisiz dekontu (ör. bağ beklerken gönderilmiş). ReferansNo lisansta tekil.</summary>
