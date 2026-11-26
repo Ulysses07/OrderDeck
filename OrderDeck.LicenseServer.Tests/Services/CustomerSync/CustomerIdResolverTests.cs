@@ -113,6 +113,46 @@ public sealed class CustomerIdResolverTests
     }
 
     [Fact]
+    public async Task Zincir_CanonicalOf_ile_ayni_kayda_varir_izledigi_kopyalarin_bayragini_tasir()
+    {
+        // lic: K3→K2→K1→P (K2 geçici kopya), Q→R (Q silinmiş kopya), S (geçici ASIL kayıt), X→Y (Y başka lisansta),
+        // Z4→Z3→Z2→Z1→W (4 adım), N (projeksiyonu yok).
+        using var db = NewDb();
+        var lic = Guid.NewGuid();
+        var p = Row(db, lic);
+        var k1 = Row(db, lic, p.Id);
+        var k2 = Row(db, lic, k1.Id);
+        var k3 = Row(db, lic, k2.Id);
+        var r = Row(db, lic);
+        var q = Row(db, lic, r.Id);
+        var s = Row(db, lic);
+        var y = Row(db, Guid.NewGuid());
+        var x = Row(db, lic, y.Id);
+        var w = Row(db, lic);
+        var z1 = Row(db, lic, w.Id);
+        var z2 = Row(db, lic, z1.Id);
+        var z3 = Row(db, lic, z2.Id);
+        var z4 = Row(db, lic, z3.Id);
+        var n = Guid.NewGuid();
+        k2.CreatedByShopper = true;
+        q.PurgedAt = DateTimeOffset.UtcNow;
+        s.CreatedByShopper = true;
+        db.SaveChanges();
+        Guid[] ids = [k3.Id, k2.Id, k1.Id, p.Id, q.Id, r.Id, s.Id, x.Id, y.Id, z4.Id, z3.Id, z2.Id, z1.Id, w.Id, n];
+        var resolver = new CustomerIdResolver(db);
+
+        var chains = await resolver.ChainOfAsync(lic, ids, CancellationToken.None);
+        var canonical = await resolver.CanonicalOfAsync(lic, ids, CancellationToken.None);
+
+        ids.Should().OnlyContain(id => chains[id].Canonical == canonical[id]);
+        chains[k3.Id].Should().Be(new CustomerChain(p.Id, ViaProvisionalCopy: true, ViaPurgedCopy: false));
+        chains[k1.Id].Should().Be(new CustomerChain(p.Id, false, false));
+        chains[q.Id].Should().Be(new CustomerChain(r.Id, false, true));
+        chains[s.Id].Should().Be(new CustomerChain(s.Id, false, false), "asıl kaydın kendi bayrağı zincir değildir");
+        (chains[x.Id].Canonical, chains[z4.Id].Canonical, chains[n].Canonical).Should().Be((y.Id, z1.Id, n));
+    }
+
+    [Fact]
     public async Task Hex_surumu_kopyayi_asil_hexe_cevirir_digerinin_yazimina_dokunmaz()
     {
         using var db = NewDb();

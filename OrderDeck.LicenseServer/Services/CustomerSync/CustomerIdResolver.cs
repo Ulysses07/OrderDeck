@@ -45,6 +45,40 @@ public sealed class CustomerIdResolver
         => (await CanonicalOfAsync(licenseId, [id], ct))[id];
 
     /// <summary>
+    /// <see cref="CanonicalOfAsync(Guid, IEnumerable{Guid}, CancellationToken)"/> ile aynı döngü (aynı lisans, en çok
+    /// <see cref="MaxHops"/> adım, IgnoreQueryFilters) ve aynı varış; ek olarak zincirin izlediği kopyaların bayrakları
+    /// (<see cref="CustomerChain"/>). Kanıt isteyen iki okuyucu içindir: bağlantıdan müşteriye çözücü
+    /// (<c>ShopperCustomerResolver</c>) geçici kopyadan telefon kanıtı olmadan çıkmaz; kişi düzeyi IBAN okuyucusu
+    /// (<c>PaymentMatcher</c>) geçici ya da silinmiş kopyadan geçen bağı asıl kayda saymaz (tasarım §2.5). Zincir kuralı
+    /// tek yerde, bu sınıfta kalır: o okuyucular <c>MergedIntoId</c>'yi kendileri izlemez. Döngü
+    /// <see cref="CanonicalOfAsync(Guid, IEnumerable{Guid}, CancellationToken)"/>'unkinin eşidir, yalnız okunan sütun
+    /// fazladır; o metot ve çağıranları bayrak okumaz, sorguları değişmez. İkisinin aynı kayda vardığını
+    /// <c>CustomerIdResolverTests</c> sınar.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, CustomerChain>> ChainOfAsync(
+        Guid licenseId, IEnumerable<Guid> ids, CancellationToken ct)
+    {
+        var result = ids.Distinct().ToDictionary(id => id, id => new CustomerChain(id, false, false));
+        var pending = result.Keys.ToList();
+        for (var hop = 0; hop < MaxHops && pending.Count > 0; hop++)
+        {
+            var next = await _db.WpfCustomerProjections.IgnoreQueryFilters()
+                .Where(p => p.LicenseId == licenseId && pending.Contains(p.Id) && p.MergedIntoId != null)
+                .Select(p => new { p.Id, Target = p.MergedIntoId!.Value, p.CreatedByShopper, p.PurgedAt })
+                .ToDictionaryAsync(x => x.Id, ct);
+            if (next.Count == 0) break;
+            foreach (var key in result.Keys.ToList())
+                if (next.TryGetValue(result[key].Canonical, out var copy))
+                    result[key] = new CustomerChain(
+                        copy.Target,
+                        result[key].ViaProvisionalCopy || copy.CreatedByShopper,
+                        result[key].ViaPurgedCopy || copy.PurgedAt is not null);
+            pending = next.Values.Select(x => x.Target).Distinct().ToList();
+        }
+        return result;
+    }
+
+    /// <summary>
     /// <see cref="CanonicalOfAsync(Guid, IEnumerable{Guid}, CancellationToken)"/>'un tersi: verilen kayıtlara doğrudan ya
     /// da zincirle (en çok <see cref="MaxHops"/> adım) yönlenen kopyaların Id'leri; girdiler dahil değil. Bir kişinin
     /// kopya Id'siyle saklanmış satırlarını (ör. sipariş <c>CustomerId</c>'si) SQL'de aramak için.
@@ -102,3 +136,16 @@ public sealed class CustomerIdResolver
         return (row.LicenseId, canonicalId);
     }
 }
+
+/// <summary>
+/// <see cref="CustomerIdResolver.ChainOfAsync"/>'un bir Id için sonucu. <see cref="Canonical"/>,
+/// <see cref="CustomerIdResolver.CanonicalOfAsync(Guid, IEnumerable{Guid}, CancellationToken)"/>'un vardığı Id'dir
+/// (asıl kayıt; bilinmeyen ya da başka lisansın Id'si aynen; adım sınırına takılan zincirde son ulaşılan kopya).
+/// Bayraklar yalnız yönlendirmesi İZLENEN kopyalardan gelir; varılan satırın kendi bayrağı sayılmaz: geçici ya da
+/// silinmiş asıl kayıt zincir değildir, onu çağıran kendisi okur.
+/// </summary>
+/// <param name="Canonical">Varılan Id.</param>
+/// <param name="ViaProvisionalCopy">İzlenen bir kopya shopper'ın açtığı geçici kayıttı (<c>CreatedByShopper</c>):
+/// ondan geçen bağlantı ya da IBAN bağı kanıtsız bir kişiden gelmiş olabilir.</param>
+/// <param name="ViaPurgedCopy">İzlenen bir kopya KVKK silmesiyle silinmişti (<c>PurgedAt</c> dolu).</param>
+public readonly record struct CustomerChain(Guid Canonical, bool ViaProvisionalCopy, bool ViaPurgedCopy);
