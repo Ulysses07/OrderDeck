@@ -10,9 +10,10 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Services.ShopperLinking;
 
 /// <summary>
-/// ShopperCustomerResolver (S2b, tasarım §2.5): bağlantıdan müşteriye giden her yolun tek çözücüsü. Birleştirilmiş geçici
-/// kopyadan geçen bağlantı yalnız telefon kanıtıyla asıl kayda çözülür, değilse müşteri bilinmez. InMemory yeterli: yalnız
-/// okur. Değerler üretilir (telefon <see cref="TestPhone"/>, Id'ler Guid.NewGuid()).
+/// ShopperCustomerResolver (S2b, tasarım §2.5): bağlantıdan müşteriye giden dört yolun (bağdaştırma, shopper silmesi, gönderim,
+/// yeniden yazım) ortak çözücüsü; bakiye ucu onu kullanmaz (ayrı iş). Birleştirilmiş geçici kopyadan geçen bağlantı yalnız
+/// telefon kanıtıyla asıl kayda çözülür, değilse müşteri bilinmez. InMemory yeterli: yalnız okur. Değerler üretilir (telefon
+/// <see cref="TestPhone"/>, Id'ler Guid.NewGuid()).
 /// </summary>
 public sealed class ShopperCustomerResolverTests
 {
@@ -96,6 +97,30 @@ public sealed class ShopperCustomerResolverTests
             .Should().Be(expected);
         (await ShopperCustomerResolver.PaymentCustomerAsync(db, lic, shopper.Id, CancellationToken.None))
             .Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task Gecici_kopyadan_gecen_zincir_lisansin_asil_kaydina_varmazsa_kanit_aranmaz()
+    {
+        // Kanıt yalnız lisansın asıl kaydında aranır; telefon iki durumda da kanıtlıyor. (1) Kp → X, X başka lisansta: zincir
+        // X'te durur (aynı lisans süzgeci), X müşteri değildir. (2) Kp → Z3 → Z2 → Z1 → W: zincir adım sınırında Z1'de (kopya)
+        // durur; sonuç kopya Id'si olmaz.
+        using var db = NewDb();
+        var lic = Guid.NewGuid();
+        var shopperPhone = TestPhone.NewE164();
+        var verifiedAt = DateTimeOffset.UtcNow;
+        var x = Row(db, Guid.NewGuid(), phone: shopperPhone);
+        var kpToOtherLicense = Row(db, lic, x.Id, phone: shopperPhone, provisional: true);
+        var w = Row(db, lic);
+        var z1 = Row(db, lic, w.Id, phone: shopperPhone);
+        var z2 = Row(db, lic, z1.Id);
+        var z3 = Row(db, lic, z2.Id);
+        var kpBeyondHops = Row(db, lic, z3.Id, phone: shopperPhone, provisional: true);
+
+        (await ShopperCustomerResolver.ResolveLinkAsync(db, lic, kpToOtherLicense.Id, shopperPhone, verifiedAt,
+            CancellationToken.None)).Should().BeNull("varılan satır başka lisansın");
+        (await ShopperCustomerResolver.ResolveLinkAsync(db, lic, kpBeyondHops.Id, shopperPhone, verifiedAt,
+            CancellationToken.None)).Should().BeNull("adım sınırında varılan satır kopya");
     }
 
     [Fact]

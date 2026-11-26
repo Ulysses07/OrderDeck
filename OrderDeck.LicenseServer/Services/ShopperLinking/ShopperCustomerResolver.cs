@@ -6,10 +6,12 @@ using OrderDeck.LicenseServer.Services.CustomerSync;
 namespace OrderDeck.LicenseServer.Services.ShopperLinking;
 
 /// <summary>
-/// Shopper bağlantısından (<c>ShopperBroadcasterLink.WpfCustomerId</c>) müşteriye giden her yolun TEK çözücüsü:
+/// Shopper bağlantısından (<c>ShopperBroadcasterLink.WpfCustomerId</c>) müşteriye giden dört yolun ortak çözücüsü:
 /// dekontun bağdaştırılması, shopper silmesi, gönderimde dekontun müşterisi ve yeniden bağlamada yeniden yazımı bu
-/// sınıftan geçer. Kural tasarım §2.5'tir. Bağlantının Id'si <see cref="CustomerIdResolver.ChainOfAsync"/> ile izlenir;
-/// zincir birleştirilmiş geçici (<c>CreatedByShopper</c>) bir kopyadan geçiyorsa varılan kayıt yalnız asıl kayıtsa, kendisi
+/// sınıftan geçer. Tek yol değildir: shopper'ın bakiye ucu (<c>ShopperBalanceController</c>) bağlantıyı hâlâ
+/// <see cref="CustomerIdResolver"/> ile kanıtsız çözer (banka dışı, ayrı iş). Kural tasarım §2.5'tir. Bağlantının Id'si
+/// <see cref="CustomerIdResolver.ChainOfAsync"/> ile izlenir; zincir birleştirilmiş geçici (<c>CreatedByShopper</c>) bir
+/// kopyadan geçiyorsa varılan kayıt yalnız asıl kayıtsa, kendisi
 /// geçici değilse ve shopper'ın telefonu onu kanıtlıyorsa (<see cref="WpfCustomerLinkMatcher.PhoneProves"/>) müşteridir;
 /// değilse müşteri bilinmez (null). Geçici kopyanın bağlantısı kanıtsız bağlanmıştır: asıl kayda çözülseydi silme gerçek
 /// müşterinin projeksiyonunu siler, kanıtsız kişinin dekontu ona yazılırdı. Sonuç kopya Id'si de değildir: o yazılsaydı
@@ -17,8 +19,12 @@ namespace OrderDeck.LicenseServer.Services.ShopperLinking;
 ///
 /// <para>Kanıt <c>CustomerIdentityMergeJob</c>'unkiyle aynıdır (asıl kayıt geçici değil ve
 /// <c>PhoneProves(asıl.Phone, shopper.Phone, shopper.PhoneVerifiedAt)</c>, argüman sırası dahil): farklı yazılsaydı aynı
-/// bağlantı birleştirmede beklemeye düşer, burada asıl kayda giderdi. Geçici kopyadan geçmeyen zincir
-/// <see cref="CustomerIdResolver"/> ile aynı Id'ye varır, silinmiş asıl kayıt dahil (S2b planı, Karar 9).</para>
+/// bağlantı birleştirmede beklemeye düşer, burada asıl kayda giderdi. Geçici kopyadan geçen zincir lisansın asıl kaydına
+/// varmazsa (başka lisansın Id'si, adım sınırında kalan kopya) kanıt aranmaz, müşteri bilinmez. Geçici kopyadan geçmeyen zincir
+/// <see cref="CustomerIdResolver"/> ile aynı Id'ye varır: silinmiş asıl kayıt (S2b planı, Karar 9), başka lisansın Id'si ve adım
+/// sınırında (3 adım) kalan kopya dahil. Sınırda varılan dördüncü düğüm geçici kopya olsa da yönlendirmesi izlenmediği için
+/// bayrağı sayılmaz, sonuç o kopyanın Id'sidir: yukarıdaki "kopya Id'si değildir" kuralının tek istisnası. Birleştirme lisans
+/// içinde kalır ve zinciri düzleştirir; başka lisansa ya da adım sınırına pratikte varılmaz.</para>
 ///
 /// <para>SQL eşi S2b veri göçüdür (<c>BankPersonMatchingS2b</c>) ve kanıtlı geçici kopyada da bilerek NULL verir: SQL
 /// telefonu normalleştiremez (<c>PhoneNormalizer</c>). Statiktir, DI kaydı yoktur; zincir için
