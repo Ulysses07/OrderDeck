@@ -30,6 +30,21 @@ namespace OrderDeck.LicenseServer.Services.ShopperLinking;
 /// <para>SQL eşi S2b veri göçüdür (<c>BankPersonMatchingS2b</c>) ve kanıtlı geçici kopyada da bilerek NULL verir: SQL
 /// telefonu normalleştiremez (<c>PhoneNormalizer</c>). Statiktir, DI kaydı yoktur; zincir için
 /// <c>new CustomerIdResolver(db)</c> kurar.</para>
+///
+/// <para>Dekontun müşterisini yazan iki koşullu deyim (<see cref="RederivePaymentsAsync"/>,
+/// <see cref="ClearIfLinkChangedAsync"/>; S2b planı Karar 11) koşul tablolarını (<c>ShopperBroadcasterLinks</c>,
+/// <c>Shoppers</c>) <c>WITH (READCOMMITTEDLOCK)</c> ile kilitli okur: bağı kesen işlem commit olana dek beklenir, RCSI
+/// ayarından bağımsız. Prod veritabanı ilk kurulumda <c>EnsureCreated()</c> ile oluşturuldu ve EF Core SQL Server'da
+/// veritabanını oluştururken <c>READ_COMMITTED_SNAPSHOT</c>'ı açar: prod'da RCSI büyük olasılıkla açık. RCSI açıkken ipucusuz
+/// koşul ifade başındaki anlık görüntüyü okurdu; bağlantıyı silen ya da boşaltan, shopper'a <c>DeletedAt</c> yazan işlem commit
+/// olmamışken koşan yazım eski bağlantıyı görür, kesilen bağı yazardı. Hedef tablo (<c>Payments</c>) RCSI açıkken de U
+/// kilidiyle en son commit'ten okunur; yalnız koşul tabloları sürümlü okunurdu. EF Core LINQ'te tablo ipucu yok: ilişkisel
+/// yolda iki deyim ham SQL'dir, değerler parametredir. Kalan pencere RCSI kapalı tasarımdakiyle aynıdır ve plana bağlıdır.
+/// Plan dekontu önce U kilidiyle okuyup koşulu sonra sınarsa (yerelde gözlenen plan), yazım dekontun kilidini tutarak bekler;
+/// kesen ardından aynı dekonta yazarsa kilitlenme olur, kurban çoğunlukla az günlük yazmış olan yazımdır. Yeniden yazımda
+/// <see cref="TryRederivePaymentsAsync"/>, denetimde gönderimin 12b adımı yakalar; dekont kesenin değerinde kalır. Plan
+/// ilişkisiz EXISTS'i dekontun kilidinden önce sınarsa, kesen aynı kayıtta dekontu bağlantıdan ya da shopper'dan önce
+/// yazdığında (milisaniye altı) yazım kesmeyi görmeden dekontun kilidinde bekler ve commit'ten sonra yazar.</para>
 /// </summary>
 public static class ShopperCustomerResolver
 {
@@ -81,12 +96,12 @@ public static class ShopperCustomerResolver
     /// türetilen müşteriye yazılır (bilinmiyorsa null); müşterili bağlantısı olmayan lisans geçilir. Yazım lisans başına tek
     /// koşullu UPDATE'tir: seçilen bağlantı hâlâ okunan müşterideyse ve shopper silinmemişse yazar. Bağı kesen yollar (silme
     /// bağlantıyı siler ve dekontun müşterisini boşaltır; kanıt kaybı bağlantıyı boşaltır) <c>Status</c>'a dokunmaz; koşul
-    /// okumada kalsaydı okumadan sonra commit olan kesme geri yazılırdı, okuyucu da geride kalan asıl kaydı ayırt edemezdi. RCSI
-    /// kapalıyken EXISTS kilitli okur, kesen işlem commit olana dek bekler (RCSI açılırsa bu karar yeniden açılır).
-    /// <c>Status</c>'a bakmaz; onu, <c>UpdatedAt</c>'i (<c>payments/since</c> imleci) ve jetonu yazmaz: araya giren onay yazımı
-    /// düşürmez. İlişkiselde izleyiciyi atlar (<c>ExecuteUpdate</c>; çağıranlar sonra <see cref="Payment"/> okumaz),
-    /// InMemory'de aynı süzgeçle izlenen yazım ve kayıt (<c>SessionReleaser</c> deseni). Değişen satır sayısını döner. Çağıranlar
-    /// yalıtılmış <see cref="TryRederivePaymentsAsync"/>'i kullanır.
+    /// okumada kalsaydı okumadan sonra commit olan kesme geri yazılırdı, okuyucu da geride kalan asıl kaydı ayırt edemezdi.
+    /// Koşul tabloları kilitli okunur: kesme henüz commit olmadıysa yazım onun commit'ini bekler, RCSI ayarından bağımsız (sınıf
+    /// özeti; kalan pencere orada). <c>Status</c>'a bakmaz; onu, <c>UpdatedAt</c>'i (<c>payments/since</c> imleci) ve jetonu
+    /// yazmaz: araya giren onay yazımı düşürmez. İlişkiselde ham SQL'dir ve izleyiciyi atlar (çağıranlar sonra
+    /// <see cref="Payment"/> okumaz), InMemory'de aynı süzgeçle izlenen yazım ve kayıt (<c>SessionReleaser</c> deseni). Değişen
+    /// satır sayısını döner. Çağıranlar yalıtılmış <see cref="TryRederivePaymentsAsync"/>'i kullanır.
     /// </summary>
     public static async Task<int> RederivePaymentsAsync(
         LicenseDbContext db, Guid shopperId, IReadOnlyCollection<Guid> licenseIds, CancellationToken ct)
@@ -95,14 +110,25 @@ public static class ShopperCustomerResolver
         foreach (var licenseId in licenseIds.Distinct())
         {
             if (await DeriveAsync(db, licenseId, shopperId, ct) is not { } d) continue;
+            if (db.Database.IsRelational())
+            {
+                // Koşul tabloları kilitli okunur (sınıf özeti). Source sütunu metin saklar; eşitsizlik null-güvenlidir
+                // (türetilen null olabilir; IS DISTINCT FROM 2022'den önce yok).
+                changed += await db.Database.ExecuteSqlInterpolatedAsync($"""
+                    UPDATE p SET p.[WpfCustomerId] = {d.CustomerId}
+                    FROM [Payments] AS p
+                    WHERE p.[LicenseId] = {licenseId} AND p.[ShopperId] = {shopperId} AND p.[Source] = N'Receipt'
+                      AND NOT EXISTS (SELECT p.[WpfCustomerId] INTERSECT SELECT {d.CustomerId})
+                      AND EXISTS (SELECT 1 FROM [ShopperBroadcasterLinks] AS l WITH (READCOMMITTEDLOCK)
+                                  WHERE l.[Id] = {d.LinkId} AND l.[WpfCustomerId] = {d.LinkCustomerId})
+                      AND EXISTS (SELECT 1 FROM [Shoppers] AS s WITH (READCOMMITTEDLOCK)
+                                  WHERE s.[Id] = {shopperId} AND s.[DeletedAt] IS NULL)
+                    """, ct);
+                continue;
+            }
             var (link, live) = StillLinked(db, shopperId, d);
             var stale = db.Payments.Where(p => p.LicenseId == licenseId && p.ShopperId == shopperId
                 && p.Source == PaymentSource.Receipt && p.WpfCustomerId != d.CustomerId && link.Any() && live.Any());
-            if (db.Database.IsRelational())
-            {
-                changed += await stale.ExecuteUpdateAsync(u => u.SetProperty(p => p.WpfCustomerId, d.CustomerId), ct);
-                continue;
-            }
             var rows = await stale.ToListAsync(ct);
             foreach (var p in rows) p.WpfCustomerId = d.CustomerId;
             if (rows.Count > 0) await db.SaveChangesAsync(ct);
@@ -138,21 +164,29 @@ public static class ShopperCustomerResolver
     /// Gönderimin kayıttan sonraki denetimi (S2b planı Karar 11): gönderim müşteriyi kayıttan hemen önce
     /// <see cref="DeriveAsync"/> ile çözer; arada bağı kesen bir yol commit olduysa (silme bağlantıyı siler,
     /// <c>ReproveLinksAsync</c> ve <c>CustomerIdentityMergeJob</c> bağlantıyı boşaltır) <see cref="RederivePaymentsAsync"/>'in
-    /// koşulu artık tutmaz ve dekontun müşterisi boşaltılır. Yalnız çözülen müşteriyi hâlâ taşıyan satıra yazar. Yalnız
-    /// ilişkiselde koşar: InMemory'de eşzamanlı yazım yok.
+    /// koşulu artık tutmaz ve dekontun müşterisi boşaltılır. Koşul tabloları kilitli okunur: kesme henüz commit olmadıysa denetim
+    /// onun commit'ini bekler, RCSI ayarından bağımsız (sınıf özeti). Yalnız çözülen müşteriyi hâlâ taşıyan satıra yazar. Yalnız
+    /// ilişkiselde koşar (ham SQL): InMemory'de eşzamanlı yazım yok.
     /// </summary>
     public static async Task ClearIfLinkChangedAsync(
         LicenseDbContext db, Guid paymentId, Guid shopperId, DerivedCustomer d, CancellationToken ct)
     {
         if (!db.Database.IsRelational()) return;
-        var (link, live) = StillLinked(db, shopperId, d);
-        await db.Payments
-            .Where(p => p.Id == paymentId && p.WpfCustomerId == d.CustomerId && !(link.Any() && live.Any()))
-            .ExecuteUpdateAsync(u => u.SetProperty(p => p.WpfCustomerId, (Guid?)null), ct);
+        // RederivePaymentsAsync'in koşulu, aynı kilitli okumayla; eşitlik null-güvenlidir.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE p SET p.[WpfCustomerId] = NULL
+            FROM [Payments] AS p
+            WHERE p.[Id] = {paymentId}
+              AND EXISTS (SELECT p.[WpfCustomerId] INTERSECT SELECT {d.CustomerId})
+              AND NOT (EXISTS (SELECT 1 FROM [ShopperBroadcasterLinks] AS l WITH (READCOMMITTEDLOCK)
+                               WHERE l.[Id] = {d.LinkId} AND l.[WpfCustomerId] = {d.LinkCustomerId})
+                       AND EXISTS (SELECT 1 FROM [Shoppers] AS s WITH (READCOMMITTEDLOCK)
+                                   WHERE s.[Id] = {shopperId} AND s.[DeletedAt] IS NULL))
+            """, ct);
     }
 
-    /// <summary>Karar 11'in koşulu, yazımın kendi WHERE'inde sınanır: <paramref name="d"/>'de seçilen bağlantı hâlâ okunan
-    /// müşteride ve shopper silinmemiş.</summary>
+    /// <summary>Karar 11'in koşulu InMemory yolunda, yazımın kendi süzgecinde: <paramref name="d"/>'de seçilen bağlantı hâlâ
+    /// okunan müşteride ve shopper silinmemiş. İlişkisel yol aynı koşulu ham SQL'de kilitli okur (sınıf özeti).</summary>
     private static (IQueryable<ShopperBroadcasterLink> Link, IQueryable<Shopper> Live) StillLinked(
         LicenseDbContext db, Guid shopperId, DerivedCustomer d)
         => (db.ShopperBroadcasterLinks.Where(l => l.Id == d.LinkId && l.WpfCustomerId == d.LinkCustomerId),
