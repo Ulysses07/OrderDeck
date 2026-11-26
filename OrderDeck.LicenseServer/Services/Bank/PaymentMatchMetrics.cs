@@ -27,9 +27,10 @@ public sealed record PlatformStat(string Platform, int Confirmed, int Contradict
 /// "Süzgeç"; <see cref="ReceiptConfirmed"/>, <see cref="ReceiptContradicted"/>) ve yalnız sayfa (<see cref="PageConfirmed"/>,
 /// <see cref="PageContradicted"/>). Panelde dekont onayı öneri görülmeden verilir; dekontun müşterisi satırın gerçek
 /// müşterisidir, aynı müşteriye elle verilmiş karara sonradan iliştirilen dekont da öyle: bağımsız kanıttır. Sayfadaki elle
-/// eşleme ise öneriye bakarak verilir, öneriye eşit elle eşleme doğrulandı sayılır (çapalı). Faz 2 (otomatik onay) kararı
-/// bağımsız kanıta dayanmalı: eşik yalnız dekont onaylı kararlardan hesaplanır (<see cref="MeetsPhase2Threshold"/>), sayfa
-/// kararları ayrı gösterilir, ne örnekleme ne orana girer.</para>
+/// eşleme ise öneriye bakarak verilir, öneriye eşit elle eşleme doğrulandı sayılır (çapalı). Faz 2 eşiği
+/// (<see cref="MeetsPhase2Threshold"/>) gölge isabeti bilgisidir, otomatik onayın kapısı değildir (kapı §16-6'nın pilot
+/// sayaçlarıdır; tasarım §4.5); bağımsız kanıtı ölçer: yalnız dekont onaylı kararlardan hesaplanır, sayfa kararları ayrı
+/// gösterilir, ne örnekleme ne orana girer.</para>
 /// <para><b>Sonradan üretilen öneri.</b> IBAN hafızası değişince yeniden hesaplanan önerinin (kanıtı
 /// <see cref="PaymentMatcher.ReevaluationEvidenceSuffix"/> ekli) dekont kararı <see cref="ReceiptConfirmed"/> /
 /// <see cref="ReceiptContradicted"/>'e girmez, <see cref="ReevaluatedReceiptConfirmed"/> /
@@ -77,9 +78,10 @@ public sealed record PaymentMatchSummary(
     /// <summary>Dekont onaylı kararların çelişki oranı; yalnız gösterim (<see cref="PaymentMatchMetrics.Rate"/>).</summary>
     public decimal? ReceiptContradictionRate => PaymentMatchMetrics.Rate(ReceiptContradicted, ReceiptDecisions);
 
-    /// <summary>Faz 2 geçiş kararı: ≥ <see cref="Phase2MinReceiptDecisions"/> dekont onaylı öneri kararı VE onların çelişkisi
+    /// <summary>Faz 2 eşiği: gölge isabeti bilgisi; otomatik onayın kapısı değil, kapı §16-6'nın pilot sayaçlarıdır (tasarım
+    /// §4.5). Eşik: ≥ <see cref="Phase2MinReceiptDecisions"/> dekont onaylı öneri kararı VE onların çelişkisi
     /// ≤ %<see cref="Phase2MaxContradictionPercent"/>, tam sayılardan (çelişki × 100 ≤ karar × 2). Yuvarlı oran yalnız
-    /// gösterim içindir; onunla karar verilseydi %2,00–%2,05 arası gerçek oran 0,020'ye yuvarlanıp eşiği geçerdi. Sayfa kararları
+    /// gösterim içindir; onunla hesaplansaydı %2,00–%2,05 arası gerçek oran 0,020'ye yuvarlanıp eşiği geçerdi. Sayfa kararları
     /// hesaba girmez (sınıf özeti).</summary>
     public bool MeetsPhase2Threshold => ReceiptDecisions >= Phase2MinReceiptDecisions
         && ReceiptContradicted * 100 <= ReceiptDecisions * Phase2MaxContradictionPercent;
@@ -87,9 +89,9 @@ public sealed record PaymentMatchSummary(
 
 /// <summary>Gölge eşleştirmenin ölçümü (spec §9). Salt okur.
 /// <para><b>Nüfus</b>: penceredeki GELEN hareketler, hareketin anına (<see cref="BankTransaction.OccurredAt"/>) göre; her sayım
-/// bu hareketlerin eşleşme satırlarından (bir sürümün, karar katmanı dışındakiler: <see cref="PaymentMatchSummary"/> özeti,
-/// "Süzgeç"). Satırın yaratılma anı pencere değildir: ilk çekim geçmişi geri doldurur (bağlantı
-/// anından <see cref="ObifinPollJob.InitialGraceDays"/> gün; KVKK Ö-5'ten önce kurulan bağlantılarda 90 gün), eski
+/// bu hareketlerin eşleşme satırlarından (bir sürümün, karar katmanına girmemiş ya da dekontla kapanmış satırları:
+/// <see cref="PaymentMatchSummary"/> özeti, "Süzgeç"). Satırın yaratılma anı pencere değildir: ilk çekim geçmişi geri doldurur
+/// (bağlantı anından <see cref="ObifinPollJob.InitialGraceDays"/> gün; KVKK Ö-5'ten önce kurulan bağlantılarda 90 gün), eski
 /// hareketin önerisi bugün yazılır. Dışlanan hareket (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı, sıfır tutar, TL/TRY
 /// dışı para birimi)
 /// yalnız <see cref="PaymentMatchSummary.Excluded"/>'da sayılır, eşleştirme sayımlarına girmez: müşteri havalesi değildir.
