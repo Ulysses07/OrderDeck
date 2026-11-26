@@ -28,7 +28,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
         /// <c>PaymentMatchReconciler.ResolveWpfCustomerAsync</c> ile aynı: LeftAt'e bakılmaz, en yeni JoinedAt'li MÜŞTERİLİ bağ
         /// (eşitlikte Id, oradaki sıra belirsiz). Asıl kayda en çok 3 adım (<c>CustomerIdResolver.MaxHops</c>); başka lisansın
         /// kaydından öteye izlenmez (varılan Id yazılır, <c>CustomerIdResolver</c> ile aynı). UpdatedAt yazılmaz
-        /// (payments/since imleci).</summary>
+        /// (payments/since imleci). Zinciri bugünkü okuyucular gibi telefon kanıtı aramadan izler; S2b kopyası birleştirilmiş
+        /// geçici (<c>CreatedByShopper</c>) kopyadan izlemez (tasarım §2.5). S2a'da sütunu okuyan yok, S2b doluyu da yeniden
+        /// yazar.</summary>
         public const string BackfillPaymentCustomers = """
             UPDATE p
             SET p.[WpfCustomerId] = COALESCE(h3.[MergedIntoId], h2.[MergedIntoId], h1.[MergedIntoId], l.[WpfCustomerId])
