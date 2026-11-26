@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -16,7 +17,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Ret hiçbir şey yapmaz. Elle eşleme
 /// dışlanan kodlu hareketi de kabul eder: admin'in açık kararıdır. Onun karşı IBAN'ını ise öğretmez: POS mutabakatının
 /// karşı IBAN'ı (varsa) genellikle üye iş yeri havuz hesabıdır, müşterinin değil.
-/// <para><b>Onay IBAN'ı yalnız doğrulanmış bağdan öğretir</b>: öneri dekontun müşterisini gösteriyorsa ya da gönderen
+/// <para><b>Onay IBAN'ı yalnız doğrulanmış bağdan öğretir</b>: öneri dekontun müşterisini (kişi düzeyi satırda kişisini; aşağıda
+/// "Kişi düzeyi karşılaştırma") gösteriyorsa ya da gönderen
 /// adının (≥3 harfli) tüm token'ları hareketin açıklamasında geçiyorsa. Tek aday bağı yalnız tutar ve zamana dayanabilir;
 /// sabit fiyatlı satışta aynı tutarlı başka bir müşterinin havalesi tek aday kalabilir (dekontun kendi havalesi henüz
 /// çekilmemiş, ya da gap'e ilk gelen aynı tutarlı havale). O bağdan öğrenilen IBAN iki müşterinin hafızasını takas eder
@@ -64,7 +66,10 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// denemenin dışında koşar. Düşerse (iptal, eşleştiricinin iki çakışması, DB hatası) kaldırma geri alınmaz ve başarılıdır:
 /// günlüğe hareket kimliği, istisna türü ve yığın izi yazılır, <see cref="UnmatchAsync"/> false döner. Satır insan kararsız,
 /// öneri yok durumunda kalır; öneri alanlarını kaldırma durumla birlikte boşaltmıştır (eşleştiricinin hiç yazmadığı "öneri yok
-/// + eski öneri" karışımı sonraki dekont bağını ya da elle eşlemeyi bayat öneriye göre sınıflandırırdı). Telafi taraması
+/// + eski öneri" karışımı sonraki dekont bağını ya da elle eşlemeyi bayat öneriye göre sınıflandırırdı). IBAN desteği
+/// (<see cref="PaymentMatch.SupportedByIbanMemory"/>) de öneri alanıdır, boşalır. Sürüm (<see cref="PaymentMatch.MatcherVersion"/>)
+/// kalır: satırın son hesabının üreticisidir, kaldırma yeniden hesap değildir; boşaltılsaydı yeniden hesabı koşmayan satır (bu yol
+/// ya da durdurulmuş bağlantı) ölçümde kişi düzeyi bloktan eski bloğa "öneri yok" olarak geçerdi (S2b planı Karar 2). Telafi taraması
 /// satırı olan hareketi yalnız IBAN hafızası değiştiyse yeniden hesapladığı için öneri çoğunlukla kendiliğinden yeniden
 /// üretilmez, admin satırı yine elle eşleyebilir.
 /// Yeniden hesap denemenin içinde olsaydı kaydedilmiş kaldırma yeniden denenip "çakışma" diye raporlanır, iptal de sayfanın
@@ -98,6 +103,21 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// ve koşunun kotasında yer kaplardı. S2b'de prod'da böyle satır yoktur (okuyucu önce: satırı S3a yazar); tasarım §3'ün
 /// <c>Unmatched → Awaiting</c> yeniden değerlendirmesi S3a'da ayrı yoldan gelir. Elle eşleme ve kaldırma admin eylemidir, kilidin
 /// dışındadır (reddi S3b).</para>
+/// <para><b>Kişi düzeyi karşılaştırma (tasarım §2.4; S2b).</b> Önerinin dekontun ya da elle eşlemenin müşterisini gösterip
+/// göstermediği satırın sürümüne bağlıdır (<see cref="PaymentMatch.MatcherVersion"/>, <see cref="SameProposalPersonAsync"/>): kişi
+/// düzeyi eşleştiricinin satırında (<see cref="PaymentMatcher.PersonLevelVersion"/>) aynı kişi yeter
+/// (<see cref="PaymentMatcher.SamePersonAsync"/>), boş sürümlü satırda aynı satır gerekir. Kişi düzeyi öneri satır düzeyinde
+/// karşılaştırılsaydı IG satırına önerilen havalenin TT satırından gelen dekontu Contradicted sayılır, v2'nin çelişkisi sahte şişer,
+/// IBAN da öğrenilmezdi; kural eski satıra uygulansaydı eski ölçüm bloğu deploy anında anlam değiştirirdi. Karşılaştırmayı onay
+/// bağdaştırmasının durumu ve doğrulanmış bağ koşulu, elle eşlemenin durumu ve aynı IBAN'ın yeniden değerlendirme sayacı kullanır.
+/// Dekont adaylarının <c>taken</c> kümesi, bayat seçim denetimi ve <see cref="LearnIbanAsync"/>'in başka satıra kayıtlı bağı (aynı
+/// kişinin öbür satırındaki bağ da <see cref="ManualMatchIbanOutcome.ConflictOtherCustomer"/>) satır düzeyinde kalır: ikinci bağ dar
+/// tekil indeks <c>(LicenseId, IbanHash)</c> dururken yazılamaz; kişi düzeyine S3b alır.</para>
+/// <para><b>Dekontun müşterisi bağlantıdan kanıt kuralıyla çözülür</b> (tasarım §2.5; <see cref="ShopperCustomerResolver"/>): kopyada
+/// kalmış bağlantı asıl kayda, birleştirilmiş geçici kopyadaki bağlantı yalnız shopper'ın telefonu asıl kaydı kanıtlıyorsa; kanıtsızsa
+/// müşteri bilinmez. Onay bağdaştırması ve gap çözümü o zaman "bağ yok" yolundadır: gap yazılmaz, o shopper'ın açık gap'i bu yoldan
+/// çözülmez (S2b planı Karar 9). Kopya Id'siyle karşılaştırılsaydı doğru öneri Contradicted sayılır, karar ve bağ kopyaya
+/// yazılırdı.</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
 /// </summary>
 public sealed class PaymentMatchReconciler
@@ -312,7 +332,9 @@ public sealed class PaymentMatchReconciler
             throw new ObifinValidationException(AlreadyDecidedMessage);
         var now = DateTimeOffset.UtcNow;
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now; match.UpdatedAt = now;
-        match.Status = match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.ManualOnly;
+        // Öneri bu müşteriyi gösteriyor mu: satırın sürümüne göre aynı kişi ya da aynı satır (sınıf özeti, "Kişi düzeyi karşılaştırma").
+        match.Status = await SameProposalPersonAsync(match, wpfCustomerId, ct)
+            ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.ManualOnly;
         // Dışlanan hareketin (POS tahsilatı vb.) karşı IBAN'ı müşterinin değildir (sınıf özeti): karar yazılır, öğretilmez.
         // Yeniden denemede sonuç bu denemeninkiyle değişir (ör. eşzamanlı bir karar aynı bağı öğrettiyse tazeleme olur).
         attempt.Outcome = Matcher.IsExcluded(tx)
@@ -358,9 +380,11 @@ public sealed class PaymentMatchReconciler
             if (match.PaymentId is { } paymentId) await ReturnPaymentsToGapsAsync(licenseId, [paymentId], ct);
             match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null; match.IbanConfirmedAt = null;
             match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, UnmatchAsync yeniden hesaplatır
-            // Öneri durumla birlikte boşaltılır: yeniden hesap düşerse satır tutarlı "öneri yok" kalır (sınıf özeti).
-            // Başarılı yeniden hesap bunların üstüne yazar.
+            // Öneri durumla birlikte boşaltılır: yeniden hesap düşerse satır tutarlı "öneri yok" kalır (sınıf özeti). IBAN desteği
+            // de öneri alanıdır; sürüm kalır (satırın son hesabının üreticisi, S2b planı Karar 2). Başarılı yeniden hesap bunların
+            // üstüne yazar.
             match.ProposedWpfCustomerId = null; match.Layer = PaymentMatchLayer.None; match.Confidence = 0m; match.Evidence = null;
+            match.SupportedByIbanMemory = false;
             match.UpdatedAt = now;
         }
         await _db.SaveChangesAsync(ct);
@@ -387,13 +411,11 @@ public sealed class PaymentMatchReconciler
         return ids.Count;
     }
 
-    private async Task<Guid?> ResolveWpfCustomerAsync(Guid? shopperId, Guid licenseId, CancellationToken ct)
-    {
-        if (shopperId is null) return null;
-        return await _db.ShopperBroadcasterLinks.AsNoTracking()
-            .Where(l => l.ShopperId == shopperId && l.LicenseId == licenseId && l.WpfCustomerId != null)
-            .OrderByDescending(l => l.JoinedAt).Select(l => l.WpfCustomerId).FirstOrDefaultAsync(ct);
-    }
+    /// <summary>Dekontun müşterisi: shopper'ın bu lisanstaki en yeni müşterili bağlantısından kanıt kuralıyla (sınıf özeti, "Dekontun
+    /// müşterisi bağlantıdan kanıt kuralıyla çözülür"; <see cref="ShopperCustomerResolver.PaymentCustomerAsync"/>). Bilinmiyorsa null:
+    /// çağıran "bağ yok" yoluna gider.</summary>
+    private Task<Guid?> ResolveWpfCustomerAsync(Guid? shopperId, Guid licenseId, CancellationToken ct)
+        => ShopperCustomerResolver.PaymentCustomerAsync(_db, licenseId, shopperId, ct);
 
     /// <summary>Dekontun aday hareketleri (sınıf özeti): aynı lisans, gelen, tutar eşit, ödeme anının ±2 günü; bir dekonta
     /// bağlanmış, başka müşteriye karar verilmiş (karar anı dolu, müşterisi bu dekontunki değil — KVKK silmesiyle boşalmış
@@ -459,14 +481,29 @@ public sealed class PaymentMatchReconciler
         // eşleme zaten öğretti.
         if (match.ActualWpfCustomerId is not null) return;
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now;
+        // Öneri dekontun müşterisini gösteriyor mu: satırın sürümüne göre aynı kişi ya da aynı satır (sınıf özeti, "Kişi düzeyi
+        // karşılaştırma"). Durum da doğrulanmış bağ koşulu da bunu kullanır.
+        var confirmsProposal = await SameProposalPersonAsync(match, wpfCustomerId, ct);
         match.Status = match.ProposedWpfCustomerId is null ? PaymentMatchStatus.ManualOnly
-            : match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.Contradicted;
+            : confirmsProposal ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.Contradicted;
         // Yalnız doğrulanmış bağ öğretir (sınıf özeti): tutar ve zamandan ibaret bağ başka müşterinin havalesi olabilir.
-        if (match.ProposedWpfCustomerId == wpfCustomerId || NamesPayer(PayerTokens(payerName), tx.Description))
+        if (confirmsProposal || NamesPayer(PayerTokens(payerName), tx.Description))
             await LearnIbanAsync(match, tx, wpfCustomerId, IbanMemorySource.HumanApproval, ct);
         else if (tx.CounterpartyIbanHash is not null)
             _log.LogInformation("Gölge bağdaştırma: hareket {TransactionId} ödeme {PaymentId}'e yalnız tutar ve zamanla bağlandı; "
                 + "IBAN öğrenilmedi", tx.Id, paymentId);
+    }
+
+    /// <summary>Öneri <paramref name="customer"/>'ı gösteriyor mu (sınıf özeti, "Kişi düzeyi karşılaştırma"; S2b planı Karar 4):
+    /// öneri yoksa hayır, aynı Id ise evet; değilse yalnız kişi düzeyi eşleştiricinin satırında
+    /// (<see cref="PaymentMatcher.PersonLevelVersion"/>) aynı kişiyse (<see cref="PaymentMatcher.SamePersonAsync"/>). Boş sürümlü
+    /// satır satır düzeyinde karşılaştırılır.</summary>
+    private async Task<bool> SameProposalPersonAsync(PaymentMatch match, Guid customer, CancellationToken ct)
+    {
+        if (match.ProposedWpfCustomerId is not { } proposed) return false;
+        if (proposed == customer) return true;
+        return match.MatcherVersion == PaymentMatcher.PersonLevelVersion
+            && await Matcher.SamePersonAsync(match.LicenseId, proposed, customer, ct);
     }
 
     /// <summary>Doğrulanmış bağdan IBAN'ı öğretir; aynı müşteriye kayıtlı bağı tazeler (KVKK K-6: bağ son doğrulanmış havaleden
@@ -573,8 +610,8 @@ public sealed class PaymentMatchReconciler
     /// penceresinde, gelen, açıklaması silinmemiş, dışlanmamış; tetikleyen hareket (<paramref name="triggerTransactionId"/>) hariç;
     /// <paramref name="onlyComputedBeforeBond"/> ise (tazeleme) yalnız <paramref name="customer"/>'ın bu özetteki bağından önce
     /// hesaplanmışlar (bağ arada silindiyse hiçbiri); en yeniden başlayarak en çok <see cref="MaxReevaluationsPerTrigger"/> satır.
-    /// Seçim izlenmeden. KVKK K-6: bağlantı eşleştirmeye kapalıysa koşmaz. <paramref name="customer"/> verilirse ona öneri alan
-    /// satırlar sayılır.</summary>
+    /// Seçim izlenmeden. KVKK K-6: bağlantı eşleştirmeye kapalıysa koşmaz. <paramref name="customer"/> verilirse ona ya da (kişi
+    /// düzeyi satırda) kişisine öneri alan satırlar sayılır (<see cref="SameProposalPersonAsync"/>).</summary>
     private async Task<IbanReevaluation> ReevaluateSameIbanAsync(Guid licenseId, string ibanHash, Guid triggerTransactionId,
         Guid? customer, bool onlyComputedBeforeBond, CancellationToken ct)
     {
@@ -610,7 +647,9 @@ public sealed class PaymentMatchReconciler
             if (Matcher.IsExcluded(tx)) continue;
             if (await ReevaluateUndecidedAsync(tx, ct) is not { } row) continue;
             reevaluated++;
-            if (customer is not null && row.Status == PaymentMatchStatus.Proposed && row.ProposedWpfCustomerId == customer) proposed++;
+            // Öneri müşteriyi ya da (kişi düzeyi satırda) kişisini gösteriyorsa sayılır (sınıf özeti, "Kişi düzeyi karşılaştırma").
+            if (customer is { } target && row.Status == PaymentMatchStatus.Proposed && await SameProposalPersonAsync(row, target, ct))
+                proposed++;
         }
         return new IbanReevaluation(reevaluated, proposed, targets.Count > MaxReevaluationsPerTrigger);
     }
@@ -798,8 +837,8 @@ public sealed class PaymentMatchReconciler
         public string? IbanHash { get; set; }
     }
 
-    /// <summary>Bir tetiğin yeniden değerlendirmesi: yeniden hesaplanan kararsız satır, bunlardan müşteriye öneri alan ve sınıra
-    /// takılıp takılmadığı.</summary>
+    /// <summary>Bir tetiğin yeniden değerlendirmesi: yeniden hesaplanan kararsız satır, bunlardan müşteriye ya da (kişi düzeyi
+    /// satırda) kişisine öneri alan ve sınıra takılıp takılmadığı.</summary>
     private sealed record IbanReevaluation(int Reevaluated, int ProposedToCustomer, bool More);
 
     /// <summary>Seçilen aday, seçim sorgusuyla satırın izlenerek okunması arasında başka bir karara bağlandı. Jetonun
