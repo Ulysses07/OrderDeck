@@ -65,9 +65,9 @@
            öneriye bakarak verilir, sonradan (IBAN hafızası değişince) üretilmiş önerilerin dekont kararları otomatik onayın çekim
            anındaki nüfusunda yoktur: ikisi de ayrı gösterilir. Kesir yuvarlı yüzdenin yanında: P1 tek başına 5/245'i %2,0 gösterir.
            Faz 2 satırı kapı değildir, gölge isabeti bilgisidir (§4.5): otomatik onayın kapısı pilotun sayaçlarıdır (§16-6). *@
-        <div class="mt-2 small @(s.MeetsPhase2Threshold ? "text-success" : "text-muted")" data-phase2="gate">
+        <div class="mt-2 small text-muted" data-phase2="gate">
             Faz 2 (dekont onaylı kararlar): <span data-phase2="receipt">@s.ReceiptDecisions/@(PaymentMatchSummary.Phase2MinReceiptDecisions), çelişki @s.ReceiptContradicted/@s.ReceiptDecisions (@Rate(s.ReceiptContradictionRate))</span>
-            @if (s.MeetsPhase2Threshold) { <b>✓ eşik sağlandı</b> }
+            @if (s.MeetsPhase2Threshold) { <span>· eşik sayısına ulaştı</span> }
             <span class="text-muted">— bilgi; otomatik onayın kapısı değil (§16-6)</span>
             <div class="text-muted">Eşik: ≥ @(PaymentMatchSummary.Phase2MinReceiptDecisions) dekont onaylı öneri kararı, çelişki ≤ %@(PaymentMatchSummary.Phase2MaxContradictionPercent).
                 Sayfada verilen öneri kararları eşiğe girmez: <span data-phase2="page">✓@s.PageConfirmed ✗@s.PageContradicted</span>.

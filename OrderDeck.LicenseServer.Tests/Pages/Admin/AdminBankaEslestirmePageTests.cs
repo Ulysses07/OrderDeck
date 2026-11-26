@@ -931,6 +931,34 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Faz2_esigi_tutunca_satir_kapi_gibi_gosterilmez()
+    {
+        // Tasarım §4.5: eşik gölge isabeti bilgisidir, kapı gibi gösterilmez (yeşil renk ve onay işareti yok); otomatik
+        // onayın kapısı pilotun sayaçlarıdır (§16-6).
+        var (lic, _, wpfId) = await SeedAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (var i = 0; i < PaymentMatchSummary.Phase2MinReceiptDecisions; i++)
+            {
+                var t = Tx(lic, 50m, "EFT GELEN");
+                db.BankTransactions.Add(t);
+                db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = t.Id,
+                    PaymentId = Guid.NewGuid(), Status = PaymentMatchStatus.ConfirmedByHuman, Layer = PaymentMatchLayer.UsernameInDescription,
+                    ProposedWpfCustomerId = wpfId, ActualWpfCustomerId = wpfId, DecidedAt = DateTimeOffset.UtcNow,
+                    MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            }
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var gate = (await PageAsync(client, PathFor(lic))).QuerySelector("[data-box='metrics'] [data-phase2='gate']")!;
+
+        gate.TextContent.Should().Contain("eşik sayısına ulaştı").And.NotContain("eşik sağlandı");
+        gate.ClassList.Should().NotContain("text-success");
+    }
+
+    [Fact]
     public async Task Lisans_secili_sayfa_goruntulemesi_denetime_yazilir_secimsiz_sayfa_yazmaz()
     {
         // KVKK Ö-4 (Kurul 2018/10 3-c): açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime girer. Hedef banka
