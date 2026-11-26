@@ -493,11 +493,16 @@ public sealed class PaymentMatcherTests
     [Theory]
     [InlineData("USD")]
     [InlineData("EUR")]
+    [InlineData("GBP")]
+    [InlineData("TRL")]
+    [InlineData("Tür")]
     [InlineData("")]
     public async Task TL_disi_para_birimi_dislanir(string currency)
     {
         // Tasarım §3: para birimi TL/TRY olmayan hareket müşteri havalesi sayılmaz. Açıklamadaki kullanıcı adı öneri üretmez;
-        // boş değer (ObifinClient boşu "TL" yapar, başka bir yoldan gelmiş) de dışlanır.
+        // boş değer (ObifinClient boşu "TL" yapar, başka bir yoldan gelmiş) de dışlanır. Kural izin listesidir, kara liste değil:
+        // eski kod "TRL" ve çekim işinin 3 karaktere kestiği ad ("Tür") de dışlanır; prod'da çıkarlarsa kural ölçümle genişler
+        // (S2b Görev 14, sorgu (1)).
         using var db = NewDb(); var lic = Guid.NewGuid();
         Customer(db, lic, "ornek_musteri34");
         var tx = Incoming(db, lic, "HAVALE ornek_musteri34", currency: currency);
