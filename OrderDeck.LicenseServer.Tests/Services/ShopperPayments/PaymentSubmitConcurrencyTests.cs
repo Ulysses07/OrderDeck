@@ -151,6 +151,44 @@ public sealed class PaymentSubmitConcurrencyTests : IAsyncLifetime
         (await PaymentCustomerAsync(steady.ShopperId)).Should().Be(steadyLink.CustomerId);
     }
 
+    /// <summary>
+    /// Çözümden sonra kayıttan önce hesap silme talebi commit olursa (<c>DeleteMe</c>: shopper'a <c>DeletedAt</c>, bağlantıya
+    /// <c>LeftAt</c> yazar, bağlantının müşterisine dokunmaz) dekont müşterisiz kalır. Bağlantı koşulu tutar, yalnız shopper
+    /// koşulu tutmaz (S2b planı Karar 11); koşul olmasa P silinmiş hesabın dekontunda purge'e kadar kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task Gonderim_cozdukten_sonra_hesap_silinirse_dekont_musterisiz_kalir()
+    {
+        var seed = await SeedAsync();
+        var link = await SeedLinkAsync(seed.ShopperId, seed.LicenseId);
+        var deleted = false;
+        _factory.Hook.Once(async saving =>
+        {
+            saving.ChangeTracker.Entries<Payment>().Should().Contain(
+                e => e.State == EntityState.Added && e.Entity.WpfCustomerId == link.CustomerId,
+                "kanca gönderimin kaydında, müşteri çözüldükten sonra tetiklenmeli");
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            (await db.Shoppers.Where(s => s.Id == seed.ShopperId)
+                .ExecuteUpdateAsync(u => u.SetProperty(s => s.DeletedAt, now))).Should().Be(1);
+            (await db.ShopperBroadcasterLinks.Where(l => l.Id == link.LinkId)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.LeftAt, now))).Should().Be(1);
+            deleted = true;
+        });
+
+        (await SubmitInOwnScopeAsync(seed.ShopperId, seed.LicenseId, NewPdfHash(), NewReferansNo()))
+            .Error.Should().BeNull();
+
+        deleted.Should().BeTrue();
+        (await PaymentCustomerAsync(seed.ShopperId)).Should().BeNull(
+            "hesap çözümden sonra silindi; dekont silinmiş hesabın bağının müşterisinde kalmaz");
+        using var verify = _factory.Services.CreateScope();
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().ShopperBroadcasterLinks.AsNoTracking()
+                .SingleAsync(l => l.Id == link.LinkId)).WpfCustomerId
+            .Should().Be(link.CustomerId, "bağ yerinde: yalnız shopper koşulu tutmadı");
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
     private static string NewPdfHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";

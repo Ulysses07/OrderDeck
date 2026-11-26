@@ -122,6 +122,67 @@ public sealed class PaymentRederivationRelationalTests : IAsyncLifetime
         (await PaymentAsync(s.PaymentId)).WpfCustomerId.Should().BeNull("silme dekontun müşterisini boşalttı; geri yazılmaz");
     }
 
+    /// <summary>Kanıt kaybı (<c>ReproveLinksAsync</c> ve <c>CustomerIdentityMergeJob</c>'un etkisi) yazımın okumasından sonra
+    /// commit olur: bağlantı boşalır, shopper canlı kalır, <c>Status</c>'a dokunulmaz. Yalnız bağlantı koşulu tutmaz; koşullu
+    /// UPDATE hiçbir satır yazmaz. Silme iki koşulu birden bozduğu için yukarıdaki test bu koşulu tek başına sınamaz. Koşul
+    /// olmasa P dekonta yazılırdı; okuyucu geride kalan asıl kaydı ayırt edemezdi (S2b planı Karar 11).</summary>
+    [Fact]
+    public async Task Yeniden_yazim_bagi_okuduktan_sonra_bag_bosalirsa_yazmaz()
+    {
+        var s = await SeedAsync();
+        var cut = false;
+        BetweenLinkAndChainRead(async () =>
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.ShopperBroadcasterLinks.Where(l => l.ShopperId == s.ShopperId)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.WpfCustomerId, (Guid?)null))).Should().Be(1);
+            cut = true;
+        });
+
+        var changed = await RederiveAsync(s);
+
+        cut.Should().BeTrue("kanca bağı bağlantı okumasıyla zincir okuması arasında boşaltmalı");
+        changed.Should().Be(0);
+        (await PaymentAsync(s.PaymentId)).WpfCustomerId.Should().BeNull("bağ okumadan sonra kesildi; dekonta yazılmaz");
+    }
+
+    /// <summary>Hesap silme talebi (<c>DeleteMe</c>: shopper'a <c>DeletedAt</c>, bağlantıya <c>LeftAt</c> yazar, bağlantının
+    /// müşterisine dokunmaz) yazımın okumasından sonra commit olur. Bağlantı koşulu tutar (türetme gibi <c>LeftAt</c>'e bakmaz),
+    /// yalnız shopper koşulu tutmaz; koşullu UPDATE hiçbir satır yazmaz. Koşul olmasa P silinmiş hesabın dekontunda purge'e kadar
+    /// kalırdı (S2b planı Karar 11).</summary>
+    [Fact]
+    public async Task Yeniden_yazim_bagi_okuduktan_sonra_hesap_silinirse_yazmaz()
+    {
+        var s = await SeedAsync();
+        var deleted = false;
+        BetweenLinkAndChainRead(async () =>
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            (await db.Shoppers.Where(x => x.Id == s.ShopperId)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.DeletedAt, now))).Should().Be(1);
+            (await db.ShopperBroadcasterLinks.Where(l => l.ShopperId == s.ShopperId)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.LeftAt, now))).Should().Be(1);
+            deleted = true;
+        });
+
+        var changed = await RederiveAsync(s);
+
+        deleted.Should().BeTrue("kanca silme talebini bağlantı okumasıyla zincir okuması arasında commit ettirmeli");
+        changed.Should().Be(0);
+        (await PaymentAsync(s.PaymentId)).WpfCustomerId.Should().BeNull("silinmiş hesabın dekontuna yazılmaz");
+        (await LinkCustomerAsync(s.ShopperId)).Should().Be(s.CustomerId, "bağ yerinde: yalnız shopper koşulu tutmadı");
+    }
+
+    private async Task<Guid?> LinkCustomerAsync(Guid shopperId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return (await db.ShopperBroadcasterLinks.AsNoTracking().SingleAsync(l => l.ShopperId == shopperId)).WpfCustomerId;
+    }
+
     /// <summary>Araya giren onay (ayrı bağlamda <c>Status = Approved</c>) yazımı düşürmez: koşul <c>Status</c>'a bakmaz,
     /// yazım jetonu atlar. <c>Status</c> ve <c>UpdatedAt</c> (payments/since imleci) yazılmaz.</summary>
     [Fact]
