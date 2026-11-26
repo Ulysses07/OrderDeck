@@ -137,6 +137,96 @@ public sealed class ObifinConnectionServiceConcurrencyTests : IAsyncLifetime
             .Should().Be(0, "imha kaydı geri alınan silmeyle aynı işlemdeydi");
     }
 
+    // ---- Sıfırlama reddi (S2b; tasarım §13): yeniden deneme banka kararını kayıttan önce bir kez daha sorar ----
+
+    [Fact]
+    public async Task Silmeden_once_karar_yazilirsa_sifirlama_reddedilir_hicbir_sey_silinmez()
+    {
+        // Ret denetimi bir anlık görüntüdür: servis satırları yükledikten sonra satıra karar yazılır (S3a'nın değerlendirmesi, S3b'nin
+        // "Evet"i), DELETE jetona takılır. Yeniden deneme kararı yeniden sorar ve reddeder: karar silinmez, kimlik yazılmaz, imha kaydı
+        // geri alınır. Sorulmasaydı jeton tazelenir, karar kimlik değişimiyle silinirdi.
+        var s = await SeedAsync();
+        var decide = new BeforeMatchDelete(() => DecideConcurrentlyAsync(s));
+        await using var db = NewDb(decide);
+
+        var act = () => Svc(db).UpsertWithResultAsync(s.LicenseId, "", $"api-{Guid.NewGuid():N}@x", password: null, apiKey: null,
+            CancellationToken.None, allowShadowReset: true);
+
+        (await act.Should().ThrowAsync<ShadowResetRefusedException>()).Which.Message
+            .Should().Be(ObifinConnectionService.ShadowResetRefusedMessage);
+        decide.Fired.Should().Be(1);
+        db.ChangeTracker.HasChanges().Should().BeFalse("düşen sıfırlama kapsamın sonraki bir kaydında tamamlanmaz");
+        await using var verify = NewDb(interceptor: null);
+        (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Decision
+            .Should().Be(PaymentMatchDecision.Approved, "karar silinmedi");
+        (await verify.BankTransactions.AsNoTracking().CountAsync(t => t.Id == s.TransactionId)).Should().Be(1);
+        (await verify.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == s.LicenseId)).UserCode
+            .Should().Be(s.UserCode, "kimlik yazılmadı");
+        (await verify.DataDestructionRecords.AsNoTracking().CountAsync(r => r.LicenseId == s.LicenseId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Silmeden_once_banka_odemesi_ve_karar_yazilirsa_reddedilir()
+    {
+        // Banka onayı ödemesini yazar ve satıra insan kararını (dekont bağı, müşteri, karar anı) yazar: DELETE jetona takılır, yeniden
+        // deneme banka ödemesini görür ve reddeder. Satırın Decision'ı burada None kalır: ret yalnız ödemeden gelir (karar sütununu
+        // öbür test sınar).
+        var s = await SeedAsync();
+        var paymentId = Guid.NewGuid();
+        var approve = new BeforeMatchDelete(() => ApproveFromBankConcurrentlyAsync(s, paymentId));
+        await using var db = NewDb(approve);
+
+        var act = () => Svc(db).UpsertWithResultAsync(s.LicenseId, "", $"api-{Guid.NewGuid():N}@x", password: null, apiKey: null,
+            CancellationToken.None, allowShadowReset: true);
+
+        (await act.Should().ThrowAsync<ShadowResetRefusedException>()).Which.Message
+            .Should().Be(ObifinConnectionService.ShadowResetRefusedMessage);
+        approve.Fired.Should().Be(1);
+        db.ChangeTracker.HasChanges().Should().BeFalse();
+        await using var verify = NewDb(interceptor: null);
+        var match = await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId);
+        (match.PaymentId, match.Decision).Should().Be(((Guid?)paymentId, PaymentMatchDecision.None), "satır silinmedi");
+        (await verify.Payments.AsNoTracking().CountAsync(p => p.Id == paymentId && p.Source == PaymentSource.Bank)).Should().Be(1);
+        (await verify.BankTransactions.AsNoTracking().CountAsync(t => t.Id == s.TransactionId)).Should().Be(1);
+        (await verify.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == s.LicenseId)).UserCode
+            .Should().Be(s.UserCode, "kimlik yazılmadı");
+        (await verify.DataDestructionRecords.AsNoTracking().CountAsync(r => r.LicenseId == s.LicenseId)).Should().Be(0);
+    }
+
+    /// <summary>Karar katmanına giriş gibi (S3a'nın değerlendirmesi, S3b'nin "Evet"i): satıra ayrı bir bağlamda karar yazar, jetonu
+    /// ilerletir.</summary>
+    private async Task DecideConcurrentlyAsync(Seeded s)
+    {
+        await using var other = NewDb(interceptor: null);
+        var m = await other.PaymentMatches.SingleAsync(x => x.Id == s.MatchId);
+        m.Decision = PaymentMatchDecision.Approved;
+        m.DecisionRevision++;
+        m.UpdatedAt = DateTimeOffset.UtcNow;
+        await other.SaveChangesAsync();
+    }
+
+    /// <summary>Banka onayı gibi (S3b, tasarım §2.3): ayrı bir bağlamda hareketin Source = Bank ödemesini yazar ve satıra insan kararını
+    /// (ödeme bağı, müşteri, karar anı) yazar; satırın Decision'ına dokunmaz, jetonu ilerletir.</summary>
+    private async Task ApproveFromBankConcurrentlyAsync(Seeded s, Guid paymentId)
+    {
+        await using var other = NewDb(interceptor: null);
+        var tx = await other.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == s.TransactionId);
+        var now = DateTimeOffset.UtcNow;
+        other.Payments.Add(new Payment
+        {
+            Id = paymentId, LicenseId = s.LicenseId, Source = PaymentSource.Bank, PayerName = "", Amount = tx.Amount,
+            PaidAt = tx.OccurredAt, ReferansNo = $"bank:{tx.Id:N}:1", BankTransactionId = tx.Id, Status = PaymentStatus.Approved,
+            ApprovalSource = PaymentApprovalSource.BankHuman, ApprovedAt = now, CreatedAt = now, UpdatedAt = now,
+        });
+        var m = await other.PaymentMatches.SingleAsync(x => x.Id == s.MatchId);
+        m.PaymentId = paymentId;
+        m.ActualWpfCustomerId = Guid.NewGuid();
+        m.DecidedAt = now;
+        m.Status = PaymentMatchStatus.ManualOnly;
+        m.UpdatedAt = now;
+        await other.SaveChangesAsync();
+    }
+
     /// <summary>Saklama işi ya da temizlik komutu gibi: eşleşme satırını ayrı bir bağlamda siler.</summary>
     private async Task DeleteMatchConcurrentlyAsync(Seeded s)
     {
