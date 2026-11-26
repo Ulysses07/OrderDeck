@@ -7,7 +7,7 @@ using OrderDeck.LicenseServer.Domain;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>Dekont onayından sonra gölge bağdaştırma (spec §6). Onay isteği bağdaştırmayı beklemez ve onun hatasıyla
-/// düşmez: <c>PanelPaymentsController.Approve</c> onay kaydedildikten sonra bu işi <see cref="ApprovalDelay"/> sonrasına
+/// düşmez: <c>PaymentApprovalService.ApproveAsync</c> onay kaydedildikten sonra bu işi <see cref="ApprovalDelay"/> sonrasına
 /// zamanlar.
 /// <para>Yalnız hâlâ Approved olan ödeme ve eşleştirmeye açık Obifin bağlantısı
 /// (<see cref="ObifinConnectionService.MatchingActive"/>) olan lisans işlenir: bağlantısız lisansta banka hareketi yoktur, her

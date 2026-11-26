@@ -10,6 +10,7 @@ using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.App.Services;
 
@@ -2374,7 +2375,7 @@ public sealed class PaymentRequestService
             return (productTotal, null, "");
         }
 
-        if (productTotal >= shipping.FreeShippingThreshold!.Value)
+        if (ShippingRules.ReachesThreshold(productTotal, shipping.FreeShippingThreshold!.Value))
         {
             return (productTotal, null, "Ücretsiz kargo");
         }

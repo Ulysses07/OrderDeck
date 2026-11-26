@@ -44,7 +44,7 @@ public readonly record struct SyncStatusSnapshot(
 /// yetişemeyen süreç de çevrimdışı görünebilsin diye durum satırının son dayanağı (I-1).</para>
 ///
 /// <para><b>Gönderim ilerlemesi (D2 incelemesi I-3):</b> bekleyen sayıya (D1) giren her gönderim
-/// servisi (müşteri, oturum+etiket, ödeme, kargo) kurulurken kendini kaydeder
+/// servisi (müşteri, oturum+etiket, ödeme, kargo, bekleyen ödeme kaydı) kurulurken kendini kaydeder
 /// (<see cref="RegisterPush"/>) ve her başarılı turunda — gönderdiyse ya da gönderecek bir şey
 /// yoksa — <see cref="MarkPushOk"/> yazar. Çekme iyiyken gönderimi düşen bilgisayar durum satırında
 /// sağlıklı görünmesin.</para>

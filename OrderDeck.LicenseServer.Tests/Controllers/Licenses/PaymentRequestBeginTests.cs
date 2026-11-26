@@ -1270,6 +1270,48 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         record.ShippingSettingsVersion.Should().Be(version);
     }
 
+    /// <summary>Eşiğin sınırı: 1 kuruş altında kargo istenir, kargosuz tutar 409 <c>settings-stale</c>.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Esigin_bir_kurus_altinda_kargo_istenir(bool withFee)
+    {
+        var (kit, owner, order, version) = await ShippingCaseAsync(shippingOn: true, productTotal: 499.99m);
+        var body = Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner], orderIds: [order], productTotal: 499.99m,
+            totalBeforeBalance: withFee ? 559.99m : 499.99m, shippingSettingsVersion: version);
+
+        if (withFee)
+            (await kit.RecordAsync((await BeginOkAsync(kit, body)).RecordId))!.TotalBeforeBalance.Should().Be(559.99m);
+        else
+            await SettingsStaleAsync(await kit.BeginAsync(body));
+    }
+
+    public static TheoryData<string, decimal?, decimal?> HalfShippingSettings => new()
+    {
+        { "yalniz-esik", 500m, null },
+        { "yalniz-ucret", null, 60m },
+        { "ucret-eksi", 500m, -60m },
+    };
+
+    /// <summary>Yarım ya da eksi ücretli ayar (yazım uçları reddeder; satırda bulunursa) kapalı sayılır: kargosuz tutar
+    /// 200 alır. Sıfır ücret ile sıfır ve eksi eşik bu uçta ayırt edilemez (kural sorulmasa da kargo 0 çıkar); sınırları
+    /// <c>ShippingRulesTests</c>'te.</summary>
+    [Theory]
+    [MemberData(nameof(HalfShippingSettings))]
+    public async Task Yarim_ya_da_eksi_ucretli_kargo_ayari_kapali_sayilir(
+        string @case, decimal? threshold, decimal? fee)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        await kit.SeedShippingAsync(2, threshold, fee);
+        var owner = Kit.NewId();
+        var order = await kit.SeedOrderAsync(owner, 490m);
+
+        var lease = await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [order.Id], productTotal: 490m, totalBeforeBalance: 490m, shippingSettingsVersion: 2));
+
+        (await kit.RecordAsync(lease.RecordId))!.TotalBeforeBalance.Should().Be(490m, @case);
+    }
+
     // ── Denetim sırası ───────────────────────────────────────────────────────
 
     /// <summary>

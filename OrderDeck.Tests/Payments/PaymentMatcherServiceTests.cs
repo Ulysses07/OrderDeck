@@ -122,6 +122,48 @@ public sealed class PaymentMatcherServiceTests
     }
 
     [Fact]
+    public void Match_exactly_at_threshold_is_free_but_still_reports_configured_fee()
+    {
+        var (svc, labels, _, db, _) = Build(threshold: 5000m, fee: 150m);
+        using var _2 = db;
+        labels.Insert(NewProductLabel(5000m));
+
+        svc.Match(CustomerId, SessionId, dekontAmount: 5000m).Should().Be(new PaymentMatcherService.MatchResult(
+            PaymentMatcherService.MatchOutcome.Match, 5000m, 5000m, 5000m, 150m));
+        svc.Match(CustomerId, SessionId, dekontAmount: 5150m).Should().Be(new PaymentMatcherService.MatchResult(
+            PaymentMatcherService.MatchOutcome.Mismatch, 5000m, 5000m, 5150m, 150m));
+    }
+
+    [Fact]
+    public void Match_one_kurus_below_threshold_expects_fee()
+    {
+        var (svc, labels, _, db, _) = Build(threshold: 5000m, fee: 150m);
+        using var _2 = db;
+        labels.Insert(NewProductLabel(4999.99m));
+
+        svc.Match(CustomerId, SessionId, dekontAmount: 4999.99m).Should().Be(new PaymentMatcherService.MatchResult(
+            PaymentMatcherService.MatchOutcome.ShippingShortage, 4999.99m, 5149.99m, 4999.99m, 150m));
+        svc.Match(CustomerId, SessionId, dekontAmount: 5149.99m).Should().Be(new PaymentMatcherService.MatchResult(
+            PaymentMatcherService.MatchOutcome.Match, 4999.99m, 5149.99m, 5149.99m, 150m),
+            "eşik ürün toplamıyla ölçülür, kargolu dekont tutarıyla değil");
+    }
+
+    [Theory]
+    [InlineData(5000, null)]
+    [InlineData(null, 150)]
+    [InlineData(0, 150)]
+    [InlineData(5000, 0)]
+    public void Match_half_configured_shipping_is_treated_as_disabled(int? threshold, int? fee)
+    {
+        var (svc, labels, _, db, _) = Build(threshold, fee);
+        using var _2 = db;
+        labels.Insert(NewProductLabel(3000m));
+
+        svc.Match(CustomerId, SessionId, dekontAmount: 3000m).Should().Be(new PaymentMatcherService.MatchResult(
+            PaymentMatcherService.MatchOutcome.Match, 3000m, 3000m, 3000m, null));
+    }
+
+    [Fact]
     public void Match_below_threshold_with_fee_included_is_Match()
     {
         var (svc, labels, _, db, _) = Build(threshold: 5000m, fee: 150m);

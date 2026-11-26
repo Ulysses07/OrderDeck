@@ -173,6 +173,8 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.PdfParsing.IPdfDekontParser,
             OrderDeck.PdfParsing.PdfDekontParser>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentSubmissionService>();
+        // Dekont kararının (onay/ret) tek çekirdeği: karar kaydı ve yan etkileri.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Payments.PaymentApprovalService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.ShopperPurgeService>();
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Privacy.TcknProtector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
@@ -362,7 +364,7 @@ public class Program
         // talepler kapatılıp silinebilir.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchMetrics>();
-        // Dekont onayı bu işi ApprovalDelay sonrasına zamanlar (PanelPaymentsController.Approve); tekrarlayan iş değil.
+        // Dekont onayı bu işi ApprovalDelay sonrasına zamanlar (PaymentApprovalService.ApproveAsync); tekrarlayan iş değil.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconcileJob>();
         // İstisna: sink çekim işinin bağlamını PAYLAŞMAZ — koşu başına kendi alt kapsamını açar (bkz. sınıf özeti).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.IBankTransactionSink,

@@ -34,5 +34,7 @@
     <None Include="..\OrderDeck.Shared\Sales\LabelRules.vectors.json" Link="Sales\LabelRules.vectors.json" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="..\OrderDeck.Tests\Sales\Rules\LabelRulesVectors.cs" Link="Sales\Rules\LabelRulesVectors.cs" />
     <Compile Include="..\OrderDeck.Tests\Sales\Rules\LabelRulesVectorTests.cs" Link="Sales\Rules\LabelRulesVectorTests.cs" />
+    <!-- Ortak kargo ücreti ve eşik kuralının (ShippingRules) sınır tablosu. -->
+    <Compile Include="..\OrderDeck.Tests\Sales\Rules\ShippingRulesTests.cs" Link="Sales\Rules\ShippingRulesTests.cs" />
   </ItemGroup>
 </Project>
