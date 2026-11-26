@@ -102,7 +102,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (<see cref="BankMatchSweepJob"/>). Seçimler kilitli satırı baştan eler: eşleştirici ona yine dokunmazdı, ama seçilen satır tetiğin
 /// ve koşunun kotasında yer kaplardı. S2b'de prod'da böyle satır yoktur (okuyucu önce: satırı S3a yazar); tasarım §3'ün
 /// <c>Unmatched → Awaiting</c> yeniden değerlendirmesi S3a'da ayrı yoldan gelir. Elle eşleme ve kaldırma admin eylemidir, kilidin
-/// dışındadır (reddi S3b).</para>
+/// dışındadır (reddi S3b). Kaldırmadan sonraki yeniden hesap ise eşleştiricinin kilidine tabidir: karar katmanındaki satır
+/// kaldırmanın boşalttığı öneri alanlarıyla (öneri yok) kalır, <see cref="UnmatchAsync"/> yine true döner ve sayfa "öneri yeniden
+/// hesaplandı" der. S2b'de böyle satır olmadığı için uykudadır; S3a'da admin reddiyle birlikte ele alınır.</para>
 /// <para><b>Kişi düzeyi karşılaştırma (tasarım §2.4; S2b).</b> Önerinin dekontun ya da elle eşlemenin müşterisini gösterip
 /// göstermediği satırın sürümüne bağlıdır (<see cref="PaymentMatch.MatcherVersion"/>, <see cref="SameProposalPersonAsync"/>): kişi
 /// düzeyi eşleştiricinin satırında (<see cref="PaymentMatcher.PersonLevelVersion"/>) aynı kişi yeter
@@ -198,7 +200,8 @@ public sealed class PaymentMatchReconciler
     /// <param name="actor">Kaldırma IBAN bağını silerse (<see cref="RewindIbanConfirmationAsync"/>) imha kaydının yapanı: yönetici
     /// sayfası <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın).
     /// Boşsa <see cref="DataDestruction.AdminActor"/>.</param>
-    /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu); false: kaldırma kaydedildi, öneri yeniden
+    /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu; karar katmanındaki satırda eşleştirici satıra
+    /// dokunmadan döner, yine true: sınıf özeti, "Karar katmanı kilidi"); false: kaldırma kaydedildi, öneri yeniden
     /// hesaplanmadı — hesap düştü ya da bağlantı eşleştirmeye kapalı (sınıf özeti). Kaldırma bir IBAN bağını sildiyse o bağdan
     /// gelen öneriler de geri alınır; bunun düşmesi dönüşü değiştirmez (telafi taraması tamamlar).</returns>
     /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; iki denemede de çakışma; ya da yeniden denemede
