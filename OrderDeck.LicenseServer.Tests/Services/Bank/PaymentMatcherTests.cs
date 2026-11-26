@@ -28,12 +28,20 @@ public sealed class PaymentMatcherTests
         => new(db, Options.Create(new BankOptions { ExcludedTransactionCodes = excluded.Length == 0 ? ["CCP"] : excluded }),
             NullLogger<PaymentMatcher>.Instance);
 
-    private static WpfCustomerProjection Customer(LicenseDbContext db, Guid lic, string username, string? fullName = null, string? displayName = null)
+    private static WpfCustomerProjection Customer(LicenseDbContext db, Guid lic, string username, string? fullName = null, string? displayName = null,
+        string? groupId = null, string platform = "youtube")
     {
-        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = fullName, DisplayName = displayName, UpdatedAt = DateTimeOffset.UtcNow };
+        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = platform, Username = username, FullName = fullName, DisplayName = displayName, GroupId = groupId, UpdatedAt = DateTimeOffset.UtcNow };
         db.WpfCustomerProjections.Add(c); db.SaveChanges();
         return c;
     }
+
+    /// <summary>Üretilmiş 64 hex IBAN özeti (InMemory'de denetim yok; biçim gerçeğinin aynısı).</summary>
+    private static string NewHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    /// <summary>Id'si "N" biçiminde ordinal en küçük satır: kişi birden çok satırıyla vurulunca önerilen satır (S2b planı Karar 1).</summary>
+    private static WpfCustomerProjection SmallestN(params WpfCustomerProjection[] rows)
+        => rows.MinBy(r => r.Id.ToString("N"), StringComparer.Ordinal)!;
 
     private static BankTransaction Incoming(LicenseDbContext db, Guid lic, string description, string? ibanHash = null, string code = "FT",
         string currency = "TL")
@@ -492,6 +500,174 @@ public sealed class PaymentMatcherTests
         m.Status.Should().Be(PaymentMatchStatus.NoProposal); m.ProposedWpfCustomerId.Should().BeNull();
         m.Evidence.Should().Be($"excluded:{PaymentMatcher.CurrencyExclusion}").And.Be("excluded:currency", "kanıt biçimi sözleşmedir");
         matcher.IsExcluded(tx).Should().BeTrue();
+    }
+
+    // ── Kişi düzeyi (S2b; tasarım §2 "Kişi", §2.4): kişi aynı GroupId'yi (ham değer, ordinal) paylaşan asıl kayıtlardır.
+
+    [Fact]
+    public async Task Ayni_kisinin_iki_satiri_ayni_kullanici_adiyla_tek_oneri_ve_surum_2()
+    {
+        // Satır düzeyinde aynı kişinin IG ve TT satırı "ambiguous:2" üretir: havale hiç sorulmadan "Eşleşmeyen"e düşerdi.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Customer(db, lic, "ornek_musteri34", groupId: group, platform: "instagram");
+        var tt = Customer(db, lic, "ornek_musteri34", groupId: group, platform: "tiktok");
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34"), CancellationToken.None);
+
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.Evidence).Should().Be((PaymentMatchStatus.Proposed,
+            (Guid?)SmallestN(ig, tt).Id, PaymentMatchLayer.UsernameInDescription, PaymentMatcher.UsernameConfidence,
+            "username=ornekmusteri34"));
+        m.MatcherVersion.Should().Be(PaymentMatcher.PersonLevelVersion).And.Be(2, "sürüm sözleşmedir: boş = satır düzeyi, 2 = kişi düzeyi");
+        m.SupportedByIbanMemory.Should().BeFalse();
+
+        // Vurulan satırlar arasında IBAN bağının satırı varsa o önerilir (Karar 1): bağ "N" sırasında büyük olan satırda.
+        var bonded = ReferenceEquals(SmallestN(ig, tt), ig) ? tt : ig;
+        var hash = NewHash();
+        IbanMemory(db, lic, bonded.Id, hash);
+        var withIban = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34", hash), CancellationToken.None);
+        (withIban.ProposedWpfCustomerId, withIban.Confidence, withIban.Evidence, withIban.SupportedByIbanMemory).Should().Be(
+            ((Guid?)bonded.Id, PaymentMatcher.BothConfidence, "username=ornekmusteri34;iban-memory", true));
+
+        // Belirsizlik kişi sayar, satır değil: aynı kullanıcı adı üç satırda, iki kişide.
+        var other = Guid.NewGuid();
+        Customer(db, other, "ornek_musteri34", groupId: group, platform: "instagram");
+        Customer(db, other, "ornek_musteri34", groupId: group, platform: "tiktok");
+        Customer(db, other, "ornek_musteri34");
+        var ambiguous = await Matcher(db).MatchAsync(Incoming(db, other, "HAVALE ornek_musteri34"), CancellationToken.None);
+        (ambiguous.Status, ambiguous.ProposedWpfCustomerId, ambiguous.Evidence).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null,
+            "ambiguous:2"));
+    }
+
+    [Fact]
+    public async Task Kullanici_adi_bir_satiri_IBAN_ayni_kisinin_obur_satirini_gosterirse_iki_katman_destekler()
+    {
+        // Satır düzeyinde kullanıcı adı IG satırını, IBAN aynı kişinin TT satırını gösterince "conflict" yazılırdı.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Customer(db, lic, "ornek_musteri34", groupId: group, platform: "instagram");
+        var tt = Customer(db, lic, "baska_hesap77", groupId: group, platform: "tiktok");
+        var other = Customer(db, lic, "mehmet_k");
+        var samePerson = NewHash(); var otherPerson = NewHash();
+        IbanMemory(db, lic, tt.Id, samePerson); IbanMemory(db, lic, other.Id, otherPerson);
+
+        var both = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34", samePerson), CancellationToken.None);
+        var conflict = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34", otherPerson), CancellationToken.None);
+
+        (both.Status, both.ProposedWpfCustomerId, both.Layer, both.Confidence, both.Evidence).Should().Be((PaymentMatchStatus.Proposed,
+            (Guid?)ig.Id, PaymentMatchLayer.UsernameInDescription, PaymentMatcher.BothConfidence, "username=ornekmusteri34;iban-memory"),
+            "öneri kullanıcı adının satırıdır, IBAN aynı kişide");
+        both.SupportedByIbanMemory.Should().BeTrue();
+        (conflict.Status, conflict.ProposedWpfCustomerId, conflict.Evidence).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null,
+            "conflict:username=ornekmusteri34,iban-memory"), "bağ başka kişide: biçim aynen (KVKK araması anahtardan sonra ',' bekler)");
+        conflict.SupportedByIbanMemory.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("G1", "g1")]
+    [InlineData("G1", "G1 ")]
+    [InlineData("  ", "  ")]
+    [InlineData(null, "")]
+    public async Task GroupId_ordinal_bos_ya_da_bosluk_gruplanmamis(string? a, string? b)
+    {
+        // (koruma) GroupId ham değerde ordinal karşılaştırılır (kırpma ve harf katlaması yok); boş ya da yalnız boşluk
+        // gruplanmamıştır (PersonMembership.IsGrouped). İki satır iki kişidir: kullanıcı adı belirsiz kalır.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        Customer(db, lic, "ornek_musteri34", groupId: a, platform: "instagram");
+        Customer(db, lic, "ornek_musteri34", groupId: b, platform: "tiktok");
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34"), CancellationToken.None);
+
+        (m.Status, m.ProposedWpfCustomerId, m.Evidence).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null, "ambiguous:2"));
+    }
+
+    [Fact]
+    public async Task Ad_katmani_ayni_kisinin_iki_satirini_tek_kisi_sayar()
+    {
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Customer(db, lic, "xk_77", fullName: "Deneme Alıcı", groupId: group, platform: "instagram");
+        var tt = Customer(db, lic, "yz_88", fullName: "Deneme Alıcı", groupId: group, platform: "tiktok");
+        const string aciklama = "T.GARANTI BANKASI /IBAN MERKEZ SUBESI gonderilen havale DENEME ALICI odeme";
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, aciklama), CancellationToken.None);
+
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.Evidence).Should().Be((PaymentMatchStatus.Proposed,
+            (Guid?)SmallestN(ig, tt).Id, PaymentMatchLayer.NameAmount, PaymentMatcher.NameConfidence, "name:2"));
+
+        // Aynı adı başka bir kişi de taşıyınca belirsizlik kişi sayar: üç satır, iki kişi.
+        Customer(db, lic, "qw_99", fullName: "Deneme Alıcı");
+        var ambiguous = await Matcher(db).MatchAsync(Incoming(db, lic, aciklama), CancellationToken.None);
+        (ambiguous.Status, ambiguous.ProposedWpfCustomerId, ambiguous.Evidence).Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null,
+            "ambiguous-name:2"));
+    }
+
+    [Fact]
+    public async Task Her_yazim_surum_2_yazar()
+    {
+        // Sürüm satırın son hesabının üreticisidir (S2b planı Karar 2): dışlama, belirsizlik, sinyalsizlik ve yeniden
+        // değerlendirme de yazar.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        Customer(db, lic, "ornek_musteri"); Customer(db, lic, "ornek_musteri34"); Customer(db, lic, "mehmet_k");
+        var matcher = Matcher(db);
+
+        var excluded = await matcher.MatchAsync(Incoming(db, lic, "Firma:1234 (ornek_musteri34) POS", code: "CCP"), CancellationToken.None);
+        var ambiguous = await matcher.MatchAsync(Incoming(db, lic, "HAVALE ornek musteri 34"), CancellationToken.None);
+        var none = await matcher.MatchAsync(Incoming(db, lic, "HAVALE aciklamasiz"), CancellationToken.None);
+        var reevaluated = await matcher.ReevaluateAsync(Incoming(db, lic, "HAVALE mehmet_k"), CancellationToken.None);
+
+        new[] { excluded, ambiguous, none, reevaluated }.Select(r => r.Evidence).Should().Equal(
+            "excluded:CCP", "ambiguous:2", "no-signal", "username=mehmetk" + PaymentMatcher.ReevaluationEvidenceSuffix);
+        (await db.PaymentMatches.AsNoTracking().Select(r => r.MatcherVersion).ToListAsync()).Should().HaveCount(4)
+            .And.OnlyContain(v => v == PaymentMatcher.PersonLevelVersion);
+    }
+
+    [Fact]
+    public async Task Ayni_kisi_ayni_grup_ya_da_ayni_Id_aday_disi_satir_satir_duzeyi()
+    {
+        // Bağdaştırıcı kişi düzeyi öneriyi kişiyle karşılaştırır (S2b Görev 7). Aday olmayan satırda (silinmiş, kopya, başka
+        // lisans, bilinmeyen Id) kişi okunmaz: karşılaştırma satır düzeyidir.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Customer(db, lic, "ornek_musteri34", groupId: group, platform: "instagram");
+        var tt = Customer(db, lic, "baska_hesap77", groupId: group, platform: "tiktok");
+        var alone = Customer(db, lic, "mehmet_k");
+        var purged = Customer(db, lic, "silinen_hesap", groupId: group);
+        var copy = Customer(db, lic, "kopya_hesap", groupId: group);
+        var foreign = Customer(db, Guid.NewGuid(), "yabanci_hesap", groupId: group);
+        purged.PurgedAt = DateTimeOffset.UtcNow; copy.MergedIntoId = ig.Id; db.SaveChanges();
+        var matcher = Matcher(db);
+
+        (await matcher.SamePersonAsync(lic, ig.Id, tt.Id, CancellationToken.None)).Should().BeTrue("aynı grup");
+        (await matcher.SamePersonAsync(lic, tt.Id, ig.Id, CancellationToken.None)).Should().BeTrue("aynı grup");
+        (await matcher.SamePersonAsync(lic, alone.Id, alone.Id, CancellationToken.None)).Should().BeTrue("aynı Id");
+        (await matcher.SamePersonAsync(lic, ig.Id, alone.Id, CancellationToken.None)).Should().BeFalse("gruplanmamış satır kendi kişisidir");
+        foreach (var outside in new[] { purged.Id, copy.Id, foreign.Id, Guid.NewGuid() })
+        {
+            (await matcher.SamePersonAsync(lic, ig.Id, outside, CancellationToken.None)).Should().BeFalse("aday dışı satır: satır düzeyi");
+            (await matcher.SamePersonAsync(lic, outside, ig.Id, CancellationToken.None)).Should().BeFalse("aday dışı satır: satır düzeyi");
+            (await matcher.SamePersonAsync(lic, outside, outside, CancellationToken.None)).Should().BeTrue("aday dışı satırda da aynı Id");
+        }
+    }
+
+    [Fact]
+    public async Task Silme_oneriyi_bosaltinca_IBAN_destegi_de_gider_surum_kalir()
+    {
+        // KVKK silmesi ve IBAN talebi (BankSubjectScrub.MatchForCustomer) kararsız önerinin müşterisini boşaltınca satır
+        // eşleştiricinin "öneri yok" biçimine iner; IBAN desteği de öneri alanıdır (tasarım §6 "decline", S2b planı Karar 2).
+        // Sürüm kalır: silme yeniden hesap değildir, satır ölçümde bloğunu değiştirmez.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var c = Customer(db, lic, "ornek_musteri34");
+        var hash = NewHash();
+        IbanMemory(db, lic, c.Id, hash);
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34", hash), CancellationToken.None);
+        (m.Status, m.SupportedByIbanMemory).Should().Be((PaymentMatchStatus.Proposed, true), "ön koşul");
+
+        BankSubjectScrub.MatchForCustomer(m, c.Id, DateTimeOffset.UtcNow);
+
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.Evidence, m.SupportedByIbanMemory).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, (string?)null, false));
+        m.MatcherVersion.Should().Be(PaymentMatcher.PersonLevelVersion, "(koruma) silme sürümü değiştirmez");
     }
 
     [Theory]

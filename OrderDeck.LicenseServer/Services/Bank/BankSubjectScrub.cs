@@ -55,10 +55,12 @@ public static class BankSubjectScrub
             match.ProposedWpfCustomerId = null;
             if (match.Status == PaymentMatchStatus.Proposed)
             {
-                // Kararsız öneri kişiyle birlikte gider: satır tutarlı "öneri yok" durumuna iner.
+                // Kararsız öneri kişiyle birlikte gider: satır tutarlı "öneri yok" durumuna iner. IBAN desteği de öneri alanıdır
+                // (eşleştirici öneri yokken hep false yazar); eşleştiricinin sürümü kalır, silme yeniden hesap değildir.
                 match.Status = PaymentMatchStatus.NoProposal;
                 match.Layer = PaymentMatchLayer.None;
                 match.Confidence = 0m;
+                match.SupportedByIbanMemory = false;
             }
             else if (match.Status == PaymentMatchStatus.ManualOnly)
             {

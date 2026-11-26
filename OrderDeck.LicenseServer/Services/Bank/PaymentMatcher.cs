@@ -4,18 +4,33 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
 /// Gölge eşleştirme (spec §6). Yalnız <see cref="PaymentMatch"/> yazar; Payment'a dokunmaz.
-/// Katmanlar: (1) açıklamada kullanıcı adı — tek aday 0.90; (2) IBAN hafızası 0.85; ikisi aynı müşteriyi
+/// Katmanlar: (1) açıklamada kullanıcı adı — tek kişi 0.90; (2) IBAN hafızası 0.85; ikisi aynı kişiyi
 /// gösterirse 0.98; çelişirse öneri yok; (3) ad benzerliği yalnız 0.50 (17.09 kararı: tutar ayırt edici değil).
-/// Belirsizlik (çoklu aday) her zaman "öneri yok" — gölge modda yanlış öneri ucuz ama ölçümü kirletir.
+/// Belirsizlik (birden çok kişi) her zaman "öneri yok" — gölge modda yanlış öneri ucuz ama ölçümü kirletir.
 /// <para>Aday yalnız aynı lisansın silinmemiş (<c>PurgedAt == null</c>) müşterisidir; IBAN hafızası da ancak böyle
-/// bir müşteriyi gösteriyorsa sayılır. Aday listesi (anahtar + token'lar) örnek başına lisans başına BİR kez okunup
+/// bir müşteriyi gösteriyorsa sayılır. Aday listesi (anahtar + token'lar + kişi) örnek başına lisans başına BİR kez okunup
 /// hesaplanır — eşleştirici scoped'dur (sink'in bir çekim koşusu boyunca açık alt kapsamı, bir tarama koşusu ya da bir
 /// istek), partideki her hareket için müşteri tablosu yeniden okunmaz.</para>
+/// <para><b>Kişi (tasarım §2 "Kişi", §2.4; S2b).</b> Katmanlar satır değil kişi sayar. Kişi, aynı <c>GroupId</c>'yi paylaşan
+/// asıl kayıtlardır: ham değer ordinal karşılaştırılır (kırpma ve harf katlaması yok), boş ya da yalnız boşluk gruplanmamıştır
+/// (<see cref="PersonMembership.IsGrouped"/>); anahtar <see cref="PaymentPersonKey.ForCanonical"/>, aday sorgusunun okuduğu
+/// <c>GroupId</c>'den. Aynı kişinin IG ve TT satırı belirsizlik, kullanıcı adının bir satırı ile IBAN'ın öbür satırı çelişki
+/// üretmez. Kanıttaki sayılar (<c>ambiguous:{n}</c>, <c>ambiguous-name:{n}</c>) kişi sayısıdır. Kişi bir asıl kaydıyla önerilir:
+/// kullanıcı adında vuran satır, kişinin birden çok satırı vurduysa IBAN bağının satırı aralarındaysa o, yoksa en küçük Id; yalnız
+/// IBAN'da bağın satırı; ad katmanında en küçük Id. "En küçük" Id'nin "N" biçiminin ordinal karşılaştırmasıdır ve bellekte
+/// yapılır, SQL'de sıralanmaz (uniqueidentifier sırası <see cref="Guid.CompareTo(Guid)"/>'nunkinden farklıdır); kanıttaki
+/// kullanıcı adı anahtarı önerilen satırınkidir. Her yazım satıra <see cref="PersonLevelVersion"/> yazar
+/// (<see cref="PaymentMatch.MatcherVersion"/>): dışlama, belirsizlik ve yeniden değerlendirme dahil; sürüm satırın son hesabının
+/// üreticisidir, boş sürüm satır düzeyi eşleştiricinin (S2b öncesi) satırıdır. <see cref="PaymentMatch.SupportedByIbanMemory"/>'yi
+/// de eşleştirici yazar: öneri kişisi IBAN hafızasında (0.98 ve 0.85). İki müşteri Id'sinin aynı kişi olduğunu
+/// <see cref="SamePersonAsync"/> aynı aday listesinden söyler.</para>
 /// <para><b>Para birimi (tasarım §3).</b> Para birimi TL/TRY olmayan hareket müşteri havalesi sayılmaz: yön, sıfır tutar ve
 /// dışlanan koddan sonra dışlanır, kanıtı <c>excluded:currency</c> (<see cref="CurrencyExclusion"/>). Değer
 /// (<see cref="BankTransaction.Currency"/>) <see cref="ObifinClient"/>'tan kırpılmış ama harfi normalleştirilmemiş gelir, boşu
@@ -91,6 +106,10 @@ public sealed class PaymentMatcher
     /// <summary>Para birimi TL/TRY olmayan hareketin dışlama nedeni (kanıt <c>excluded:currency</c>; sınıf özeti, "Para birimi").</summary>
     public const string CurrencyExclusion = "currency";
 
+    /// <summary>Kişi düzeyi eşleştiricinin sürümü (<see cref="PaymentMatch.MatcherVersion"/>; sınıf özeti, "Kişi"). Boş sürüm satır
+    /// düzeyi eşleştiricinin (S2b öncesi) satırıdır.</summary>
+    public const int PersonLevelVersion = 2;
+
     public async Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct)
     {
         try
@@ -117,6 +136,19 @@ public sealed class PaymentMatcher
     /// <summary>Lisansın önbellekteki aday listesini atar (sınıf özeti): sonraki hesap müşterileri DB'den yeniden okur. Yeniden
     /// değerlendirme çakışmadan sonra çağırır; karşı yazan bir KVKK silmesiyse silinen müşteri önbellekte aday kalmasın.</summary>
     public void ForgetCandidates(Guid licenseId) => _candidates.Remove(licenseId);
+
+    /// <summary>İki müşteri Id'si aynı kişi mi (sınıf özeti, "Kişi"): aynı Id, ya da ikisi de lisansın adayı ve kişi anahtarları
+    /// ordinal eşit. Aday olmayan Id'de (silinmiş, kopya, başka lisansın ya da bilinmeyen Id) kişi okunmaz, karşılaştırma satır
+    /// düzeyidir. Kişi düzeyi (<see cref="PersonLevelVersion"/>) önerinin dekontun müşterisiyle karşılaştırılması içindir
+    /// (bağdaştırıcı, S2b Görev 7).</summary>
+    public async Task<bool> SamePersonAsync(Guid licenseId, Guid a, Guid b, CancellationToken ct)
+    {
+        if (a == b) return true;
+        var candidates = await CandidatesAsync(licenseId, ct);
+        var personA = candidates.FirstOrDefault(c => c.Id == a)?.PersonKey;
+        var personB = candidates.FirstOrDefault(c => c.Id == b)?.PersonKey;
+        return personA is not null && string.Equals(personA, personB, StringComparison.Ordinal);
+    }
 
     /// <summary>Hareket müşteri havalesi sayılmaz mı: giden, sıfır tutarlı, işlem kodu
     /// <see cref="BankOptions.ExcludedTransactionCodes"/>'ta (POS tahsilatı vb.) ya da para birimi TL/TRY değil (sınıf özeti,
@@ -155,7 +187,7 @@ public sealed class PaymentMatcher
         var exclusion = ExclusionReason(tx);
         if (exclusion is not null)
         {
-            Set(match, null, PaymentMatchLayer.None, 0m, $"excluded:{exclusion}", PaymentMatchStatus.NoProposal);
+            Set(match, null, PaymentMatchLayer.None, 0m, $"excluded:{exclusion}", PaymentMatchStatus.NoProposal, supportedByIban: false);
             return await SaveAsync(match, ct);
         }
         // Buradan sonraki her sonuç IBAN hafızasının o anki haline bağlı olabilir: yeniden değerlendirmede ek alır.
@@ -178,39 +210,47 @@ public sealed class PaymentMatcher
             if (hit) byUsername.Add(c);
         }
 
-        // Katman 2 — IBAN hafızası; hafızadaki müşteri artık aday değilse (silinmiş) sayılmaz.
-        Guid? byIban = null;
+        // Katman 2 — IBAN hafızası; hafızadaki müşteri artık aday değilse (silinmiş) sayılmaz. Bağın satırı kişisine çevrilir.
+        Candidate? byIban = null;
         if (tx.CounterpartyIbanHash is not null)
         {
             var remembered = await _db.CustomerIbanMemories.AsNoTracking()
                 .Where(m => m.LicenseId == tx.LicenseId && m.IbanHash == tx.CounterpartyIbanHash)
                 .Select(m => (Guid?)m.WpfCustomerId).FirstOrDefaultAsync(ct);
-            if (remembered is { } id && candidates.Any(c => c.Id == id)) byIban = id;
+            if (remembered is { } id) byIban = candidates.FirstOrDefault(c => c.Id == id);
         }
 
-        if (byUsername.Count > 1)
+        // Katmanlar satır değil kişi sayar (sınıf özeti, "Kişi"); kanıttaki sayı kişi sayısıdır.
+        var usernamePersons = PersonCount(byUsername);
+        if (usernamePersons > 1)
         {
-            Set(match, null, PaymentMatchLayer.None, 0m, $"ambiguous:{byUsername.Count}{suffix}", PaymentMatchStatus.NoProposal);
+            Set(match, null, PaymentMatchLayer.None, 0m, $"ambiguous:{usernamePersons}{suffix}", PaymentMatchStatus.NoProposal,
+                supportedByIban: false);
             return await SaveAsync(match, ct);
         }
-        if (byUsername.Count == 1)
+        if (usernamePersons == 1)
         {
-            var id = byUsername[0].Id; var key = byUsername[0].Key;
+            var ibanInPerson = byIban is not null && byIban.PersonKey == byUsername[0].PersonKey;
+            // Öneri satırı: kişinin vuran satırlarından IBAN bağınınki, yoksa en küçük Id.
+            var row = (ibanInPerson ? byUsername.FirstOrDefault(c => c.Id == byIban!.Id) : null) ?? SmallestId(byUsername);
+            var key = row.Key;
             // Kanıttaki kullanıcı adı biçimleri KVKK silmesinde (ShopperPurgeService 3b) tam anahtarla aranır: anahtardan sonra
             // son, ';' ya da ','. Biçim değişirse orası da değişir. Yeniden değerlendirme eki ';' ile başlar.
-            if (byIban is { } ib && ib != id)
+            if (byIban is not null && !ibanInPerson)
             {
-                Set(match, null, PaymentMatchLayer.None, 0m, $"conflict:username={key},iban-memory{suffix}", PaymentMatchStatus.NoProposal);
+                Set(match, null, PaymentMatchLayer.None, 0m, $"conflict:username={key},iban-memory{suffix}", PaymentMatchStatus.NoProposal,
+                    supportedByIban: false);
                 return await SaveAsync(match, ct);
             }
-            var both = byIban == id;
-            Set(match, id, PaymentMatchLayer.UsernameInDescription, both ? BothConfidence : UsernameConfidence,
-                (both ? $"username={key};iban-memory" : $"username={key}") + suffix, PaymentMatchStatus.Proposed);
+            Set(match, row.Id, PaymentMatchLayer.UsernameInDescription, ibanInPerson ? BothConfidence : UsernameConfidence,
+                (ibanInPerson ? $"username={key};iban-memory" : $"username={key}") + suffix, PaymentMatchStatus.Proposed,
+                supportedByIban: ibanInPerson);
             return await SaveAsync(match, ct);
         }
-        if (byIban is { } ibanCustomer)
+        if (byIban is not null)
         {
-            Set(match, ibanCustomer, PaymentMatchLayer.IbanMemory, IbanConfidence, "iban-memory" + suffix, PaymentMatchStatus.Proposed);
+            Set(match, byIban.Id, PaymentMatchLayer.IbanMemory, IbanConfidence, "iban-memory" + suffix, PaymentMatchStatus.Proposed,
+                supportedByIban: true);
             return await SaveAsync(match, ct);
         }
 
@@ -218,21 +258,32 @@ public sealed class PaymentMatcher
         var nameHits = candidates
             .Where(c => c.NameTokens.Count >= 2 && ContainsSequence(text.Tokens, c.NameTokens))
             .ToList();
-        if (nameHits.Count == 1)
+        var namePersons = PersonCount(nameHits);
+        if (namePersons == 1)
         {
             // Ad kanıta yazılmaz (kişisel veri, silme yolunun dışında kalırdı): yalnız eşleşen token sayısı.
-            Set(match, nameHits[0].Id, PaymentMatchLayer.NameAmount, NameConfidence,
-                $"name:{nameHits[0].NameTokens.Count}{suffix}", PaymentMatchStatus.Proposed);
+            var row = SmallestId(nameHits);
+            Set(match, row.Id, PaymentMatchLayer.NameAmount, NameConfidence, $"name:{row.NameTokens.Count}{suffix}",
+                PaymentMatchStatus.Proposed, supportedByIban: false);
             return await SaveAsync(match, ct);
         }
         Set(match, null, PaymentMatchLayer.None, 0m,
-            (nameHits.Count > 1 ? $"ambiguous-name:{nameHits.Count}" : "no-signal") + suffix, PaymentMatchStatus.NoProposal);
+            (namePersons > 1 ? $"ambiguous-name:{namePersons}" : "no-signal") + suffix, PaymentMatchStatus.NoProposal,
+            supportedByIban: false);
         return await SaveAsync(match, ct);
     }
 
+    /// <summary>Satırların düştüğü kişi sayısı (<see cref="Candidate.PersonKey"/>, ordinal).</summary>
+    private static int PersonCount(IEnumerable<Candidate> rows) => rows.Select(c => c.PersonKey).Distinct(StringComparer.Ordinal).Count();
+
+    /// <summary>Id'si "N" biçiminde ordinal en küçük satır (sınıf özeti, "Kişi"). Bellekte sıralanır: SQL Server'ın
+    /// uniqueidentifier sırası <see cref="Guid.CompareTo(Guid)"/>'nunkinden farklıdır.</summary>
+    private static Candidate SmallestId(IEnumerable<Candidate> rows) => rows.MinBy(c => c.Id.ToString("N"), StringComparer.Ordinal)!;
+
     /// <summary>Müşterinin eşleştirme biçimi: bitişik anahtar ("aysegul34"), harf/rakam sınırında bölünmüş parçaları
-    /// ("ayse","gul","34") ve ad token'ları.</summary>
-    private sealed record Candidate(Guid Id, string Key, IReadOnlyList<string> KeyTokens, IReadOnlyList<string> NameTokens)
+    /// ("ayse","gul","34"), ad token'ları ve kişisi (<see cref="PaymentPersonKey.ForCanonical"/>; sınıf özeti, "Kişi").</summary>
+    private sealed record Candidate(Guid Id, string Key, IReadOnlyList<string> KeyTokens, IReadOnlyList<string> NameTokens,
+        string PersonKey)
     {
         /// <summary>Katman 1'e girer mi: anahtar en az <see cref="MinKeyLength"/> uzun VE en az bir parçası banka
         /// kalıbı olmayan harf dizisi. Harfsiz anahtar açıklamadaki tutar/tarih/referansa taşar: Tokenize noktalamada
@@ -250,12 +301,13 @@ public sealed class PaymentMatcher
         if (_candidates.TryGetValue(licenseId, out var cached)) return cached;
         var rows = await _db.WpfCustomerProjections.AsNoTracking()
             .Where(c => c.LicenseId == licenseId && c.PurgedAt == null)
-            .Select(c => new { c.Id, c.Username, c.FullName, c.DisplayName }).ToListAsync(ct);
+            .Select(c => new { c.Id, c.Username, c.FullName, c.DisplayName, c.GroupId }).ToListAsync(ct);
         // Gerçek ad yoksa (form adı girilmemiş müşteri — masaüstünün R3-02 yedeği
         // kalkınca FullName boş kalır) ad katmanı takma adla (DisplayName) dener.
         var list = rows.Select(r => new Candidate(r.Id, BankTextNormalizer.UsernameKey(r.Username),
             BankTextNormalizer.UsernameTokens(r.Username),
-            BankTextNormalizer.Tokenize(string.IsNullOrWhiteSpace(r.FullName) ? r.DisplayName : r.FullName).Tokens)).ToList();
+            BankTextNormalizer.Tokenize(string.IsNullOrWhiteSpace(r.FullName) ? r.DisplayName : r.FullName).Tokens,
+            PaymentPersonKey.ForCanonical(r.Id, r.GroupId))).ToList();
         _candidates[licenseId] = list;
         return list;
     }
@@ -325,10 +377,14 @@ public sealed class PaymentMatcher
         return false;
     }
 
-    private static void Set(PaymentMatch m, Guid? customer, PaymentMatchLayer layer, decimal confidence, string evidence, PaymentMatchStatus status)
+    /// <summary>Hesabı satıra yazar; her yazım sürümü de yazar (sınıf özeti, "Kişi"). <paramref name="supportedByIban"/>: öneri
+    /// kişisi IBAN hafızasında (<see cref="PaymentMatch.SupportedByIbanMemory"/>).</summary>
+    private static void Set(PaymentMatch m, Guid? customer, PaymentMatchLayer layer, decimal confidence, string evidence, PaymentMatchStatus status,
+        bool supportedByIban)
     {
         m.ProposedWpfCustomerId = customer; m.Layer = layer; m.Confidence = confidence;
-        m.Evidence = evidence.Length > 500 ? evidence[..500] : evidence; m.Status = status; m.UpdatedAt = DateTimeOffset.UtcNow;
+        m.Evidence = evidence.Length > 500 ? evidence[..500] : evidence; m.Status = status;
+        m.SupportedByIbanMemory = supportedByIban; m.MatcherVersion = PersonLevelVersion; m.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
     /// <summary>Kaydeder; başarısız kayıt izlemede iz bırakmaz. Eşleştiricinin kapsamı paylaşılabilir: öneri
