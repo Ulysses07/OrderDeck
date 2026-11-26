@@ -35,12 +35,13 @@ public sealed class PaymentMatcherTests
         return c;
     }
 
-    private static BankTransaction Incoming(LicenseDbContext db, Guid lic, string description, string? ibanHash = null, string code = "FT")
+    private static BankTransaction Incoming(LicenseDbContext db, Guid lic, string description, string? ibanHash = null, string code = "FT",
+        string currency = "TL")
     {
         var t = new BankTransaction
         {
             Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb",
-            Direction = BankTransactionDirection.Incoming, Amount = 500m, Currency = "TL", OccurredAt = DateTimeOffset.UtcNow,
+            Direction = BankTransactionDirection.Incoming, Amount = 500m, Currency = currency, OccurredAt = DateTimeOffset.UtcNow,
             Description = description, TransactionCode = code, CounterpartyIbanHash = ibanHash, FetchedAt = DateTimeOffset.UtcNow,
         };
         db.BankTransactions.Add(t); db.SaveChanges();
@@ -454,6 +455,43 @@ public sealed class PaymentMatcherTests
         g.Evidence.Should().Be("excluded:direction");
         s.Status.Should().Be(PaymentMatchStatus.NoProposal); s.ProposedWpfCustomerId.Should().BeNull();
         s.Evidence.Should().Be("excluded:zero");
+    }
+
+    [Theory]
+    [InlineData("TL")]
+    [InlineData("TRY")]
+    [InlineData("try")]
+    [InlineData(" TL")]
+    public async Task TL_ve_TRY_degerlendirilir(string currency)
+    {
+        // (koruma) Obifin değeri kırpar ama harfini normalleştirmez: kural da kırpar, harfe bakmaz.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var c = Customer(db, lic, "ornek_musteri34");
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ornek_musteri34", currency: currency), CancellationToken.None);
+
+        m.Status.Should().Be(PaymentMatchStatus.Proposed);
+        m.ProposedWpfCustomerId.Should().Be(c.Id);
+    }
+
+    [Theory]
+    [InlineData("USD")]
+    [InlineData("EUR")]
+    [InlineData("")]
+    public async Task TL_disi_para_birimi_dislanir(string currency)
+    {
+        // Tasarım §3: para birimi TL/TRY olmayan hareket müşteri havalesi sayılmaz. Açıklamadaki kullanıcı adı öneri üretmez;
+        // boş değer (ObifinClient boşu "TL" yapar, başka bir yoldan gelmiş) de dışlanır.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        Customer(db, lic, "ornek_musteri34");
+        var tx = Incoming(db, lic, "HAVALE ornek_musteri34", currency: currency);
+        var matcher = Matcher(db);
+
+        var m = await matcher.MatchAsync(tx, CancellationToken.None);
+
+        m.Status.Should().Be(PaymentMatchStatus.NoProposal); m.ProposedWpfCustomerId.Should().BeNull();
+        m.Evidence.Should().Be($"excluded:{PaymentMatcher.CurrencyExclusion}").And.Be("excluded:currency", "kanıt biçimi sözleşmedir");
+        matcher.IsExcluded(tx).Should().BeTrue();
     }
 
     [Theory]

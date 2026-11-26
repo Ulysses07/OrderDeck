@@ -16,6 +16,15 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// bir müşteriyi gösteriyorsa sayılır. Aday listesi (anahtar + token'lar) örnek başına lisans başına BİR kez okunup
 /// hesaplanır — eşleştirici scoped'dur (sink'in bir çekim koşusu boyunca açık alt kapsamı, bir tarama koşusu ya da bir
 /// istek), partideki her hareket için müşteri tablosu yeniden okunmaz.</para>
+/// <para><b>Para birimi (tasarım §3).</b> Para birimi TL/TRY olmayan hareket müşteri havalesi sayılmaz: yön, sıfır tutar ve
+/// dışlanan koddan sonra dışlanır, kanıtı <c>excluded:currency</c> (<see cref="CurrencyExclusion"/>). Değer
+/// (<see cref="BankTransaction.Currency"/>) <see cref="ObifinClient"/>'tan kırpılmış ama harfi normalleştirilmemiş gelir, boşu
+/// "TL" yapılır; çekim işi sütun sınırına (3 karakter) keser. Kural bu yüzden kırpar ve harfe bakmaz (<see cref="IsTryCurrency"/>);
+/// boş değer (başka bir yoldan) dışlanır. Prod'daki dağılım merge'den önce ölçülür (S2b Görev 14, sorgu (1)): TL/TRY dışında bir
+/// yazım çıkarsa kural tahminle değil ona göre genişletilir. <see cref="IsExcluded"/>'ın K-6 tüketicileri de (kaldırmada geri
+/// sarma, hesap reddi, <c>PaymentMatchReconciler.RemainingConfirmationsAsync</c>) TL dışı hareketi doğrulama saymaz: S2b'den önce
+/// böyle bir harekette işaretlenmiş doğrulama artık kalan sayılmaz, kaldırılırsa da bağın süresi geri sarılmaz. Payı merge öncesi
+/// sorgu (1)'dedir; 0'dan büyükse sahip karar verir.</para>
 /// <para><see cref="BankHasher"/> istemez: hash'ler harekette ve hafızada hazır saklı. Hasher anahtar yokken kurulamaz;
 /// eşleştirici dekont onay yolundan da çözülecek ve orayı hiçbir koşulda düşürmemeli.</para>
 /// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>; hareketin açıklamasıyla birlikte silinir, bkz.
@@ -79,6 +88,9 @@ public sealed class PaymentMatcher
     /// bozulmaz.</summary>
     public const string ReevaluationEvidenceSuffix = ";reeval";
 
+    /// <summary>Para birimi TL/TRY olmayan hareketin dışlama nedeni (kanıt <c>excluded:currency</c>; sınıf özeti, "Para birimi").</summary>
+    public const string CurrencyExclusion = "currency";
+
     public async Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct)
     {
         try
@@ -106,20 +118,29 @@ public sealed class PaymentMatcher
     /// değerlendirme çakışmadan sonra çağırır; karşı yazan bir KVKK silmesiyse silinen müşteri önbellekte aday kalmasın.</summary>
     public void ForgetCandidates(Guid licenseId) => _candidates.Remove(licenseId);
 
-    /// <summary>Hareket müşteri havalesi sayılmaz mı: giden, sıfır tutarlı ya da işlem kodu
-    /// <see cref="BankOptions.ExcludedTransactionCodes"/>'ta (POS tahsilatı vb.). Eşleştirici ona öneri üretmez;
-    /// bağdaştırıcı da onu dekontun adayı saymaz. Karar hareketin kendi alanlarından verilir, kanıttan değil (kanıt
-    /// saklama süresinde boşaltılır).</summary>
+    /// <summary>Hareket müşteri havalesi sayılmaz mı: giden, sıfır tutarlı, işlem kodu
+    /// <see cref="BankOptions.ExcludedTransactionCodes"/>'ta (POS tahsilatı vb.) ya da para birimi TL/TRY değil (sınıf özeti,
+    /// "Para birimi"). Eşleştirici ona öneri üretmez; bağdaştırıcı da onu dekontun adayı saymaz. Karar hareketin kendi
+    /// alanlarından verilir, kanıttan değil (kanıt saklama süresinde boşaltılır).</summary>
     public bool IsExcluded(BankTransaction tx) => ExclusionReason(tx) is not null;
 
-    /// <summary>Dışlama nedeni (kanıta yazılır) ya da null.</summary>
+    /// <summary>Dışlama nedeni (kanıta yazılır) ya da null. Yön, sıfır tutar ve kod para biriminden önce sınanır.</summary>
     private string? ExclusionReason(BankTransaction tx)
     {
         var code = (tx.TransactionCode ?? "").Trim();
         return tx.Direction != BankTransactionDirection.Incoming ? "direction"
             : tx.Amount == 0 ? "zero"
             : _excludedCodes.Contains(code) ? code
+            : !IsTryCurrency(tx.Currency) ? CurrencyExclusion
             : null;
+    }
+
+    /// <summary>Para birimi TL/TRY mi: kırpılmış değer "TL" ya da "TRY", harf duyarsız (sınıf özeti, "Para birimi").</summary>
+    internal static bool IsTryCurrency(string? currency)
+    {
+        var value = (currency ?? "").Trim();
+        return string.Equals(value, "TL", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "TRY", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<PaymentMatch> MatchOnceAsync(BankTransaction tx, string? evidenceSuffix, CancellationToken ct)

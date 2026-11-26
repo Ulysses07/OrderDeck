@@ -84,6 +84,28 @@ public sealed class PaymentMatchMetricsTests
     }
 
     [Fact]
+    public async Task Yabanci_para_birimli_hareket_olcumde_dislanir()
+    {
+        // Tasarım §3: TL/TRY dışı hareket müşteri havalesi değildir. Dışlama hareketin para biriminden okunur (projeksiyon onu da
+        // taşımalı, yoksa "TL" varsayılırdı); S2b'den önce verilmiş dekont onaylı kararı da eşleştirme sayımlarına girmez.
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow; var a = Guid.NewGuid();
+        var usd = T(lic, now, 1); usd.Currency = "USD";
+        var tl = T(lic, now, 2);
+        db.BankTransactions.AddRange(usd, tl);
+        db.PaymentMatches.AddRange(
+            M(usd, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()),
+            M(tl, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()));
+        await db.SaveChangesAsync();
+
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+
+        (m.Incoming, m.Excluded).Should().Be((2, 1));
+        (m.Proposed, m.Confirmed, m.ReceiptConfirmed).Should().Be((1, 1, 1), "TL dışı hareketin kararı sayılmaz");
+        m.Layers.Single().Confirmed.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Oneriden_farkli_musteriye_elle_esleme_celiski_sayilir()
     {
         // Elle eşleme öneriden farklı müşteriye ManualOnly yazar (plan); ölçümde öneri yanlıştı: çelişkidir, katmanına da

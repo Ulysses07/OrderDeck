@@ -1061,6 +1061,43 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Hesap_reddi_TL_disi_havalenin_isaretli_kararini_dogrulama_saymaz()
+    {
+        // TL/TRY dışı hareket doğrulama değildir (tasarım §3). S2b'den önce para birimine bakılmadan işaretlenmiş böyle bir karar
+        // (merge öncesi sorgu (1)'in "Dogrulayan" payı): (a) reddedilen hesaptaysa ve bağın son doğrulamasıysa bağın süresi geri
+        // çekilmez (S2b'den önce öğreten havaleye dönerdi); (b) kalan hesaptaysa kalan doğrulama sayılmaz, bağ imha kaydıyla
+        // silinir (S2b'den önce ona dönerdi).
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var now = DateTimeOffset.UtcNow;
+        var customer = Guid.NewGuid();
+        var hashA = NewHash();
+        var teacherA = DecidedTx(db, lic, 6, hashA, customer, now.AddDays(-20), now.AddDays(-20));
+        DecidedTx(db, lic, 9, hashA, customer, now.AddDays(-5), now.AddDays(-5)).Currency = "USD";
+        var memoryA = new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = customer, IbanHash = hashA,
+            IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch, SourceBankTransactionId = teacherA.Id,
+            CreatedAt = now.AddDays(-20), LastConfirmedAt = now.AddDays(-5) };
+        var hashB = NewHash();
+        DecidedTx(db, lic, 6, hashB, customer, now.AddDays(-10), now.AddDays(-10)).Currency = "USD";
+        DecidedTx(db, lic, 9, hashB, customer, now.AddDays(-3), now.AddDays(-3));
+        var memoryB = new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = customer, IbanHash = hashB,
+            IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch, SourceBankTransactionId = Guid.NewGuid(),
+            CreatedAt = now.AddDays(-200), LastConfirmedAt = now.AddDays(-3) };
+        db.CustomerIbanMemories.AddRange(memoryA, memoryB);
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var account9 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 9);
+
+        var r = await Terminator(db, client).RejectAccountAsync(account9.Id, "yonetici-1", CancellationToken.None);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync(m => m.Id == memoryA.Id)).LastConfirmedAt
+            .Should().Be(now.AddDays(-5), "reddedilen TL dışı karar doğrulama sayılmaz, geri sarma koşmaz");
+        (await db.CustomerIbanMemories.AnyAsync(m => m.Id == memoryB.Id)).Should().BeFalse("kalan TL dışı karar doğrulama sayılmaz");
+        r.Memories.Should().Be(1);
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync(x => x.LicenseId == lic && x.Target == "CustomerIbanMemories"))
+            .Criterion.Should().EndWith("kalan doğrulama yok");
+    }
+
+    [Fact]
     public async Task Hesap_reddi_parti_parti_siler_sayilar_ve_kayit_toplami_tutar()
     {
         var counter = new SaveLogInterceptor();

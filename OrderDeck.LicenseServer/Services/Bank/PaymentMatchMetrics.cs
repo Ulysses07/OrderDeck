@@ -78,7 +78,8 @@ public sealed record PaymentMatchSummary(
 /// <para><b>Nüfus</b>: penceredeki GELEN hareketler, hareketin anına (<see cref="BankTransaction.OccurredAt"/>) göre; her sayım
 /// bu hareketlerin eşleşme satırlarından. Satırın yaratılma anı pencere değildir: ilk çekim geçmişi geri doldurur (bağlantı
 /// anından <see cref="ObifinPollJob.InitialGraceDays"/> gün; KVKK Ö-5'ten önce kurulan bağlantılarda 90 gün), eski
-/// hareketin önerisi bugün yazılır. Dışlanan hareket (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı, sıfır tutar)
+/// hareketin önerisi bugün yazılır. Dışlanan hareket (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı, sıfır tutar, TL/TRY
+/// dışı para birimi)
 /// yalnız <see cref="PaymentMatchSummary.Excluded"/>'da sayılır, eşleştirme sayımlarına girmez: müşteri havalesi değildir.
 /// Dışlama hareketin kendi alanlarından okunur; "excluded:*" kanıtı hareketin açıklamasıyla boşaltılır
 /// (<see cref="BankDataRetentionJob"/>). Gecikme ise tüm gelenlerden.
@@ -101,12 +102,13 @@ public sealed class PaymentMatchMetrics
     public async Task<PaymentMatchSummary> ComputeAsync(Guid licenseId, int days, CancellationToken ct)
     {
         var since = DateTimeOffset.UtcNow.AddDays(-days);
-        // Yalnız dışlama ve gecikme için gereken alanlar: ham JSON ve açıklama okunmaz.
+        // Yalnız dışlama ve gecikme için gereken alanlar: ham JSON ve açıklama okunmaz. Para birimi de dışlamanın alanıdır;
+        // projeksiyon taşımasaydı varsayılan "TL" okunur, TL dışı hareket sayımlara girerdi.
         var incoming = await _db.BankTransactions.AsNoTracking()
             .Where(t => t.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming && t.OccurredAt >= since)
             .Select(t => new BankTransaction
             {
-                Id = t.Id, Direction = t.Direction, Amount = t.Amount, TransactionCode = t.TransactionCode,
+                Id = t.Id, Direction = t.Direction, Amount = t.Amount, Currency = t.Currency, TransactionCode = t.TransactionCode,
                 OccurredAt = t.OccurredAt, FetchedAt = t.FetchedAt,
             })
             .ToListAsync(ct);
