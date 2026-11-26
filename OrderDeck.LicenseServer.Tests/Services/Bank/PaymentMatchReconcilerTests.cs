@@ -1540,6 +1540,95 @@ public sealed class PaymentMatchReconcilerTests
             .Should().Be(PaymentMatchReconciler.MaxReevaluationsPerTrigger);
     }
 
+    // ---- Karar katmanı kilidi (S2b; tasarım §2.4): Decision ≠ None satıra hiçbir arka plan yolu dokunmaz ----
+
+    /// <summary>Karar katmanındaki satır (S3a yazacak; S2b'de prod'da yok): Awaiting, insan kararı yok (Proposed, karar anı ve dekont
+    /// boş), öneri <paramref name="proposed"/>, jeton bir gün önce. Kaydeder, izlenmeyen kopyasını döner.</summary>
+    private static PaymentMatch AwaitingRow(LicenseDbContext db, Guid lic, BankTransaction tx, Guid proposed)
+    {
+        var t0 = DateTimeOffset.UtcNow.AddDays(-1);
+        db.PaymentMatches.Add(new PaymentMatch
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx.Id, Decision = PaymentMatchDecision.Awaiting,
+            Status = PaymentMatchStatus.Proposed, ProposedWpfCustomerId = proposed, Layer = PaymentMatchLayer.NameAmount,
+            Confidence = PaymentMatcher.NameConfidence, Evidence = "name:2", MatcherVersion = PaymentMatcher.PersonLevelVersion,
+            CreatedAt = t0, UpdatedAt = t0,
+        });
+        db.SaveChanges();
+        return db.PaymentMatches.AsNoTracking().Single(m => m.BankTransactionId == tx.Id);
+    }
+
+    [Fact]
+    public async Task Karar_katmanindaki_hareket_dekontun_adayi_olmaz()
+    {
+        // K3 (tasarım §2.4, §4.4): gecikmeli bağdaştırma karar katmanındaki havaleye bağ kurmaz, öneri dekontun müşterisi olsa da.
+        // taken kümesi onu dışlar, dekont gap'e düşer. Dışlanmasaydı bayat seçim denetimi (K2) iki denemeyi de düşürür, dekont ne
+        // bağlı ne gap'te kalırdı.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, s.LicenseId, 420m, when, "HAVALE ornek_musteri34");
+        var before = AwaitingRow(db, s.LicenseId, tx, s.WpfCustomerId);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 420m, when.AddMinutes(10));
+
+        await Recon(db).ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        (await RowAsync(db, tx)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+        var gap = (await db.PaymentMatchGaps.AsNoTracking().ToListAsync()).Should().ContainSingle("dekont gap'e düşer").Subject;
+        (gap.PaymentId, gap.Reason, gap.ResolvedAt).Should().Be((payment.Id, PaymentMatchGapReason.NoCandidate, (DateTimeOffset?)null));
+    }
+
+    [Fact]
+    public async Task Elle_esleme_karar_katmanindaki_ayni_IBAN_satirini_yeniden_degerlendirmez()
+    {
+        // K4a: elle eşleme bağ öğrenince aynı IBAN'ın kararsız satırları yeniden değerlendirilir; karar katmanındaki satır seçilmez.
+        // Seçilseydi eşleştirici (K1) ona yine dokunmaz, sayaç (K4b) da saymazdı; ama tetiğin kotasında yer kaplardı. Seçim bu
+        // yüzden hareketin hiç okunmamasıyla gösterilir.
+        var reads = new TransactionReads();
+        using var db = NewDb(reads); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var now = DateTimeOffset.UtcNow;
+        var awaiting = Tx(db, s.LicenseId, 100m, now.AddDays(-3), "EFT GELEN", hash);
+        var before = AwaitingRow(db, s.LicenseId, awaiting, other.Id);
+        var target = Tx(db, s.LicenseId, 140m, now.AddHours(-2), "EFT GELEN", hash);
+        reads.Watch = awaiting.Id;
+
+        var result = await Recon(db).ManualMatchAsync(s.LicenseId, target.Id, s.WpfCustomerId, CancellationToken.None);
+
+        result.Should().Be(new ManualMatchResult(ManualMatchIbanOutcome.Learned), "bağ öğrenildi, yeniden değerlendirilen satır yok");
+        (await RowAsync(db, awaiting)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+        reads.Count.Should().Be(0, "aynı IBAN'ın seçimi karar katmanındaki hareketi döndürmez");
+    }
+
+    [Fact]
+    public async Task Karar_katmanindaki_satir_yeniden_degerlendirilmis_sayilmaz()
+    {
+        // K4b: eşleştirici karar katmanındaki satırı dokunmadan döndürür (K1), durumu Proposed kalır. Dönüş sayaçları besler (sayfa
+        // bildirimi, tarama günlüğü): sayılsaydı dokunulmayan soru yeniden değerlendirilmiş görünürdü.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var tx = Tx(db, s.LicenseId, 140m, DateTimeOffset.UtcNow.AddDays(-1), "EFT GELEN", hash);
+        var before = AwaitingRow(db, s.LicenseId, tx, s.WpfCustomerId);
+
+        (await Recon(db).ReevaluateUndecidedAsync(tx, CancellationToken.None)).Should().BeNull();
+
+        (await RowAsync(db, tx)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+    }
+
+    /// <summary>İzlenen hareketin varlık olarak kaç kez okunduğunu sayar (izlenmeden okuma dahil): bir seçim sorgusu onu döndürdüyse
+    /// okunmuştur. Kilitli satırı eşleştirici yine dokunmadan döndürdüğü için seçim sonuç durumunda görünmez; sayaç görünür kılar.</summary>
+    private sealed class TransactionReads : IMaterializationInterceptor
+    {
+        public Guid? Watch { get; set; }
+        public int Count { get; private set; }
+
+        public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
+        {
+            if (entity is BankTransaction t && t.Id == Watch) Count++;
+            return entity;
+        }
+    }
+
     /// <summary>Kararsız satırın yeniden hesap kaydını düşürür (DB kesintisi benzetimi): satır kayıttan önce de sonra da
     /// kararsız. Elle eşlemenin kendi kaydı kararsız satıra karar yazar, buna uymaz.</summary>
     private sealed class ReevaluationFailure : SaveChangesInterceptor

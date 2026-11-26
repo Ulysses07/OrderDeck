@@ -872,6 +872,33 @@ public sealed class PaymentMatcherTests
     }
 
     [Fact]
+    public async Task Karar_katmanindaki_satir_yeniden_hesaplanmaz()
+    {
+        // K1 (tasarım §2.4): karar katmanındaki satırın önerisi yayıncının önündeki sorudur. Satır insan kararı değil (Proposed,
+        // karar anı ve dekont boş): insan kararı kilidi onu görmez. Açıklama başka müşteriyi gösterir, yeniden hesap öneriyi değiştirirdi.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var x = Customer(db, lic, "ornek_musteri34"); Customer(db, lic, "mehmet_k");
+        var tx = Incoming(db, lic, "HAVALE mehmet_k");
+        var t0 = DateTimeOffset.UtcNow.AddDays(-1);
+        db.PaymentMatches.Add(new PaymentMatch
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx.Id, Decision = PaymentMatchDecision.Awaiting,
+            Status = PaymentMatchStatus.Proposed, ProposedWpfCustomerId = x.Id, Layer = PaymentMatchLayer.UsernameInDescription,
+            Confidence = PaymentMatcher.UsernameConfidence, Evidence = "username=ornekmusteri34",
+            MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = t0, UpdatedAt = t0,
+        });
+        db.SaveChanges();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync();
+
+        var matched = await Matcher(db).MatchAsync(tx, CancellationToken.None);
+        var reevaluated = await Matcher(db).ReevaluateAsync(tx, CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+        foreach (var m in new[] { matched, reevaluated })
+            m.Should().BeEquivalentTo(before, o => o.Excluding(r => r.BankTransaction), "dönen satır da dokunulmamış satırdır");
+    }
+
+    [Fact]
     public async Task Ayni_hareket_icin_ikinci_cagri_ayni_satiri_gunceller()
     {
         using var db = NewDb(); var lic = Guid.NewGuid();

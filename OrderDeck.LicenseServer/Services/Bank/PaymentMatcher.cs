@@ -62,10 +62,15 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kapsamı, dekont onayı sonrası bağdaştırma işi (<see cref="PaymentMatchReconcileJob"/>) ya da admin isteği. Kapsamı
 /// başkasıyla paylaşabileceği için kaydedemediği öneriyi izlemede bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu
 /// yeniden dener (bkz. <see cref="SaveAsync"/>).</para>
+/// <para><b>Karar katmanı kilidi (tasarım §2.4).</b> <see cref="PaymentMatch.Decision"/> ≠ None satır insan kararı gibi yeniden
+/// hesaplanmaz (sink, tarama, yeniden değerlendirme): önerisi yayıncının önündeki sorudur. Kilidin öbür yerleri
+/// <see cref="PaymentMatchReconciler"/> (sınıf özeti, "Karar katmanı kilidi") ve <see cref="BankMatchSweepJob"/>'tadır. S2b'de prod'da
+/// böyle satır yoktur (okuyucu önce); tasarım §3'ün <c>Unmatched → Awaiting</c> yeniden değerlendirmesi S3a'da ayrı yoldan gelir.</para>
 /// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> jetondur. Satır okunduktan sonra değiştiyse (arada
-/// verilen insan kararı ya da eşzamanlı bir yeniden hesap) kayıt reddedilir; satır taze okunur ve hesap BİR kez yeniden
-/// yapılır: taze satır insan kararıysa dokunulmadan döner. İkinci çakışma çağırana çıkar. Yeniden değerlendirme
-/// (<see cref="ReevaluateAsync"/>) ilk çakışmayı çağırana bırakır: çağıran hareketi taze okuyup kendisi yeniden dener.</para>
+/// verilen insan kararı, karar katmanına giriş ya da eşzamanlı bir yeniden hesap) kayıt reddedilir; satır taze okunur ve hesap BİR
+/// kez yeniden yapılır: taze satır insan kararıysa ya da karar katmanındaysa dokunulmadan döner. İkinci çakışma çağırana çıkar.
+/// Yeniden değerlendirme (<see cref="ReevaluateAsync"/>) ilk çakışmayı çağırana bırakır: çağıran hareketi taze okuyup kendisi yeniden
+/// dener.</para>
 /// </summary>
 public sealed class PaymentMatcher
 {
@@ -138,7 +143,7 @@ public sealed class PaymentMatcher
         }
     }
 
-    /// <summary><see cref="MatchAsync"/>'in aynısı (aynı katmanlar, aynı insan kararı kilidi, aynı jeton), yalnız kanıta
+    /// <summary><see cref="MatchAsync"/>'in aynısı (aynı katmanlar, aynı insan kararı ve karar katmanı kilidi, aynı jeton), yalnız kanıta
     /// <see cref="ReevaluationEvidenceSuffix"/> eklenir ve çakışma (DbUpdateConcurrencyException) yeniden denenmeden çağırana
     /// çıkar: satır SaveAsync'te DB'deki haliyle tazelenmiş olur. Çekimden sonra IBAN hafızası değişince var olan kararsız satırı
     /// yeniden hesaplamak için (<c>PaymentMatchReconciler.ReevaluateUndecidedAsync</c>). Çağıran hareketi yeniden denemeden önce
@@ -214,8 +219,9 @@ public sealed class PaymentMatcher
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct)
             ?? new PaymentMatch { Id = Guid.NewGuid(), LicenseId = tx.LicenseId, BankTransactionId = tx.Id, CreatedAt = DateTimeOffset.UtcNow };
-        // İnsan kararı bağlanmış satır yeniden hesaplanmaz.
-        if (match.Status is PaymentMatchStatus.ConfirmedByHuman or PaymentMatchStatus.Contradicted or PaymentMatchStatus.ManualOnly)
+        // İnsan kararı bağlanmış satır yeniden hesaplanmaz; karar katmanındaki satır da (sınıf özeti, "Karar katmanı kilidi").
+        if (match.Status is PaymentMatchStatus.ConfirmedByHuman or PaymentMatchStatus.Contradicted or PaymentMatchStatus.ManualOnly
+            || match.Decision != PaymentMatchDecision.None)
             return match;
 
         // Çekim işi giden ve sıfır tutarlı hareketi buraya vermez; yine de gelirse öneri üretilmez.

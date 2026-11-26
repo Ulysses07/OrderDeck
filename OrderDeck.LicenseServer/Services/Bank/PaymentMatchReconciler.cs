@@ -76,7 +76,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// özetinin kararsız satırları hafızanın güncel haliyle yeniden hesaplanır (<see cref="ReevaluateUndecidedAsync"/>). Elle eşleme
 /// var olan bağı TAZELEYİNCE yalnız bağdan önce hesaplanmış kararsız satırlar (satırın jetonu bağın oluşturulmasından eski):
 /// bağ değişmez, ondan sonra hesaplananlar onu zaten gördü; bağ dekont onayıyla öğrenildiyse ya da bu kuraldan önce kurulduysa
-/// öncekiler taramayı beklemesin. Kararsız: öneri ya da öneri yok, karar anı ve dekont boş; açıklaması silinmemiş, dışlanmamış;
+/// öncekiler taramayı beklemesin. Kararsız: öneri ya da öneri yok, karar anı ve dekont boş, karar katmanında değil (aşağıda);
+/// açıklaması silinmemiş, dışlanmamış;
 /// pencere <see cref="ReevaluationSince"/> (taramanınkinden ve eşleşmeyen açıklamanın saklama süresinden bir gün içeride: saklama
 /// işi açıklamayı jetonu ilerletmeden siler, sınırdaki satırın yeniden hesabı onunla çakışmasız yarışırdı). Özeti KVKK Ö-7
 /// kesmesinden önce çekilmiş satır (HashValid=false) da hedeftir: geçerli bir bağın özetine eşitlik aynı tam IBAN demektir; öneri
@@ -87,6 +88,16 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// hesabıyla aynı kalıp); düşerse karar geri alınmaz (<see cref="ManualMatchResult.ReevaluationFailed"/>). Tetik başına en çok
 /// <see cref="MaxReevaluationsPerTrigger"/> satır. Telafisi, dekont onayı yollarının bağları ve düzeltmeden önceki kararların
 /// geriye dönük doldurması <see cref="BankMatchSweepJob"/>'ın 2. aşamasıdır. KVKK K-6: durdurulmuş bağlantıda koşmaz.</para>
+/// <para><b>Karar katmanı kilidi (tasarım §2.4).</b> <see cref="PaymentMatch.Decision"/> ≠ None satırın önerisi yayıncının önündeki
+/// sorudur; hiçbir arka plan yolu ona dokunmaz. Kilit beş yerdedir, üçü bağdaştırıcıda: dekont adaylarının <c>taken</c> kümesi (onay
+/// bağdaştırması ve gap çözümü ona bağ kurmaz, dekont gap'e düşer), bağlamanın bayat seçim denetimi (seçimden sonra karar katmanına
+/// giren aday: yeniden deneme onu <c>taken</c> ile eler) ve aynı IBAN'ın yeniden değerlendirmesi: seçimi onu almaz,
+/// <see cref="ReevaluateUndecidedAsync"/> da onu yeniden değerlendirilmiş saymaz (eşleştirici kilitli satırı dokunmadan döndürür,
+/// durumu kararsız kalır). Öbür ikisi eşleştiricinin yeniden hesabı (<see cref="PaymentMatcher"/>) ve telafi taramasının 2. aşamasıdır
+/// (<see cref="BankMatchSweepJob"/>). Seçimler kilitli satırı baştan eler: eşleştirici ona yine dokunmazdı, ama seçilen satır tetiğin
+/// ve koşunun kotasında yer kaplardı. S2b'de prod'da böyle satır yoktur (okuyucu önce: satırı S3a yazar); tasarım §3'ün
+/// <c>Unmatched → Awaiting</c> yeniden değerlendirmesi S3a'da ayrı yoldan gelir. Elle eşleme ve kaldırma admin eylemidir, kilidin
+/// dışındadır (reddi S3b).</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
 /// </summary>
 public sealed class PaymentMatchReconciler
@@ -386,7 +397,8 @@ public sealed class PaymentMatchReconciler
 
     /// <summary>Dekontun aday hareketleri (sınıf özeti): aynı lisans, gelen, tutar eşit, ödeme anının ±2 günü; bir dekonta
     /// bağlanmış, başka müşteriye karar verilmiş (karar anı dolu, müşterisi bu dekontunki değil — KVKK silmesiyle boşalmış
-    /// müşteri dahil) ya da eşleştiricinin dışladığı (<see cref="PaymentMatcher.IsExcluded"/>) hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
+    /// müşteri dahil), karar katmanındaki (sınıf özeti, "Karar katmanı kilidi") ya da eşleştiricinin dışladığı
+    /// (<see cref="PaymentMatcher.IsExcluded"/>) hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
     /// token'larını açıklamasında taşıyan TEK aday seçilir; seçilemezse liste olduğu gibi döner. Onay da gap çözümü de bunu
     /// kullanır: ikisi aynı kuralla karar verir.</summary>
     private async Task<List<BankTransaction>> CandidatesAsync(Guid licenseId, decimal amount, DateTimeOffset paidAt,
@@ -395,9 +407,11 @@ public sealed class PaymentMatchReconciler
         var windowStart = paidAt - CandidateWindow; var windowEnd = paidAt + CandidateWindow;
         // Karar kilidi DecidedAt'tir, müşteri değil: KVKK silmesi kararın müşterisini boşaltır, anını bırakır
         // (BankSubjectScrub.MatchForCustomer). Müşterisi boş karar da başka bir kişinin kararıdır (EF null != X'i doğru çevirir).
+        // Karar katmanındaki havale de alınmıştır (tasarım §2.4, §4.4): öneri dekontun müşterisi olsa da bağ kurulmaz.
         var taken = _db.PaymentMatches
             .Where(m => m.LicenseId == licenseId
-                        && (m.PaymentId != null || (m.DecidedAt != null && m.ActualWpfCustomerId != wpfCustomerId)))
+                        && (m.PaymentId != null || (m.DecidedAt != null && m.ActualWpfCustomerId != wpfCustomerId)
+                            || m.Decision != PaymentMatchDecision.None))
             .Select(m => m.BankTransactionId);
         var candidates = (await _db.BankTransactions.AsNoTracking()
                 .Where(t => t.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming
@@ -433,10 +447,11 @@ public sealed class PaymentMatchReconciler
     private async Task LinkAsync(BankTransaction tx, Guid paymentId, string? payerName, Guid wpfCustomerId, CancellationToken ct)
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct) ?? await Matcher.MatchAsync(tx, ct);
-        // Aday seçimi satırı izlemeden okudu; arada başka bir karara bağlandıysa seçim bayattır, yeniden deneme taze seçer.
-        // Buradan kayda kadarki pencereyi jeton korur. Ölçüt aday seçimininkiyle aynı: kilit DecidedAt (KVKK silmesinin
-        // müşterisini boşalttığı karar da başkasınındır).
-        if (match.PaymentId is not null || (match.DecidedAt is not null && match.ActualWpfCustomerId != wpfCustomerId))
+        // Aday seçimi satırı izlemeden okudu; arada başka bir karara bağlandıysa ya da karar katmanına girdiyse seçim bayattır,
+        // yeniden deneme taze seçer. Buradan kayda kadarki pencereyi jeton korur. Ölçüt aday seçimininkiyle aynı: kilit DecidedAt
+        // (KVKK silmesinin müşterisini boşalttığı karar da başkasınındır) ve karar katmanı (sınıf özeti).
+        if (match.PaymentId is not null || (match.DecidedAt is not null && match.ActualWpfCustomerId != wpfCustomerId)
+            || match.Decision != PaymentMatchDecision.None)
             throw new StaleCandidateException();
         var now = DateTimeOffset.UtcNow;
         match.PaymentId = paymentId; match.UpdatedAt = now;
@@ -517,7 +532,7 @@ public sealed class PaymentMatchReconciler
     /// karşı yazan, bağ kaydedildikten sonra okuduğu için doğru hesapladı. Telafi taraması (<see cref="BankMatchSweepJob"/>) da
     /// bunu kullanır.</para></summary>
     /// <returns>Yeniden hesaplanan kararsız satır; null: atlandı (iki çakışma, açıklaması silinmiş ya da silinmiş hareket, araya
-    /// insan kararı girmiş satır — sayaçlar onu yeniden değerlendirilmiş saymaz).</returns>
+    /// insan kararı girmiş ya da karar katmanındaki satır — sayaçlar onu yeniden değerlendirilmiş saymaz).</returns>
     public async Task<PaymentMatch?> ReevaluateUndecidedAsync(BankTransaction tx, CancellationToken ct)
     {
         for (var attempt = 1; ; attempt++)
@@ -547,8 +562,10 @@ public sealed class PaymentMatchReconciler
                     + "yazıyla çakıştı; atlandı", tx.Id);
                 return null;
             }
-            // Araya insan kararı girdiyse eşleştirici satıra dokunmadan döndü: yeniden değerlendirilmiş sayılmaz.
-            return row.Status is PaymentMatchStatus.Proposed or PaymentMatchStatus.NoProposal ? row : null;
+            // Araya insan kararı girdiyse eşleştirici satıra dokunmadan döndü: yeniden değerlendirilmiş sayılmaz. Karar katmanındaki
+            // satırı da dokunmadan döndürür, durumu kararsız kalır (sınıf özeti, "Karar katmanı kilidi").
+            return (row.Status is PaymentMatchStatus.Proposed or PaymentMatchStatus.NoProposal)
+                && row.Decision == PaymentMatchDecision.None ? row : null;
         }
     }
 
@@ -579,6 +596,8 @@ public sealed class PaymentMatchReconciler
                           && t.DescriptionPurgedAt == null
                           && (m.Status == PaymentMatchStatus.Proposed || m.Status == PaymentMatchStatus.NoProposal)
                           && m.DecidedAt == null && m.PaymentId == null
+                          // Karar katmanındaki satır seçilmez (sınıf özeti, "Karar katmanı kilidi").
+                          && m.Decision == PaymentMatchDecision.None
                     select new { t, m.UpdatedAt };
         if (bondCreatedAt is { } bondAt) query = query.Where(x => x.UpdatedAt < bondAt);
         var targets = await query.OrderByDescending(x => x.t.OccurredAt).ThenBy(x => x.t.Id).Select(x => x.t)

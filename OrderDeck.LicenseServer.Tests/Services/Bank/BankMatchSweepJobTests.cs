@@ -571,4 +571,50 @@ public sealed class BankMatchSweepJobTests
         (orphan.Status, orphan.ProposedWpfCustomerId, orphan.Evidence).Should().Be(
             (PaymentMatchStatus.NoProposal, (Guid?)null, "no-signal" + PaymentMatcher.ReevaluationEvidenceSuffix));
     }
+
+    [Fact]
+    public async Task Tarama_karar_katmanindaki_satiri_ikinci_asamada_secmez()
+    {
+        // K5 (tasarım §2.4): karar katmanındaki satır bağdan önce hesaplanmış olsa da 2. aşamada seçilmez. Seçilseydi eşleştirici
+        // (K1) ona yine dokunmazdı; ama bağdan eski kalan satır her koşuda yeniden seçilip koşunun kotasında yer kaplardı. Seçim
+        // bu yüzden hareketin hiç okunmamasıyla gösterilir.
+        var reads = new TransactionReads();
+        using var db = NewDb(reads); var lic = ConnectedLicense(db);
+        var customer = AddCustomer(db, lic, "ornek_musteri34");
+        var other = AddCustomer(db, lic, "mehmet_k");
+        var hash = NewHash();
+        var now = DateTimeOffset.UtcNow;
+        var source = HashedTx(db, lic, hash, TimeSpan.FromDays(2), DecidedFor(customer.Id, now.AddHours(-3)));
+        Bond(db, lic, customer.Id, hash, now.AddHours(-3), source.Id);
+        var awaiting = HashedTx(db, lic, hash, TimeSpan.FromDays(8), new PaymentMatch
+        {
+            Decision = PaymentMatchDecision.Awaiting, Status = PaymentMatchStatus.Proposed, ProposedWpfCustomerId = other.Id,
+            Layer = PaymentMatchLayer.NameAmount, Confidence = PaymentMatcher.NameConfidence, Evidence = "name:2",
+            MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = now.AddDays(-8), UpdatedAt = now.AddDays(-8),
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == awaiting.Id);
+        reads.Watch = awaiting.Id;
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == awaiting.Id))
+            .Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+        reads.Count.Should().Be(0, "2. aşamanın seçimi karar katmanındaki hareketi döndürmez");
+    }
+
+    /// <summary>İzlenen hareketin varlık olarak kaç kez okunduğunu sayar (izlenmeden okuma dahil): bir seçim sorgusu onu döndürdüyse
+    /// okunmuştur. Kilitli satırı eşleştirici yine dokunmadan döndürdüğü için seçim sonuç durumunda görünmez; sayaç görünür kılar.</summary>
+    private sealed class TransactionReads : IMaterializationInterceptor
+    {
+        public Guid? Watch { get; set; }
+        public int Count { get; private set; }
+
+        public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
+        {
+            if (entity is BankTransaction t && t.Id == Watch) Count++;
+            return entity;
+        }
+    }
 }
