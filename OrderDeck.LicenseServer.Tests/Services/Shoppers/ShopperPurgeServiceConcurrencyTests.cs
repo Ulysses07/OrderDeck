@@ -373,6 +373,47 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Evidence.Should().BeNull();
     }
 
+    /// <summary>
+    /// Silme dekontun müşterisini (<see cref="Payment.WpfCustomerId"/>) boş okuduktan sonra bir yeniden yazım (geriye dönük
+    /// eşleştirme ya da telefon doğrulaması, <c>ShopperCustomerResolver.RederivePaymentsAsync</c>) onu P'ye yazıp commit olursa
+    /// silmenin kaydı onu yine boşaltır (S2b planı Karar 11). EF değişmeyen boş değeri UPDATE'e koymaz: okunan değer zaten boştu,
+    /// P kalırdı. Rakip yazım silmenin kaydından hemen önce ayrı bağlamda koşar (<see cref="RaceSaveHook"/>).
+    /// </summary>
+    [Fact]
+    public async Task Silmenin_okumasindan_sonra_yazilan_dekont_musterisi_de_bosalir()
+    {
+        var s = await SeedAsync();
+        var paymentId = Guid.NewGuid();
+        await using (var seed = NewDb(interceptor: null))
+        {
+            var at = DateTimeOffset.UtcNow.AddDays(-1);
+            seed.Payments.Add(new Payment
+            {
+                Id = paymentId, LicenseId = s.LicenseId, ShopperId = s.ShopperId, PayerName = "Ornek Musteri",
+                ReferansNo = $"r-{Guid.NewGuid():N}", Amount = 300m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+            });
+            await seed.SaveChangesAsync();
+        }
+        var hook = new RaceSaveHook();
+        var written = false;
+        hook.Once(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            (await other.Payments.Where(p => p.Id == paymentId)
+                .ExecuteUpdateAsync(u => u.SetProperty(p => p.WpfCustomerId, (Guid?)s.WpfCustomerId))).Should().Be(1);
+            written = true;
+        });
+        await using var db = NewDb(hook);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        written.Should().BeTrue("kanca yazımı silmenin kaydından önce commit ettirmeli");
+        await using var verify = NewDb(interceptor: null);
+        (await verify.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId)).WpfCustomerId
+            .Should().BeNull("silme dekontun müşterisini her zaman yazar; okumasından sonra yazılan da boşalır");
+    }
+
     /// <summary>Dekont onayının bağdaştırması gibi: satırı ayrı bir bağlamda müşteriye bağlar, jetonu ilerletir.</summary>
     private async Task LinkConcurrentlyAsync(Seeded s, Guid paymentId)
     {

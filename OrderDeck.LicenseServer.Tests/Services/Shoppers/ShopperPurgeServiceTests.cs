@@ -1407,4 +1407,130 @@ public sealed class ShopperPurgeServiceTests
                 SubjectId = (Guid?)shopper.Id, RequestId = (Guid?)requestId, Actor = actor,
             });
     }
+
+    /// <summary>Bağlantısı birleştirilmiş kopyada kalmış kişi (tasarım §2.5): C asıl kayıt, K ona birleştirilmiş kopya,
+    /// shopper'ın bağlantısı K'da. İkisinde de IBAN bağı ve onu gösteren eşleşme satırları var.</summary>
+    private sealed record CopyLink(
+        Shopper Shopper, Guid C, Guid K, Guid MemoryOfC, Guid MemoryOfK, Guid ProposedToC, Guid DecidedForC, Guid ProposedToK);
+
+    /// <param name="provisionalCopy">K shopper'ın açtığı geçici satır mı (<c>CreatedByShopper</c>).</param>
+    /// <param name="phoneProves">C'nin telefonu shopper'ın doğrulanmış telefonu mu; değilse başka bir numara.</param>
+    private static CopyLink SeedCopyLink(LicenseDbContext db, bool provisionalCopy, bool phoneProves)
+    {
+        var shopper = SeedShopper(db);
+        shopper.PhoneVerifiedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        var license = SeedLicense(db);
+        var stale = DateTimeOffset.UtcNow.AddDays(-3);
+        var c = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "tiktok", Username = "ornek_c", FullName = "Örnek Müşteri",
+            Phone = phoneProves ? shopper.Phone : TestPhone.NewE164(), UpdatedAt = stale,
+        };
+        var k = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "tiktok", Username = "ornek_k", Phone = shopper.Phone,
+            MergedIntoId = c.Id, CreatedByShopper = provisionalCopy, UpdatedAt = stale,
+        };
+        db.WpfCustomerProjections.AddRange(c, k);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "tiktok", Username = k.Username,
+            WpfCustomerId = k.Id, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        CustomerIbanMemory Memory(Guid customer)
+        {
+            var memory = new CustomerIbanMemory
+            {
+                Id = Guid.NewGuid(), LicenseId = license.Id, WpfCustomerId = customer,
+                IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345",
+                LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = stale,
+            };
+            db.CustomerIbanMemories.Add(memory);
+            return memory;
+        }
+        PaymentMatch Match(PaymentMatchStatus status, Guid? proposed, Guid? actual)
+        {
+            var tx = BankTx(license);
+            var match = BankMatch(tx, status, proposed, actual);
+            db.BankTransactions.Add(tx);
+            db.PaymentMatches.Add(match);
+            return match;
+        }
+        return new CopyLink(shopper, c.Id, k.Id, Memory(c.Id).Id, Memory(k.Id).Id,
+            Match(PaymentMatchStatus.Proposed, c.Id, null).Id, Match(PaymentMatchStatus.ConfirmedByHuman, c.Id, c.Id).Id,
+            Match(PaymentMatchStatus.Proposed, k.Id, null).Id);
+    }
+
+    /// <summary>Silme bağlantıyı asıl kayda çözdü: C silinir, C'nin ve K'nın bağı gider, ikisini gösteren satırlar boşalır.</summary>
+    private static async Task AssertCanonicalPurgedAsync(LicenseDbContext db, CopyLink s, ShopperPurgeResult? result)
+    {
+        var c = await db.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == s.C);
+        c.PurgedAt.Should().NotBeNull("bağlantının vardığı asıl kayıt kişinindir");
+        c.FullName.Should().BeNull();
+        result!.ProjectionsScrubbed.Should().Be(1, "kopya varsayılan süzgeçte; silinen asıl kayıt");
+        (await db.CustomerIbanMemories.AsNoTracking().Select(m => m.Id).ToListAsync())
+            .Should().NotContain(new[] { s.MemoryOfC, s.MemoryOfK }, "asıl kayıttaki ve kopyadaki bağ kişinindir");
+        var matches = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        (matches[s.ProposedToC].ProposedWpfCustomerId, matches[s.ProposedToC].Status)
+            .Should().Be(((Guid?)null, PaymentMatchStatus.NoProposal));
+        (matches[s.DecidedForC].ProposedWpfCustomerId, matches[s.DecidedForC].ActualWpfCustomerId)
+            .Should().Be(((Guid?)null, (Guid?)null), "kararın müşterisi de kişinin asıl kaydı");
+        matches[s.DecidedForC].Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman, "ölçüm sonucu durumdan okunur");
+        matches[s.ProposedToK].ProposedWpfCustomerId.Should().BeNull("kopyayı gösteren satır bugünkü gibi bulunur");
+    }
+
+    [Fact]
+    public async Task Kopyada_kalmis_baglantinin_asil_kaydi_silinir_bagi_ve_karari_bulunur()
+    {
+        // S2b, tasarım §2.5/§12: bağlantı birleştirmeden sonra kopyada (K → C) kalabilir; S2b göçü bağı ve kararı asıl kayda
+        // taşır. Silme yalnız bağlantının Id'siyle arasaydı kişinin asıl kaydını silmez, taşınan bağı ve kararı bulmazdı.
+        // Kopyanın kendi satırları (taşınmamış bağ, kopyayı gösteren öneri) da bulunur.
+        using var db = NewDb();
+        var s = SeedCopyLink(db, provisionalCopy: false, phoneProves: false);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+
+        await AssertCanonicalPurgedAsync(db, s, result);
+    }
+
+    [Fact]
+    public async Task Kanitli_gecici_kopyadaki_baglanti_asil_kayda_cozulur()
+    {
+        // Geçici (CreatedByShopper) kopyadan geçen bağlantı asıl kayda yalnız telefon kanıtıyla çözülür
+        // (ShopperCustomerResolver, CustomerIdentityMergeJob'un kanıtı): asıl kaydın telefonu shopper'ın doğrulanmış telefonu.
+        using var db = NewDb();
+        var s = SeedCopyLink(db, provisionalCopy: true, phoneProves: true);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+
+        await AssertCanonicalPurgedAsync(db, s, result);
+    }
+
+    [Fact]
+    public async Task Kanitsiz_gecici_kopyadaki_baglanti_gercek_musteriye_dokunmaz()
+    {
+        // (koruma) Kanıtsız geçici kopyanın bağlantısı başkasının (sahte hesap) olabilir: asıl kayda çözülseydi bu silme gerçek
+        // müşterinin projeksiyonunu, bağını ve kararını silerdi. Kopyanın kendi satırları gider.
+        using var db = NewDb();
+        var s = SeedCopyLink(db, provisionalCopy: true, phoneProves: false);
+        await db.SaveChangesAsync();
+        var matchesBefore = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+
+        var result = await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+
+        var c = await db.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == s.C);
+        (c.PurgedAt, c.FullName).Should().Be(((DateTimeOffset?)null, "Örnek Müşteri"));
+        result!.ProjectionsScrubbed.Should().Be(0);
+        var memories = await db.CustomerIbanMemories.AsNoTracking().Select(m => m.Id).ToListAsync();
+        memories.Should().Contain(s.MemoryOfC, "gerçek müşterinin bağı kalır");
+        memories.Should().NotContain(s.MemoryOfK, "kopyanın bağı silinen kişinindir");
+        var matches = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        foreach (var id in new[] { s.ProposedToC, s.DecidedForC })
+        {
+            matches[id].Should().BeEquivalentTo(matchesBefore[id], "gerçek müşterinin önerisi ve kararı yerinde");
+        }
+        matches[s.ProposedToK].ProposedWpfCustomerId.Should().BeNull();
+    }
 }

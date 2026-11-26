@@ -5,6 +5,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Sync;
 
@@ -201,6 +202,10 @@ public sealed class ShopperPurgeService
         //    alanı zaten boş olan sayılmaz. Sayım boşaltmadan ÖNCE.
         //    Dekontun müşterisi (WpfCustomerId) de boşalır: bağ S2a geri doldurmasıyla geldi (banka havalesi onayı, spec
         //    2026-10-10 §12) ve projeksiyon kullanıcı adını koruduğu için kişiye çözülürdü. Banka satırını bulma S4'te.
+        //    Okunan değer boş olsa da yazılır (IsModified): EF değişmeyen boş değeri UPDATE'e koymaz, oysa bu okumadan sonra
+        //    commit olan bir yeniden yazım (geriye dönük eşleştirme, telefon doğrulaması:
+        //    ShopperCustomerResolver.RederivePaymentsAsync) müşteriyi dekonta geri yazmış olabilir; zorunlu yazım onu da
+        //    boşaltır (S2b planı Karar 11). İmha kaydının sayımı yine okunan değerdendir.
         var paymentsWithPersonal = payments.Where(HasPersonalFields).ToList();
         foreach (var p in payments)
         {
@@ -210,6 +215,7 @@ public sealed class ShopperPurgeService
             p.MediaObjectKey = null;
             p.MediaContentType = null;
             p.WpfCustomerId = null;
+            _db.Entry(p).Property(x => x.WpfCustomerId).IsModified = true;
             p.UpdatedAt = now;
 
             // Damga YALNIZCA silinecek bir şey kalmadığında. Dosya hâlâ
@@ -243,12 +249,17 @@ public sealed class ShopperPurgeService
         // Pending linkin platform+kullanıcı adı herkese açık olabilir; onu
         // fallback kimlik saymak başka bir kişinin projeksiyonunu sildirebilir.
         // Telefon da purge tarafından boşaltıldığı için retry anahtarı olamaz.
-        var projectionKeys = links
-            .Where(l => l.WpfCustomerId is not null)
-            .Select(l => (
-                LicenseId: l.LicenseId,
-                WpfCustomerId: l.WpfCustomerId!.Value))
-            .ToHashSet();
+        // Anahtarlar bağlantının Id'si ve kanıt kuralıyla çözülen asıl kaydıdır (kural ve dayanağı 3b'de); shopper'ın
+        // telefonu adım 6 boşaltmadan önce okunur.
+        var projectionKeys = new HashSet<(Guid LicenseId, Guid WpfCustomerId)>();
+        foreach (var l in links.Where(l => l.WpfCustomerId is not null))
+        {
+            var linkCustomer = l.WpfCustomerId!.Value;
+            projectionKeys.Add((l.LicenseId, linkCustomer));
+            if (await ShopperCustomerResolver.ResolveLinkAsync(_db, l.LicenseId, linkCustomer, shopper.Phone,
+                    shopper.PhoneVerifiedAt, ct) is { } canonical)
+                projectionKeys.Add((l.LicenseId, canonical));
+        }
         var licenseIds = projectionKeys
             .Select(k => k.LicenseId)
             .Distinct()
@@ -307,6 +318,14 @@ public sealed class ShopperPurgeService
         //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:
         //       kanıtın kaynağı o açıklamadır ve silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama,
         //       satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
+        //     Kimlik kümesi adım 3'ün anahtarlarıdır (tasarım §2.5, §12): bağlantının Id'si (K) birleştirmeden sonra kopyada
+        //     kalmış olabilir ve S2b göçü kopyadaki bağı onu gösteren kararla birlikte asıl kayda (C) taşır. Yalnız K ile
+        //     aransaydı kişinin asıl kaydı silinmez, taşınan bağ ve karar bulunmazdı. Her bağlantı için {K} ∪ {C}; C,
+        //     ShopperCustomerResolver.ResolveLinkAsync'in kanıt kuralıyla çözülür. K her zaman kalır (taşınmamış bağ ve karar,
+        //     geçici kopyanın satırları). Kanıtsız geçici (CreatedByShopper) kopyada C eklenmez: bağlantı sahte bir hesabın
+        //     olabilir, silmesi gerçek müşterinin bağını ve kararını silerdi. MarkPurged varsayılan süzgeçli projeksiyonlara
+        //     uygulanır (C dahil, kopya K hariç). IBAN ve eşleşme aramaları, geç bağ taraması, 3a ve 3c bu kümeyle; kişinin
+        //     öbür kopyalarındaki bağı aramak S4'tedir.
         //     Kişinin aynı lisansta birden çok bağı olabilir (Instagram + TikTok) ve bir satır ikisini birden taşıyabilir:
         //     kural satırın lisansındaki her kimliğe uygulanır (ScrubMatch). UpdatedAt eşleşmenin eşzamanlılık jetonudur;
         //     çakışma (arada silinen hareket ya da hafıza dahil) SaveAsync'te bir kez yeniden denenir. Kullanıcı adı
