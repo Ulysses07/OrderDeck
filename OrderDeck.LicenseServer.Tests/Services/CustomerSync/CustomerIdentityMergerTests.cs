@@ -393,7 +393,7 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         IbanMemorySource learnedFrom = IbanMemorySource.HumanApproval, DateTimeOffset? lastConfirmedAt = null) => new()
     {
         Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = customerId, IbanHash = ibanHash, IbanMasked = "TR..",
-        LearnedFrom = learnedFrom, CreatedAt = createdAt, LastConfirmedAt = lastConfirmedAt,
+        LearnedFrom = learnedFrom, SourceBankTransactionId = Guid.NewGuid(), CreatedAt = createdAt, LastConfirmedAt = lastConfirmedAt,
     };
 
     private static Payment Receipt(Guid licenseId, Guid customerId, PaymentStatus status, DateTimeOffset at) => new()
@@ -415,13 +415,14 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         return counts;
     }
 
+    /// <summary>Asıl kayıttaki bağ daha eski: tek kayıtta da ilk öğrenilen satır kalır, ikinci öğrenme onu tazeler.</summary>
     [Theory]
-    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.HumanApproval, true)]   // kopyanınki kalır (asıl kayıttaki daha eski olsa da)
-    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm, false)]  // asıl kayıttaki kalır
-    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm, false)]    // eski CreatedAt (asıl kayıttaki) kalır
-    [InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.HumanApproval, false)]
+    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm)]   // kopyanın "Evet"i kalana geçer
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm)]
+    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm)]
+    [InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval)] // BankConfirm yok: kalanınki
     public async Task Iki_kayitta_ayni_IBAN_tek_satira_iner(
-        IbanMemorySource copySource, IbanMemorySource canonicalSource, bool copyKept)
+        IbanMemorySource copySource, IbanMemorySource canonicalSource, IbanMemorySource expectedSource)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -436,21 +437,26 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
 
         counts.IbanMemories.Should().Be(1, "silinen ikiz de taşınan bağ sayılır");
         var kept = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == license.Id);
-        kept.Id.Should().Be(copyKept ? copyBond.Id : canonicalBond.Id);
+        kept.Id.Should().Be(canonicalBond.Id);
         kept.WpfCustomerId.Should().Be(canonical.Id);
-        kept.LearnedFrom.Should().Be(copyKept ? copySource : canonicalSource);
+        kept.LearnedFrom.Should().Be(expectedSource);
+        (kept.CreatedAt, kept.SourceBankTransactionId).Should().Be((t0, canonicalBond.SourceBankTransactionId),
+            "öğreten havale ve öğrenme anı değişmez (tasarım §2.5)");
         (await db.DataDestructionRecords.AnyAsync(r => r.LicenseId == license.Id)).Should()
             .BeFalse("bağ kalan satırda yaşar: tekilleştirme imha değil");
     }
 
-    /// <summary>Asıl kaydın satırı yalnız orada durduğu için kazanmaz: kural iki satıra da aynı uygulanır.</summary>
+    /// <summary>Asıl kaydın satırı yalnız orada durduğu için kazanmaz: kural iki satıra da aynı uygulanır. Kaynak kalanı
+    /// seçmez, yalnız kalanın kaynağını BankConfirm'e yükseltir.</summary>
     [Theory]
-    [InlineData(IbanMemorySource.HumanApproval, -1, false, true)]  // kopyanınki daha eski: Id'si büyük olsa da kalır
-    [InlineData(IbanMemorySource.HumanApproval, 0, true, true)]    // aynı an: küçük Id kopyanınki
-    [InlineData(IbanMemorySource.HumanApproval, 0, false, false)]  // aynı an: küçük Id asıl kayıttaki
-    [InlineData(IbanMemorySource.BankConfirm, -1, true, false)]    // asıl kayıttaki BankConfirm: kopyanınki eski ve küçük Id'li olsa da düşer
-    public async Task Kalan_bag_kaynaga_sonra_yasa_sonra_Id_ye_gore_secilir(
-        IbanMemorySource canonicalSource, int copyDayOffset, bool copyHasSmallerId, bool copyKept)
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval, -1, false, true, IbanMemorySource.HumanApproval)] // kopyanınki daha eski: Id'si büyük olsa da kalır
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval, 0, true, true, IbanMemorySource.HumanApproval)]   // aynı an: küçük Id kopyanınki
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval, 0, false, false, IbanMemorySource.HumanApproval)] // aynı an: küçük Id asıl kayıttaki
+    [InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.BankConfirm, -1, false, true, IbanMemorySource.BankConfirm)]       // daha yeni BankConfirm düşer, kaynağı eskiye geçer
+    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.ManualMatch, -1, false, true, IbanMemorySource.BankConfirm)]       // eski BankConfirm, yeni ManualMatch'e karşı kalır
+    public async Task Kalan_bag_yasa_sonra_Id_ye_gore_secilir_BankConfirm_kalana_gecer(
+        IbanMemorySource copySource, IbanMemorySource canonicalSource, int copyDayOffset, bool copyHasSmallerId, bool copyKept,
+        IbanMemorySource expectedSource)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -459,16 +465,19 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         var hash = NewIbanHash();
         var ids = new[] { Guid.NewGuid(), Guid.NewGuid() }.OrderBy(i => i.ToString("N"), StringComparer.Ordinal).ToArray();
         var canonicalBond = Bond(license.Id, canonical.Id, hash, t0, canonicalSource);
-        var copyBond = Bond(license.Id, copy.Id, hash, t0.AddDays(copyDayOffset));
+        var copyBond = Bond(license.Id, copy.Id, hash, t0.AddDays(copyDayOffset), copySource);
         canonicalBond.Id = ids[copyHasSmallerId ? 1 : 0];
         copyBond.Id = ids[copyHasSmallerId ? 0 : 1];
         db.CustomerIbanMemories.AddRange(canonicalBond, copyBond);
 
         await SaveAndMergeAsync(db, license.Id, copy.Id, canonical.Id);
 
+        var expected = copyKept ? copyBond : canonicalBond;
         var kept = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == license.Id);
-        kept.Id.Should().Be(copyKept ? copyBond.Id : canonicalBond.Id);
+        kept.Id.Should().Be(expected.Id);
         kept.WpfCustomerId.Should().Be(canonical.Id);
+        kept.LearnedFrom.Should().Be(expectedSource);
+        (kept.CreatedAt, kept.SourceBankTransactionId).Should().Be((expected.CreatedAt, expected.SourceBankTransactionId));
     }
 
     [Theory]

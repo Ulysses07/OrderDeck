@@ -139,9 +139,9 @@ public sealed class CustomerIdentityMergerRelationalTests : IAsyncLifetime
         var t0 = DateTimeOffset.UtcNow.AddDays(-30);
         var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
         var newestConfirmation = DateTimeOffset.UtcNow.AddDays(-2); // ilk adımda düşen satırda: ikinci adımda kaybolmamalı
-        var kept = Bond(copy1, hash, IbanMemorySource.BankConfirm, t0.AddDays(1), t0.AddDays(1));
+        var kept = Bond(copy1, hash, IbanMemorySource.HumanApproval, t0, t0);
         db.CustomerIbanMemories.AddRange(
-            Bond(canonical, hash, IbanMemorySource.HumanApproval, t0, newestConfirmation), kept,
+            Bond(canonical, hash, IbanMemorySource.HumanApproval, t0.AddDays(1), newestConfirmation), kept,
             Bond(copy2, hash, IbanMemorySource.BankConfirm, t0.AddDays(2), t0.AddDays(2)));
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear(); // birleştirici bağları kendi okur
@@ -150,22 +150,24 @@ public sealed class CustomerIdentityMergerRelationalTests : IAsyncLifetime
         await merger.RepointReferencesAsync(licenseId, copy1.Id, canonical.Id, default);
         await merger.RepointReferencesAsync(licenseId, copy2.Id, canonical.Id, default);
 
-        // TEK SaveChanges: ikinci çağrıda copy1'den taşınan satır veritabanında hâlâ copy1'de, asıl kayıttaki ise silinmeyi
-        // bekliyor. Karar izlenen satırlardan verilmezse iki satır asıl kayda çıkar.
+        // TEK SaveChanges: ikinci çağrıda copy1'den taşınan (en eski, kalan) satır veritabanında hâlâ copy1'de, asıl kayıttaki
+        // ise silinmeyi bekliyor. Karar izlenen satırlardan verilmezse kopya2'ninki de asıl kayda çıkar ya da "Evet"i silinen
+        // satıra yazılır.
         Func<Task> act = async () => await db.SaveChangesAsync();
         await act.Should().NotThrowAsync("geniş IBAN tekili (2601) birleştirmeyi ve onu koşan müşteri senkronunu düşürmemeli");
 
         db.ChangeTracker.Clear();
         var row = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == licenseId);
-        row.Id.Should().Be(kept.Id, "en eski BankConfirm kalır");
+        row.Id.Should().Be(kept.Id, "en eski kalır");
         row.WpfCustomerId.Should().Be(canonical.Id);
+        row.LearnedFrom.Should().Be(IbanMemorySource.BankConfirm, "kopya2'nin \"Evet\"i kalan satıra geçer");
         row.LastConfirmedAt.Should().BeCloseTo(newestConfirmation, TimeSpan.FromMilliseconds(1), "üçünün en yenisi");
     }
 
     [Fact]
     public async Task Kopyanin_satiri_kalirken_asil_satir_once_silinir()
     {
-        // Kalan kopyanın satırı: UPDATE asıl kaydın satırı silinmeden giderse geniş tekile çarpar (2601).
+        // Kalan kopyanın (daha eski) satırı: UPDATE asıl kaydın satırı silinmeden giderse geniş tekile çarpar (2601).
         await SharedIbanSchema.ApplyAsync(_cs);
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -174,8 +176,8 @@ public sealed class CustomerIdentityMergerRelationalTests : IAsyncLifetime
         db.WpfCustomerProjections.AddRange(canonical, copy);
         var t0 = DateTimeOffset.UtcNow.AddDays(-30);
         var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
-        var kept = Bond(copy, hash, IbanMemorySource.BankConfirm, t0.AddDays(1), t0.AddDays(1));
-        db.CustomerIbanMemories.AddRange(Bond(canonical, hash, IbanMemorySource.HumanApproval, t0, t0), kept);
+        var kept = Bond(copy, hash, IbanMemorySource.HumanApproval, t0, t0);
+        db.CustomerIbanMemories.AddRange(Bond(canonical, hash, IbanMemorySource.BankConfirm, t0.AddDays(1), t0.AddDays(1)), kept);
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
@@ -186,7 +188,7 @@ public sealed class CustomerIdentityMergerRelationalTests : IAsyncLifetime
         await act.Should().NotThrowAsync("DELETE, UPDATE'ten önce gitmeli");
         db.ChangeTracker.Clear();
         var row = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == licenseId);
-        (row.Id, row.WpfCustomerId).Should().Be((kept.Id, canonical.Id));
+        (row.Id, row.WpfCustomerId, row.LearnedFrom).Should().Be((kept.Id, canonical.Id, IbanMemorySource.BankConfirm));
     }
 
     [Fact]

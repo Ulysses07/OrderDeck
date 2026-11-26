@@ -25,8 +25,11 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///
 /// IBAN bağı (banka havalesi onayı, spec 2026-10-10 §9): asıl kayıtta aynı özetli bağ varsa ikisi tek satıra iner; ikisi
 /// de asıl kayda geçseydi geniş tekil (LicenseId, IbanHash, WpfCustomerId) kaydı 2601'le düşürürdü. Çift ancak dar tekil
-/// (LicenseId, IbanHash) düşünce (S3b) doğar. Kalan satırı <see cref="PreferBond"/> seçer, son doğrulaması ikisinin en
-/// yenisidir (KVKK K-6: süre son doğrulanmış havaleden işler). Düşen satıra imha kaydı YAZILMAZ: bağ kalan satırda yaşar.
+/// (LicenseId, IbanHash) düşünce (S3b) doğar. Sonuç tek kayıttakiyle aynıdır: orada ikinci öğrenme yeni satır açmaz, ilk
+/// öğrenilen satırı tazeler. Kalan satırı <see cref="PreferBond"/> seçer (eski olan); Id'si, CreatedAt'i, öğreten havalesi
+/// (SourceBankTransactionId) ve maskesi değişmez. İkisinden biri BankConfirm ise kaynağı BankConfirm olur (tasarım §2.5'in
+/// "Evet" upsert'i), son doğrulaması ikisinin en yenisidir (KVKK K-6: süre son doğrulanmış havaleden işler). Düşen satıra imha
+/// kaydı YAZILMAZ: bağ kalan satırda yaşar.
 ///
 /// Dekontun müşterisi (Payment.WpfCustomerId) çevrilir, başka alanı yazılmaz. Payment.Status eşzamanlılık jetonudur: okuma
 /// ile kayıt arasında karara bağlanan dekont DbUpdateConcurrencyException üretir. Onu çağıran ele alır: müşteri senkronu
@@ -157,6 +160,9 @@ public sealed class CustomerIdentityMerger
                     continue;
                 }
                 var (keep, drop) = PreferBond(m, twin);
+                // Tek kayıtta sonradan gelen "Evet" ilk öğrenilen satırın kaynağını yükseltir; ManualMatch ve HumanApproval tazelemesi
+                // kaynağı değiştirmez.
+                if (drop.LearnedFrom == IbanMemorySource.BankConfirm) keep.LearnedFrom = IbanMemorySource.BankConfirm;
                 if (drop.LastConfirmedAt is { } at && (keep.LastConfirmedAt ?? keep.CreatedAt) < at)
                     keep.LastConfirmedAt = at;
                 keep.WpfCustomerId = toId;
@@ -214,13 +220,18 @@ public sealed class CustomerIdentityMerger
             p.WpfCustomerId = null;
     }
 
-    /// <summary>Aynı özetli iki bağdan kalan ve düşen: BankConfirm önce, sonra eski CreatedAt, sonra küçük Id ("N" ordinal).</summary>
+    /// <summary>
+    /// Aynı özetli iki bağdan kalan ve düşen: eski CreatedAt, eşitse küçük Id ("N" ordinal); kaynağa bakılmaz. Tek kayıttaki
+    /// tazelemenin eşi: orada kalan satır ilk öğrenilendir, sonraki öğrenme onu tazeler (PaymentMatchReconciler.LearnIbanAsync:
+    /// kaynağa ve öğreten havaleye dokunmaz, LastConfirmedAt yalnız ileri gider). Tasarım §2.5'in "Evet" upsert'i de var olan
+    /// satırın kaynağını BankConfirm'e yükseltip süresini tazeler; öğreten havale (SourceBankTransactionId) ve CreatedAt
+    /// değişmez. Yükseltmeyi çağıran yapar. "BankConfirm önce" seçimi kopyanın daha yeni onayını tutardı: kalan satırın öğreten
+    /// havalesi ve CreatedAt'i, eşleme kaldırmanın ve yeni onayın sonucu tek kayıttakinden ayrışırdı (S2a incelemesinin
+    /// SharedConfirm ölçümü). Çift ancak dar tekil düşünce (S3b) doğar, kural orada canlanır.
+    /// </summary>
     private static (CustomerIbanMemory Keep, CustomerIbanMemory Drop) PreferBond(CustomerIbanMemory a, CustomerIbanMemory b)
     {
-        var aConfirmed = a.LearnedFrom == IbanMemorySource.BankConfirm;
-        var bConfirmed = b.LearnedFrom == IbanMemorySource.BankConfirm;
-        var keepA = aConfirmed != bConfirmed ? aConfirmed
-            : a.CreatedAt != b.CreatedAt ? a.CreatedAt < b.CreatedAt
+        var keepA = a.CreatedAt != b.CreatedAt ? a.CreatedAt < b.CreatedAt
             : string.CompareOrdinal(a.Id.ToString("N"), b.Id.ToString("N")) < 0;
         return keepA ? (a, b) : (b, a);
     }
