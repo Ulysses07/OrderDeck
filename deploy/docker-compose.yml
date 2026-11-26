@@ -202,6 +202,13 @@ services:
       # kalır (açılışta tek uyarı, banka işleri zamanlanmaz). `:?` eksik satırda
       # CI'ın `config -q` kapısını düşürüp HER deploy'u kilitlerdi.
       OrderDeck__Bank__HashKey: "${OrderDeck__Bank__HashKey:-}"
+      # Havale onayı (spec 2026-10-10 §2.1, §7): ödeme isteğinin ömrü (gün) ve
+      # banka verisinin bayat sayıldığı eşik (dakika); okuyanı S3a ve S3c.
+      # Varsayılan SAYI ZORUNLU, boş string DEĞİL: int binder'ı boşu
+      # ayrıştıramaz ve BankOptions açılışta okunur, sunucu açılmazdı. `:?` DEĞİL
+      # `:-`: eksik .env satırı `config -q` kapısını düşürüp deploy'u kilitlemesin.
+      OrderDeck__Bank__ExpectationTtlDays: "${OrderDeck__Bank__ExpectationTtlDays:-14}"
+      OrderDeck__Bank__StaleFeedAfterMinutes: "${OrderDeck__Bank__StaleFeedAfterMinutes:-120}"
       # Veri sorumlusu kapısı (KVKK K-3, karar 23): yayıncının veri sorumlusu
       # bilgisi yoksa Obifin'e ilk kayıt, Doğrula ve Banka ekle reddedilir.
       # Yalnız pilot geçişinde .env'e `Obifin__RequireDataControllerProfile=false`

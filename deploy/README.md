@@ -150,6 +150,9 @@ OrderDeck__BroadcastMedia__Provider=r2
 # DEĞİŞTİRME: var olan bütün hash'ler geçersiz olur. docker-compose.yml'de de
 # listeli — orada olmayan anahtar container'a girmez.
 OrderDeck__Bank__HashKey=
+# Havale onayı: ödeme isteğinin ömrü (gün) ve banka verisinin bayatlık eşiği (dakika).
+# OrderDeck__Bank__ExpectationTtlDays=14
+# OrderDeck__Bank__StaleFeedAfterMinutes=120
 # Veri sorumlusu kapısı (KVKK K-3): yazılmazsa "true" (fail-closed). Yalnız pilot
 # geçişinde, geçici olarak; aşağıda "Veri sorumlusu kapısı".
 # Obifin__RequireDataControllerProfile=false

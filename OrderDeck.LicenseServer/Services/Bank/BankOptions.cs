@@ -31,4 +31,21 @@ public sealed class BankOptions
     /// <summary>Geç muhasebeleşen hareket çekildikten en az bu kadar gün kalır (eşleştirme ve dekont bağdaştırması yetişsin):
     /// her süre fiilen <c>max(işlem tarihi + süre, çekim + bu)</c>.</summary>
     public int MinDaysAfterFetch { get; set; } = 7;
+
+    // Havale onayı (spec 2026-10-10 §2.1, §7). Okuyanı S3a ve S3c; S2a'da okunmaz. Açılışta doğrulanmaz (ValidateOnStart
+    // yok): banka ayarı lisans sunucusunu düşürmesin. 0 ve eksi güvenli yöndedir. Prod'da docker-compose'un environment
+    // bölümünden gelir; varsayılan orada SAYI olmalı (int binder'ı boş dizeyi ayrıştıramaz, bu sınıf açılışta okunur).
+
+    /// <summary>Ödeme isteğinin ömrü, gün: süre istek anı + bu, sorgu anında türetilir; süresi geçen beklenti yalnız
+    /// otomatik onaydan ve fazla hesabından düşer (spec §2.1). 0 ya da eksi: her beklentinin süresi geçmiştir, otomatik
+    /// onay olmaz.</summary>
+    public int ExpectationTtlDays { get; set; } = 14;
+
+    /// <summary>Banka verisinin bayat sayıldığı eşik, dakika: son banka verisi bundan eskiyse "Banka verisi X'ten beri
+    /// gelmiyor" şeridi çıkar (spec §7). Dakika cinsinden, çünkü TimeSpan bağlaması <c>=2</c>'yi 2 gün okur. 0 ya da
+    /// eksi: şerit hep görünür.</summary>
+    public int StaleFeedAfterMinutes { get; set; } = 120;
+
+    /// <summary><see cref="StaleFeedAfterMinutes"/> süre olarak.</summary>
+    public TimeSpan StaleFeedAfter => TimeSpan.FromMinutes(StaleFeedAfterMinutes);
 }
