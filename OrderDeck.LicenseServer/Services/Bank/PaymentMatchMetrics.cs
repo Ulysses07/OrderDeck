@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
@@ -22,13 +23,13 @@ public sealed record PlatformStat(string Platform, int Confirmed, int Contradict
 /// (plan), ama öneri yanlıştı; sayılmasaydı çelişki oranı olduğundan iyi görünürdü. <see cref="ManualOnly"/> yalnız önerisi
 /// olmayan hareketin insan bağıdır.</para>
 /// <para><b>Karar kaynağı.</b> Öneri kararları (<see cref="Confirmed"/> + <see cref="Contradicted"/>) kaynağına göre ayrılır:
-/// dekont onaylı (satır bir dekonta bağlı, <see cref="PaymentMatch.PaymentId"/> dolu: <see cref="ReceiptConfirmed"/>,
-/// <see cref="ReceiptContradicted"/>) ve yalnız sayfa (<see cref="PageConfirmed"/>, <see cref="PageContradicted"/>). Panelde
-/// dekont onayı öneri görülmeden verilir; dekontun müşterisi satırın gerçek müşterisidir, aynı müşteriye elle verilmiş karara
-/// sonradan iliştirilen dekont da öyle: bağımsız kanıttır. Sayfadaki elle eşleme ise öneriye bakarak verilir, öneriye eşit
-/// elle eşleme doğrulandı sayılır (çapalı). Faz 2 (otomatik onay) kararı bağımsız kanıta dayanmalı: eşik yalnız dekont onaylı
-/// kararlardan hesaplanır (<see cref="MeetsPhase2Threshold"/>), sayfa kararları ayrı gösterilir, ne örnekleme ne orana
-/// girer.</para>
+/// dekont onaylı (satır bir dekonta bağlı: <see cref="PaymentMatch.PaymentId"/> dolu ve ödeme banka onayından doğmamış,
+/// "Süzgeç"; <see cref="ReceiptConfirmed"/>, <see cref="ReceiptContradicted"/>) ve yalnız sayfa (<see cref="PageConfirmed"/>,
+/// <see cref="PageContradicted"/>). Panelde dekont onayı öneri görülmeden verilir; dekontun müşterisi satırın gerçek
+/// müşterisidir, aynı müşteriye elle verilmiş karara sonradan iliştirilen dekont da öyle: bağımsız kanıttır. Sayfadaki elle
+/// eşleme ise öneriye bakarak verilir, öneriye eşit elle eşleme doğrulandı sayılır (çapalı). Faz 2 (otomatik onay) kararı
+/// bağımsız kanıta dayanmalı: eşik yalnız dekont onaylı kararlardan hesaplanır (<see cref="MeetsPhase2Threshold"/>), sayfa
+/// kararları ayrı gösterilir, ne örnekleme ne orana girer.</para>
 /// <para><b>Sonradan üretilen öneri.</b> IBAN hafızası değişince yeniden hesaplanan önerinin (kanıtı
 /// <see cref="PaymentMatcher.ReevaluationEvidenceSuffix"/> ekli) dekont kararı <see cref="ReceiptConfirmed"/> /
 /// <see cref="ReceiptContradicted"/>'e girmez, <see cref="ReevaluatedReceiptConfirmed"/> /
@@ -37,7 +38,17 @@ public sealed record PlatformStat(string Platform, int Confirmed, int Contradict
 /// yüksek isabeti de çelişki oranını aşağı çekip 200'e erken ulaştırırdı. Dekont bağı kanıta dokunmaz, bağlı satırın kanıtı
 /// açıklamasıyla (180 güne kadar) kalır: pencere içinde ek güvenilir. Bilinen sınır: KVKK silmesi kişiye bağlı satırın kanıtını
 /// boşaltır, o satırın eki kaybolur. Genel sayımlar, katman ve platform isabeti değişmez. <see cref="ReevaluatedPending"/>
-/// bekleyen önerilerin sonradan üretilenidir (telafi taramasının geriye dönük doldurması "Bekleyen öneri"yi sıçratır).</para></summary>
+/// bekleyen önerilerin sonradan üretilenidir (telafi taramasının geriye dönük doldurması "Bekleyen öneri"yi sıçratır).</para>
+/// <para><b>Süzgeç (tasarım §4.5; S2b).</b> Yalnız karar katmanına girmemiş ya da dekontla kapanmış satırlar sayılır
+/// (<c>Decision ∈ {None, ClosedByReceipt}</c>). Bağlı ödemesinin kaynağı dekont olmayan (<see cref="Payment.Source"/> ≠
+/// <see cref="PaymentSource.Receipt"/>: banka onayı, S3b) karar dekont onaylı sayılmaz; ödeme satırı bulunamayan bağ (FK'sız)
+/// bugünkü gibi dekont sayılır (S2b planı Karar 12). Süzülmeseydi karar katmanının ve banka onayının kararları gölge önerinin
+/// isabeti sayılır, eşik kendi kendini doğrulardı. Satırlar tek eşleştirici sürümündendir (<see cref="PaymentMatch.MatcherVersion"/>):
+/// güncel kişi düzeyi sayılır, boş sürümlü (satır düzeyi, S2b öncesi) satırların kararları ayrı gösterilir; karışsaydı nüfus
+/// değişimi isabet sanılırdı. Hareket düzeyi alanlar (<see cref="Incoming"/>, <see cref="Excluded"/>, gecikme,
+/// <see cref="OpenGaps"/>) sürümsüzdür, iki sürümün çağrısında aynıdır. <see cref="OpenGaps"/> sürümle de ayrılamaz: kanıtsız
+/// geçici kopyada kalmış bağlantının shopper'ının S2a'da açılmış gap'i S2b'den sonra çözülmez (S2b planı Karar 9), açık kalır ve
+/// pencereden çıkana dek sayılır; payı merge öncesi sorgu (3b)'dedir.</para></summary>
 public sealed record PaymentMatchSummary(
     int Incoming, int Excluded, int Proposed, int Confirmed, int Contradicted, int ManualOnly,
     int ReceiptConfirmed, int ReceiptContradicted, int PendingProposals, int NoProposal, int OpenGaps, decimal? ContradictionRate,
@@ -76,7 +87,8 @@ public sealed record PaymentMatchSummary(
 
 /// <summary>Gölge eşleştirmenin ölçümü (spec §9). Salt okur.
 /// <para><b>Nüfus</b>: penceredeki GELEN hareketler, hareketin anına (<see cref="BankTransaction.OccurredAt"/>) göre; her sayım
-/// bu hareketlerin eşleşme satırlarından. Satırın yaratılma anı pencere değildir: ilk çekim geçmişi geri doldurur (bağlantı
+/// bu hareketlerin eşleşme satırlarından (bir sürümün, karar katmanı dışındakiler: <see cref="PaymentMatchSummary"/> özeti,
+/// "Süzgeç"). Satırın yaratılma anı pencere değildir: ilk çekim geçmişi geri doldurur (bağlantı
 /// anından <see cref="ObifinPollJob.InitialGraceDays"/> gün; KVKK Ö-5'ten önce kurulan bağlantılarda 90 gün), eski
 /// hareketin önerisi bugün yazılır. Dışlanan hareket (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı, sıfır tutar, TL/TRY
 /// dışı para birimi)
@@ -99,7 +111,11 @@ public sealed class PaymentMatchMetrics
     public PaymentMatchMetrics(LicenseDbContext db, PaymentMatcher matcher)
     { _db = db; _matcher = matcher; }
 
-    public async Task<PaymentMatchSummary> ComputeAsync(Guid licenseId, int days, CancellationToken ct)
+    /// <summary>Penceredeki sayımlar (sınıf özeti, "Nüfus"). <paramref name="matcherVersion"/> sayılan eşleşme satırlarının
+    /// eşleştiricisidir (<see cref="PaymentMatch.MatcherVersion"/>): güncel <see cref="PaymentMatcher.PersonLevelVersion"/>, null satır
+    /// düzeyi (S2b öncesi). Hareket düzeyi alanlar sürümsüzdür, iki sürümün çağrısında aynıdır (<see cref="PaymentMatchSummary"/>
+    /// özeti, "Süzgeç").</summary>
+    public async Task<PaymentMatchSummary> ComputeAsync(Guid licenseId, int days, int? matcherVersion, CancellationToken ct)
     {
         var since = DateTimeOffset.UtcNow.AddDays(-days);
         // Yalnız dışlama ve gecikme için gereken alanlar: ham JSON ve açıklama okunmaz. Para birimi de dışlamanın alanıdır;
@@ -113,13 +129,18 @@ public sealed class PaymentMatchMetrics
             })
             .ToListAsync(ct);
         var excluded = incoming.Where(_matcher.IsExcluded).Select(t => t.Id).ToHashSet();
+        // Tek sürümün satırları (null = satır düzeyi: SQL'de IS NULL), karar katmanındaki satır sayılmaz, dekontla kapanan sayılır;
+        // dekont onaylı karar bağlı ödemenin banka onayı olmamasını ister (PaymentMatchSummary özeti, "Süzgeç").
         var rows = await (from m in _db.PaymentMatches.AsNoTracking()
                           join t in _db.BankTransactions on m.BankTransactionId equals t.Id
                           where m.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming && t.OccurredAt >= since
+                                && m.MatcherVersion == matcherVersion
+                                && (m.Decision == PaymentMatchDecision.None || m.Decision == PaymentMatchDecision.ClosedByReceipt)
                           select new
                           {
                               m.BankTransactionId, m.Status, m.Layer, HasProposal = m.ProposedWpfCustomerId != null,
-                              HasReceipt = m.PaymentId != null,
+                              HasReceipt = m.PaymentId != null
+                                  && !_db.Payments.Any(p => p.Id == m.PaymentId && p.Source != PaymentSource.Receipt),
                               Reevaluated = m.Evidence != null && m.Evidence.EndsWith(PaymentMatcher.ReevaluationEvidenceSuffix),
                               ActualPlatform = _db.WpfCustomerProjections
                                   .Where(c => c.Id == m.ActualWpfCustomerId && c.LicenseId == licenseId && c.PurgedAt == null)

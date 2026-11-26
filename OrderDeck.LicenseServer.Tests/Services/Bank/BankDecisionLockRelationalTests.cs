@@ -22,7 +22,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 /// okuduğu satır kaydından önce karar katmanına girerse jeton (UPDATE'in WHERE'indeki <c>UpdatedAt</c>) kaydı reddeder, taze satırda
 /// K1 dokunmaz. (3) Bağdaştırıcının seçtiği aday, satırı okunmadan hemen önce karar katmanına girerse bayat seçim (K2) bir kez yeniden
 /// denenir ve taze seçimi <c>taken</c> (K3) eler; komut kancası yalnız ilişkiselde var. Araya giren yazı ham SQL'dir
-/// (<c>N'Awaiting'</c>): okuyucu sütunun dize biçimini tanımalı. Testcontainers kullanır; CI ubuntu işinde koşar.
+/// (<c>N'Awaiting'</c>): okuyucu sütunun dize biçimini tanımalı. (4) Ölçümün süzgeci (S2b Görev 8) SQL'e çevrilir: karar dizesi,
+/// bağlı ödemenin kaynağı (alt sorgu) ve satır düzeyi bloğun boş sürümü. Testcontainers kullanır; CI ubuntu işinde koşar.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -163,6 +164,60 @@ public sealed class BankDecisionLockRelationalTests : IAsyncLifetime
         (gap.PaymentId, gap.Reason, gap.ResolvedAt).Should().Be((payment.Id, PaymentMatchGapReason.NoCandidate, (DateTimeOffset?)null));
         jobDb.ChangeTracker.Entries().Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory)
             .Should().NotContain(e => e.State != EntityState.Unchanged, "düşen deneme izde kalmaz");
+    }
+
+    [Fact]
+    public async Task Olcum_suzgeci_SQLe_cevrilir()
+    {
+        // Ölçümün süzgeci (tasarım §4.5): karar sütunu dize saklanır, dekont onayı bağlı ödemenin kaynağını (o da dize) alt sorguyla
+        // okur, satır düzeyi blok boş sürümü seçer (parametre NULL'ken '=' hiçbir satır döndürmezdi). Yalnız InMemory'de sınansaydı
+        // çeviri hatası prod'da sayfanın ilk açılışında çıkardı.
+        Seeded s;
+        await using (var seed = NewDb(interceptor: null)) s = await SeedAsync(seed, connected: false);
+        var now = DateTimeOffset.UtcNow;
+        var receipt = Receipt(s, 110m, now.AddDays(-1));
+        var approvedBank = Receipt(s, 120m, now.AddDays(-2)); approvedBank.Source = PaymentSource.Bank;
+        var linkedBank = Receipt(s, 130m, now.AddDays(-3)); linkedBank.Source = PaymentSource.Bank;
+        var closed = Incoming(s.LicenseId, 110m, now.AddDays(-1), "EFT GELEN", hash: null);
+        var approved = Incoming(s.LicenseId, 120m, now.AddDays(-2), "EFT GELEN", hash: null);
+        var bankLinked = Incoming(s.LicenseId, 130m, now.AddDays(-3), "EFT GELEN", hash: null);
+        var unlinked = Incoming(s.LicenseId, 140m, now.AddDays(-4), "EFT GELEN", hash: null);
+        var legacy = Incoming(s.LicenseId, 150m, now.AddDays(-5), "EFT GELEN", hash: null);
+        PaymentMatch Row(BankTransaction t, PaymentMatchStatus status, Guid proposed, PaymentMatchDecision decision, Guid? payment,
+            int? version = PaymentMatcher.PersonLevelVersion) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = t.Id, Status = status, Decision = decision,
+            ProposedWpfCustomerId = proposed, ActualWpfCustomerId = s.CustomerId, PaymentId = payment,
+            Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.UsernameConfidence,
+            Evidence = "username=ornekmusteri34", MatcherVersion = version, DecidedAt = now, CreatedAt = t.OccurredAt, UpdatedAt = t.OccurredAt,
+        };
+        await using (var db = NewDb(interceptor: null))
+        {
+            db.BankTransactions.AddRange(closed, approved, bankLinked, unlinked, legacy);
+            db.Payments.AddRange(receipt, approvedBank, linkedBank);
+            db.PaymentMatches.AddRange(
+                // Dekontla kapanan, dekonta bağlı: sayılır, dekont onaylı.
+                Row(closed, PaymentMatchStatus.ConfirmedByHuman, s.CustomerId, PaymentMatchDecision.ClosedByReceipt, receipt.Id),
+                // Karar katmanında, banka onayının ödemesine bağlı: sayılmaz.
+                Row(approved, PaymentMatchStatus.ConfirmedByHuman, s.CustomerId, PaymentMatchDecision.Approved, approvedBank.Id),
+                // Karar katmanı dışında, banka ödemesine bağlı: sayılır, dekont onaylı değil.
+                Row(bankLinked, PaymentMatchStatus.ConfirmedByHuman, s.CustomerId, PaymentMatchDecision.None, linkedBank.Id),
+                // Ödeme satırı bulunamayan bağ: bugünkü gibi dekont onaylı.
+                Row(unlinked, PaymentMatchStatus.ConfirmedByHuman, s.CustomerId, PaymentMatchDecision.None, Guid.NewGuid()),
+                // Satır düzeyi eşleştiricinin çelişen kararı: yalnız eski blokta.
+                Row(legacy, PaymentMatchStatus.Contradicted, s.OtherCustomerId, PaymentMatchDecision.None, payment: null, version: null));
+            await db.SaveChangesAsync();
+        }
+
+        await using var verify = NewDb(interceptor: null);
+        var metrics = new PaymentMatchMetrics(verify, Matcher(verify));
+        var personLevel = await metrics.ComputeAsync(s.LicenseId, 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
+        var rowLevel = await metrics.ComputeAsync(s.LicenseId, 30, null, CancellationToken.None);
+
+        (personLevel.Confirmed, personLevel.ReceiptConfirmed, personLevel.PageConfirmed, personLevel.Contradicted).Should().Be((3, 2, 1, 0),
+            "karar katmanındaki satır sayılmaz; banka ödemesine bağlı karar dekont onaylı değildir; bağlanmamış Id dekont sayılır");
+        (rowLevel.Confirmed, rowLevel.Contradicted).Should().Be((0, 1), "boş sürümlü satır yalnız eski blokta");
+        (personLevel.Incoming, rowLevel.Incoming).Should().Be((5, 5));
     }
 
     private sealed record Seeded(Guid LicenseId, Guid ShopperId, Guid CustomerId, Guid OtherCustomerId, string Hash);

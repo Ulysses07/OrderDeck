@@ -12,7 +12,8 @@ using OrderDeck.LicenseServer.Services.Privacy;
 namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 
 /// <summary>Gölge mod görünürlüğü (spec §8/§9): son 30 gün gelen hareketler, öneri, insan kararı, elle eşle / kaldır, ölçüm
-/// kutusu. Otomatik onay yok; bu sayfa Payment'a dokunmaz. [Authorize] yok — Program.cs `AuthorizeFolder("/Admin")`.
+/// kutusu (güncel eşleştirici; satır düzeyi eski satırların kararları ayrı kutuda, <see cref="LegacySummary"/>). Otomatik onay
+/// yok; bu sayfa Payment'a dokunmaz. [Authorize] yok — Program.cs `AuthorizeFolder("/Admin")`.
 /// <para>Karar yalnız <see cref="PaymentMatchReconciler"/>'dan yazılır: hareketin formdaki lisansa ait olduğunu, verilmiş bir
 /// kararın ezilmediğini ve eşzamanlılığı o denetler. Admin'e yalnız onun doğrulama mesajları
 /// (<see cref="ObifinValidationException"/>: hareket/müşteri yok, zaten karara bağlı, çakışma) gösterilir; başka her istisna
@@ -33,9 +34,9 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// sayfayı düşürmez.</para>
 /// <para><b>Elle eşlemenin bildirimi</b> IBAN'ın öğrenilip öğrenilmediğini (öğrenilmediyse nedenini: IBAN yok ya da maskeli,
 /// 22.10 kesmesinden önce çekilmiş, dışlanan kod ya da para birimi, başka müşteriye kayıtlı) ve öğrenildiyse ya da
-/// tazelendiyse aynı IBAN'dan kaç kararsız havalenin bu müşteriye ÖNERİLDİĞİNİ söyler (<see cref="ManualMatchedMessage"/>;
-/// öneri karar değildir, her biri yine elle eşlenir). Yalnız "Eşlendi." görünmezlikti (27.10). Öneri sayısı eşiği aşarsa
-/// ortak hesap uyarısı da çıkar (<see cref="ManualMatchedWarning"/>).</para>
+/// tazelendiyse aynı IBAN'dan kaç kararsız havalenin bu müşteriye ya da aynı kişinin öbür kaydına ÖNERİLDİĞİNİ söyler
+/// (<see cref="ManualMatchedMessage"/>; öneri karar değildir, her biri yine elle eşlenir). Yalnız "Eşlendi." görünmezlikti
+/// (27.10). Öneri sayısı eşiği aşarsa ortak hesap uyarısı da çıkar (<see cref="ManualMatchedWarning"/>).</para>
 /// <para><b>Elle eşle kutusu müşteri aramasıdır</b> (<see cref="OnPostCustomerSearchAsync"/>, istemci
 /// <c>wwwroot/js/banka-eslestirme.js</c>): seçilen müşterinin kimliği formda <see cref="CustomerId"/> olarak gider. Arama
 /// POST'tur: sorgu (ad parçası) URL'ye, dolayısıyla Caddy erişim günlüğüne girmez.</para></summary>
@@ -68,7 +69,8 @@ public class IndexModel : PageModel
     public const string ProposalIsNotDecisionNote = "Öneri karar değildir: her birini yine Elle eşle ile onaylayın.";
 
     /// <summary>Elle eşlemenin başarı bildirimi (<see cref="PaymentMatchReconciler.ManualMatchAsync"/>'in sonucu). Yeni ya da
-    /// tazelenen bağda aynı IBAN'dan kaç havalenin bu müşteriye ÖNERİLDİĞİNİ söyler; öneri karar değildir (gölge mod).</summary>
+    /// tazelenen bağda aynı IBAN'dan kaç havalenin bu müşteriye ya da aynı kişinin öbür kaydına ÖNERİLDİĞİNİ söyler (sayım kişi
+    /// düzeyidir, <see cref="ManualMatchResult.ProposedToCustomer"/>); öneri karar değildir (gölge mod).</summary>
     public static string ManualMatchedMessage(ManualMatchResult r) => r.Iban switch
     {
         ManualMatchIbanOutcome.NoValidIban => MatchedNoIbanMessage,
@@ -83,7 +85,7 @@ public class IndexModel : PageModel
         _ => (r.Iban == ManualMatchIbanOutcome.Refreshed
                 ? "Eşlendi. Bu IBAN zaten bu müşteriye kayıtlıydı (süresi tazelendi)"
                 : "Eşlendi. IBAN öğrenildi")
-            + $": aynı IBAN'dan gelen {r.ProposedToCustomer} havale bu müşteriye önerildi (Öneri sütunu)."
+            + $": aynı IBAN'dan gelen {r.ProposedToCustomer} havale bu müşteriye ya da aynı kişinin öbür kaydına önerildi (Öneri sütunu)."
             + (r.ProposedToCustomer > 0 ? " " + ProposalIsNotDecisionNote : "")
             + (r.Reevaluated > r.ProposedToCustomer
                 ? $" {r.Reevaluated - r.ProposedToCustomer} havalenin açıklamasındaki kullanıcı adı başka bir müşteriyi gösterdiği ya da belirsiz olduğu için öneri yok."
@@ -149,7 +151,13 @@ public class IndexModel : PageModel
     [BindProperty] public Guid? CustomerId { get; set; }
 
     public List<LicenseOption> Licenses { get; private set; } = new();
+
+    /// <summary>Güncel (kişi düzeyi) eşleştiricinin ölçümü; hareket düzeyi sayılar (sürümsüz) da buradan gösterilir.</summary>
     public PaymentMatchSummary? Summary { get; private set; }
+
+    /// <summary>Satır düzeyi (eski, sürümü boş) eşleştiricinin satırları: kararları ayrı kutuda (tasarım §4.5; Faz 2 satırı
+    /// yok).</summary>
+    public PaymentMatchSummary? LegacySummary { get; private set; }
     public List<Row> Rows { get; private set; } = new();
     public bool HasNext { get; private set; }
 
@@ -171,7 +179,8 @@ public class IndexModel : PageModel
         }
         PageNo = Math.Clamp(PageNo, 1, MaxPageNo);
 
-        Summary = await _metrics.ComputeAsync(LicenseId, WindowDays, ct);
+        Summary = await _metrics.ComputeAsync(LicenseId, WindowDays, PaymentMatcher.PersonLevelVersion, ct);
+        LegacySummary = await _metrics.ComputeAsync(LicenseId, WindowDays, null, ct);
         var since = DateTimeOffset.UtcNow.AddDays(-WindowDays);
         // Ham JSON ve hash'ler okunmaz. Aynı anlı hareketler sayfalar arasında kaymasın: ikinci sıra Obifin kimliği (lisansta tekil).
         var txs = await _db.BankTransactions.AsNoTracking()

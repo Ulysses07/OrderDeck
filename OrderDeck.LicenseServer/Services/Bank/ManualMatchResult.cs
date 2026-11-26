@@ -25,7 +25,8 @@ public enum ManualMatchIbanOutcome
 /// <param name="Iban">Hareketin IBAN'ının öğrenilip öğrenilmediği.</param>
 /// <param name="Reevaluated">Yeniden değerlendirilen kararsız satır (aynı lisans ve IBAN özeti,
 /// <see cref="PaymentMatchReconciler.ReevaluationSince"/> penceresi).</param>
-/// <param name="ProposedToCustomer">Bunlardan şimdi bu müşteriye öneri alan.</param>
+/// <param name="ProposedToCustomer">Bunlardan şimdi bu müşteriye ya da (kişi düzeyi satırda) aynı kişinin öbür kaydına öneri
+/// alan.</param>
 /// <param name="More">Tetik başına sınıra (<see cref="PaymentMatchReconciler.MaxReevaluationsPerTrigger"/>) takıldı; kalanını
 /// telafi taraması (<see cref="BankMatchSweepJob"/>) yapar.</param>
 /// <param name="ReevaluationFailed">Karar ve bağ kaydedildi, yeniden değerlendirme düştü; telafi taraması tamamlar.</param>

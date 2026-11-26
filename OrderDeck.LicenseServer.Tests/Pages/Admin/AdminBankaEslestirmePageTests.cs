@@ -505,6 +505,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     {
         // 27.10 şikâyetinin yarısı görünmezlikti: sayfa her durumda yalnız "Eşlendi." diyordu. Öğrenilen IBAN aynı IBAN'ın
         // kararsız havalelerine uygulanır ve bildirim kaç havalenin bu müşteriye önerildiğini söyler (gölge mod: öneri, karar değil).
+        // Sayı kişi düzeyidir (S2b): aynı kişinin öbür kaydına verilen öneri de sayılır, Öneri sütunu o kaydı gösterir.
         var (lic, txId, wpfId) = await SeedAsync();
         var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
         var older = Tx(lic, 80m, "EFT GELEN", DateTimeOffset.UtcNow.AddDays(-3));
@@ -524,7 +525,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         (await PostAsync(client, "ManualMatch", lic, txId, customerId: wpfId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
 
         var expected = IndexModel.ManualMatchedMessage(new ManualMatchResult(ManualMatchIbanOutcome.Learned, Reevaluated: 1, ProposedToCustomer: 1));
-        expected.Should().Contain("1 havale bu müşteriye önerildi");
+        expected.Should().Contain("1 havale bu müşteriye ya da aynı kişinin öbür kaydına önerildi");
         (await ToastAsync(client, PathFor(lic), "success")).Should().Be(expected);
         var row = (await PageAsync(client, PathFor(lic))).QuerySelector($"tr[data-tx='{older.Id}']")!;
         row.QuerySelector("[data-cell='proposed']")!.TextContent.Should().Contain("ornek_musteri34").And.Contain("IbanMemory");
@@ -869,10 +870,11 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             {
                 var t = Tx(lic, 50m, "EFT GELEN");
                 db.BankTransactions.Add(t);
+                // Güncel (kişi düzeyi) eşleştiricinin satırları: ölçüm kutusu yalnız onları sayar.
                 db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = t.Id,
                     PaymentId = receipt ? Guid.NewGuid() : null, Status = status, Layer = PaymentMatchLayer.UsernameInDescription,
                     ProposedWpfCustomerId = proposed, ActualWpfCustomerId = wpfId, DecidedAt = DateTimeOffset.UtcNow,
-                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+                    MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
             }
             for (var i = 0; i < 3; i++) Decided(PaymentMatchStatus.ConfirmedByHuman, wpfId, receipt: true);
             Decided(PaymentMatchStatus.Contradicted, other, receipt: true);
@@ -888,6 +890,44 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             .Should().Be($"4/200, çelişki 1/4 ({PaymentMatchMetrics.Rate(1, 4)!.Value.ToString("P1", Tr)})");
         box.QuerySelector("[data-phase2='page']")!.TextContent.Trim().Should().Be("✓2 ✗1");
         box.QuerySelector("[data-fraction='overall']")!.TextContent.Trim().Should().Be("(çelişki 2/7)");
+    }
+
+    [Fact]
+    public async Task Eski_eslestirici_kutusu_satir_duzeyi_kararlari_ayri_gosterir()
+    {
+        // Tasarım §4.5: ölçüm güncel (kişi düzeyi) eşleştiricinin satırlarını sayar; satır düzeyi (sürümü boş, S2b öncesi)
+        // satırların kararları ayrı kutudadır. Faz 2 satırı yalnız güncel kutuda ve kapı değil bilgidir: otomatik onayın kapısı
+        // pilotun sayaçlarıdır (§16-6).
+        var (lic, _, wpfId) = await SeedAsync();
+        var other = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            void Decided(PaymentMatchStatus status, Guid proposed, int? version)
+            {
+                var t = Tx(lic, 50m, "EFT GELEN");
+                db.BankTransactions.Add(t);
+                db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = t.Id,
+                    PaymentId = Guid.NewGuid(), Status = status, Layer = PaymentMatchLayer.UsernameInDescription,
+                    ProposedWpfCustomerId = proposed, ActualWpfCustomerId = wpfId, DecidedAt = DateTimeOffset.UtcNow,
+                    MatcherVersion = version, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            }
+            Decided(PaymentMatchStatus.ConfirmedByHuman, wpfId, PaymentMatcher.PersonLevelVersion);
+            Decided(PaymentMatchStatus.Contradicted, other, version: null);
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await PageAsync(client, PathFor(lic));
+
+        var current = doc.QuerySelector("[data-box='metrics']")!;
+        current.QuerySelector("[data-fraction='overall']")!.TextContent.Trim().Should().Be("(çelişki 0/1)", "satır düzeyi karar güncel kutuda sayılmaz");
+        current.QuerySelector("[data-phase2='receipt']")!.TextContent.Trim().Should().StartWith("1/200");
+        current.QuerySelector("[data-phase2='gate']")!.TextContent.Should().Contain("bilgi; otomatik onayın kapısı değil (§16-6)");
+        var legacy = doc.QuerySelector("[data-box='metrics-legacy']")!;
+        legacy.QuerySelector("h2")!.TextContent.Should().Contain("Satır düzeyi (eski) eşleştirici");
+        legacy.QuerySelector("[data-fraction='overall']")!.TextContent.Trim().Should().Be("(çelişki 1/1)");
+        legacy.QuerySelector("[data-phase2]").Should().BeNull("Faz 2 satırı yalnız güncel kutuda");
     }
 
     [Fact]

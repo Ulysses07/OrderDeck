@@ -24,10 +24,13 @@ public sealed class PaymentMatchMetricsTests
     { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb", Direction = dir,
       Amount = amount, Currency = "TL", OccurredAt = now.AddDays(-daysAgo), FetchedAt = now, TransactionCode = code };
 
+    /// <summary>Eşleşme satırı; <paramref name="version"/> satırı yazan eşleştirici: varsayılan güncel (kişi düzeyi), null satır
+    /// düzeyi (S2b öncesi).</summary>
     private static PaymentMatch M(BankTransaction t, PaymentMatchStatus s, PaymentMatchLayer layer = PaymentMatchLayer.None, string? evidence = null,
-        Guid? proposed = null, Guid? actual = null, Guid? payment = null) => new()
+        Guid? proposed = null, Guid? actual = null, Guid? payment = null, int? version = PaymentMatcher.PersonLevelVersion) => new()
     { Id = Guid.NewGuid(), LicenseId = t.LicenseId, BankTransactionId = t.Id, Status = s, Layer = layer, Evidence = evidence,
-      ProposedWpfCustomerId = proposed, ActualWpfCustomerId = actual, PaymentId = payment, CreatedAt = t.OccurredAt, UpdatedAt = t.OccurredAt };
+      ProposedWpfCustomerId = proposed, ActualWpfCustomerId = actual, PaymentId = payment, MatcherVersion = version,
+      CreatedAt = t.OccurredAt, UpdatedAt = t.OccurredAt };
 
     [Fact]
     public async Task Son_30_gun_sayimlari_celiski_orani_gecikme_ve_katman()
@@ -48,7 +51,7 @@ public sealed class PaymentMatchMetricsTests
         db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = lic, PaymentId = Guid.NewGuid(), Reason = PaymentMatchGapReason.NoCandidate, CreatedAt = now.AddDays(-2), ResolvedAt = now });
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         m.Incoming.Should().Be(5, "40 gün önceki ve giden sayılmaz");
         m.Excluded.Should().Be(1);
@@ -76,7 +79,7 @@ public sealed class PaymentMatchMetricsTests
             M(plain, PaymentMatchStatus.NoProposal, evidence: "no-signal"));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         m.Incoming.Should().Be(3);
         m.Excluded.Should().Be(2);
@@ -98,7 +101,7 @@ public sealed class PaymentMatchMetricsTests
             M(tl, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         (m.Incoming, m.Excluded).Should().Be((2, 1));
         (m.Proposed, m.Confirmed, m.ReceiptConfirmed).Should().Be((1, 1, 1), "TL dışı hareketin kararı sayılmaz");
@@ -120,7 +123,7 @@ public sealed class PaymentMatchMetricsTests
             M(confirmed, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.NameAmount));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         m.Contradicted.Should().Be(1); m.ManualOnly.Should().Be(1); m.Confirmed.Should().Be(1);
         m.Proposed.Should().Be(2, "iki harekete öneri üretilmişti");
@@ -144,7 +147,7 @@ public sealed class PaymentMatchMetricsTests
         db.PaymentMatches.AddRange(backfilled, early);
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         m.Incoming.Should().Be(1);
         m.Confirmed.Should().Be(0); m.Contradicted.Should().Be(1);
@@ -172,13 +175,13 @@ public sealed class PaymentMatchMetricsTests
             Lag(allCapped, TimeSpan.FromHours(2), TimeSpan.FromHours(-1)));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         m.Incoming.Should().Be(4, "sayım dışı gecikmeli hareket yine gelendir");
         m.LagMedian.Should().Be(TimeSpan.FromHours(2), "çift sayı: 1 sa ile 3 sa ortalaması");
         m.LagMax.Should().Be(TimeSpan.FromHours(3), "10 günlük geri doldurma farkı maksimuma girmez");
 
-        var capped = await Metrics(db).ComputeAsync(allCapped, days: 30, CancellationToken.None);
+        var capped = await Metrics(db).ComputeAsync(allCapped, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         capped.Incoming.Should().Be(2);
         capped.LagMedian.Should().BeNull("sayılabilecek gecikme yok");
@@ -232,7 +235,7 @@ public sealed class PaymentMatchMetricsTests
             M(pos, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         (m.Confirmed, m.Contradicted, m.ManualOnly).Should().Be((2, 3, 1));
         (m.ReceiptConfirmed, m.ReceiptContradicted).Should().Be((1, 2), "öneriden farklı elle eşlemeye iliştirilen dekont çelişkidir");
@@ -262,7 +265,7 @@ public sealed class PaymentMatchMetricsTests
             M(txs[5], PaymentMatchStatus.Proposed, PaymentMatchLayer.UsernameInDescription, "username=ornek", proposed: a));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         (m.Confirmed, m.Contradicted).Should().Be((3, 1), "genel sayımlar ve katman isabeti değişmez");
         (m.ReceiptConfirmed, m.ReceiptContradicted).Should().Be((1, 0), "Faz 2 örneklemi yalnız çekim anındaki önerilerin dekont kararları");
@@ -299,7 +302,7 @@ public sealed class PaymentMatchMetricsTests
             M(txs[8], PaymentMatchStatus.Proposed, PaymentMatchLayer.UsernameInDescription, proposed: yt.Id));
         await db.SaveChangesAsync();
 
-        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
 
         m.Platforms.Select(p => p.Platform).Should().BeEquivalentTo(new[] { "youtube", "instagram", "tiktok", PaymentMatchMetrics.UnknownPlatform },
             "bekleyen öneri karar değildir; silinen, başka lisansın ve bilinmeyen müşteri '?' altında");
@@ -316,5 +319,99 @@ public sealed class PaymentMatchMetricsTests
         (unknown.Confirmed, unknown.Contradicted, unknown.ManualOnly).Should().Be((2, 0, 1));
         unknown.ContradictionRate.Should().Be(0m);
         m.Platforms.Sum(p => p.Linked).Should().Be(m.Linked);
+    }
+
+    [Fact]
+    public async Task Surumler_ayri_sayilir_hareket_sayilari_ortak()
+    {
+        // Tasarım §4.5: kişi düzeyi eşleştirme sürümle ayrılır. Ölçüm güncel sürümün satırlarını sayar, satır düzeyi (boş sürüm, S2b
+        // öncesi) satırların kararları ayrı gösterilir: karışsaydı nüfus değişimi isabet sanılırdı. Hareket düzeyi alanlar (gelen,
+        // dışlanan, gecikme, açık gap) satırın sürümünden bağımsızdır, iki çağrıda aynıdır.
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow; var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        var txs = Enumerable.Range(1, 5).Select(i => T(lic, now, i)).ToArray();
+        var pos = T(lic, now, 6, code: "CCP");
+        db.BankTransactions.AddRange(txs); db.BankTransactions.Add(pos);
+        db.PaymentMatches.AddRange(
+            M(txs[0], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()),
+            M(txs[1], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, proposed: a, actual: a),
+            M(txs[2], PaymentMatchStatus.Proposed, PaymentMatchLayer.UsernameInDescription, proposed: a),
+            M(txs[3], PaymentMatchStatus.Contradicted, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: b, version: null),
+            M(txs[4], PaymentMatchStatus.NoProposal, evidence: "no-signal", version: null),
+            M(pos, PaymentMatchStatus.NoProposal, evidence: "excluded:CCP"));
+        db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = lic, PaymentId = Guid.NewGuid(),
+            Reason = PaymentMatchGapReason.NoCandidate, CreatedAt = now.AddDays(-1) });
+        await db.SaveChangesAsync();
+
+        var current = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
+        var legacy = await Metrics(db).ComputeAsync(lic, days: 30, null, CancellationToken.None);
+
+        (current.Proposed, current.Confirmed, current.ReceiptConfirmed, current.PendingProposals, current.Contradicted, current.NoProposal)
+            .Should().Be((3, 2, 1, 1, 0, 0), "satır düzeyi satırların çelişkisi ve öneri yoku güncel sürüme girmez");
+        (legacy.Proposed, legacy.Confirmed, legacy.PendingProposals, legacy.Contradicted, legacy.NoProposal).Should().Be((1, 0, 0, 1, 1));
+        legacy.Layers.Should().Equal(new LayerStat(PaymentMatchLayer.UsernameInDescription, 0, 1));
+        foreach (var s in new[] { current, legacy })
+            (s.Incoming, s.Excluded, s.OpenGaps, s.LagMedian, s.LagMax).Should().Be(
+                (6, 1, 1, (TimeSpan?)TimeSpan.FromDays(3.5), (TimeSpan?)TimeSpan.FromDays(6)), "hareket düzeyi alanlar sürümsüz");
+    }
+
+    [Fact]
+    public async Task Karar_katmanindaki_satir_sayilmaz_dekontla_kapanan_sayilir()
+    {
+        // Tasarım §4.5: ölçüm yalnız Decision ∈ {None, ClosedByReceipt} satırları sayar. Karar katmanındaki havalenin kararı (S3a'nın
+        // sorusu, S3b'nin banka onayı) gölge önerinin isabeti değildir: sayılsaydı banka onayları da doğrulama olur, eşik kendi
+        // kendini doğrulardı. Dekontla kapanan bugünkü dekont onaylı karardır, sayılır. Karar katmanındaki havale yine gelendir.
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow; var a = Guid.NewGuid();
+        var layered = Enum.GetValues<PaymentMatchDecision>()
+            .Where(d => d is not (PaymentMatchDecision.None or PaymentMatchDecision.ClosedByReceipt)).ToList();
+        foreach (var decision in layered)
+        {
+            var t = T(lic, now, 1);
+            db.BankTransactions.Add(t);
+            var row = M(t, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid());
+            row.Decision = decision;
+            db.PaymentMatches.Add(row);
+        }
+        var closed = T(lic, now, 2); var open = T(lic, now, 3);
+        db.BankTransactions.AddRange(closed, open);
+        var closedRow = M(closed, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, proposed: a, actual: a, payment: Guid.NewGuid());
+        closedRow.Decision = PaymentMatchDecision.ClosedByReceipt;
+        db.PaymentMatches.AddRange(closedRow, M(open, PaymentMatchStatus.Proposed, PaymentMatchLayer.UsernameInDescription, proposed: a));
+        await db.SaveChangesAsync();
+
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
+
+        (m.Confirmed, m.ReceiptConfirmed, m.PendingProposals, m.Contradicted, m.ManualOnly).Should().Be((1, 1, 1, 0, 0),
+            "yalnız dekontla kapanan karar ve kararsız öneri sayılır");
+        m.Layers.Should().Equal(new LayerStat(PaymentMatchLayer.IbanMemory, 1, 0));
+        m.Platforms.Sum(p => p.Linked).Should().Be(1);
+        m.Incoming.Should().Be(layered.Count + 2, "karar katmanındaki havale yine gelen harekettir");
+    }
+
+    [Fact]
+    public async Task Banka_odemesine_bagli_satir_dekont_onayli_sayilmaz()
+    {
+        // Tasarım §4.5, S2b planı Karar 12: dekont onaylı karar bağlı ödemenin dekont olmasını ister. Banka onayının ödemesine (S3b)
+        // bağlı karar dekontsuzdur: dekont onaylı sayılsaydı eşik kendi kendini doğrulardı; sayfa kararı gibi ayrı gösterilir. Ödeme
+        // satırı bulunamayan bağ (bağ FK'sız) bugünkü gibi dekont sayılır.
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow; var a = Guid.NewGuid();
+        var bank = new Payment { Id = Guid.NewGuid(), LicenseId = lic, PayerName = $"p-{Guid.NewGuid():N}", Amount = 10m,
+            PaidAt = now.AddDays(-1), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, Source = PaymentSource.Bank,
+            CreatedAt = now, UpdatedAt = now };
+        var bankTx = T(lic, now, 1); var unlinkedTx = T(lic, now, 2);
+        db.Payments.Add(bank);
+        db.BankTransactions.AddRange(bankTx, unlinkedTx);
+        db.PaymentMatches.AddRange(
+            M(bankTx, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, proposed: a, actual: a, payment: bank.Id),
+            M(unlinkedTx, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.IbanMemory, proposed: a, actual: a, payment: Guid.NewGuid()));
+        await db.SaveChangesAsync();
+
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
+
+        m.Confirmed.Should().Be(2);
+        (m.ReceiptConfirmed, m.PageConfirmed).Should().Be((1, 1),
+            "banka ödemesine bağlı karar dekont onaylı değildir; bağlanmamış ödeme Id'si bugünkü gibi dekont sayılır");
     }
 }
