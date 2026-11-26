@@ -1098,6 +1098,49 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Hesap_reddi_banka_odemeli_eslesmeye_gap_acmaz()
+    {
+        // Gap yalnız dekont içindir (tasarım §4.4; S2b): reddedilen hesabın havalesi banka onayıyla ödemeye dönmüşse (Source = Bank;
+        // satırları S3b yazar) eşleşme hareketle silinir, ödeme hareketsiz yaşar (§12) ama gap'e düşmez. GapsReopened yalnız dekontu
+        // sayar (bağdaştırıcının kaldırma kuralı, ortak).
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);   // hesap 9 onaysız
+        var now = DateTimeOffset.UtcNow;
+        BankTransaction Add(long obifinId)
+        {
+            var tx = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = obifinId, ObifinAccountId = 9,
+                BankaKodu = "garanti", Direction = BankTransactionDirection.Incoming, Amount = 20m, Currency = "TL", OccurredAt = now,
+                FetchedAt = now, Description = "havale" };
+            db.BankTransactions.Add(tx);
+            return tx;
+        }
+        var bankTx = Add(910); var receiptTx = Add(911);
+        var bankPayment = new Payment { Id = Guid.NewGuid(), LicenseId = lic, Source = PaymentSource.Bank, PayerName = "", Amount = 20m,
+            PaidAt = now, ReferansNo = $"bank:{bankTx.Id:N}:1", Status = PaymentStatus.Approved,
+            ApprovalSource = PaymentApprovalSource.BankHuman, BankTransactionId = bankTx.Id, ApprovedAt = now, CreatedAt = now,
+            UpdatedAt = now };
+        var receipt = new Payment { Id = Guid.NewGuid(), LicenseId = lic, PayerName = $"p-{Guid.NewGuid():N}", Amount = 20m, PaidAt = now,
+            ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, ApprovedAt = now, CreatedAt = now, UpdatedAt = now };
+        db.Payments.AddRange(bankPayment, receipt);
+        db.PaymentMatches.AddRange(
+            new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = bankTx.Id, PaymentId = bankPayment.Id,
+                Decision = PaymentMatchDecision.Approved, Status = PaymentMatchStatus.ManualOnly, ActualWpfCustomerId = Guid.NewGuid(),
+                DecidedAt = now, CreatedAt = now, UpdatedAt = now },
+            new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = receiptTx.Id, PaymentId = receipt.Id,
+                Status = PaymentMatchStatus.ManualOnly, CreatedAt = now, UpdatedAt = now });
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var account9 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 9);
+
+        var r = await Terminator(db, client).RejectAccountAsync(account9.Id, "yonetici-1", CancellationToken.None);
+
+        (r.Transactions, r.Matches, r.GapsReopened).Should().Be((2, 2, 1));
+        (await db.PaymentMatchGaps.AsNoTracking().Where(g => g.PaymentId == bankPayment.Id || g.PaymentId == receipt.Id)
+                .Select(g => g.PaymentId).ToListAsync())
+            .Should().Equal(new[] { receipt.Id }, "banka ödemesine gap açılmaz");
+        (await db.Payments.AsNoTracking().CountAsync(p => p.Id == bankPayment.Id)).Should().Be(1, "ödeme hareketsiz yaşar (§12)");
+    }
+
+    [Fact]
     public async Task Hesap_reddi_parti_parti_siler_sayilar_ve_kayit_toplami_tutar()
     {
         var counter = new SaveLogInterceptor();

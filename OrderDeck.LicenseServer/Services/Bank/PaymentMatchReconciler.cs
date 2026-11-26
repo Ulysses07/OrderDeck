@@ -400,10 +400,19 @@ public sealed class PaymentMatchReconciler
     /// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır; ödeme başına tek gap (tekil indeks). Kuralın TEK yeri:
     /// kaldırma (<see cref="UnmatchAsync"/>) ve hesap reddi (<c>BankConnectionTerminator.RejectAccountAsync</c>) kullanır, biri
     /// değişirse öbürü ayrışmasın. Değişen ve eklenen satır izlenir, kaydetmez: çağıranın SaveChanges'i bağın kaldırılmasıyla
-    /// birlikte yazar. Açılan ya da yazılan gap sayısını döner.</summary>
+    /// birlikte yazar. Açılan ya da yazılan gap sayısını döner.
+    /// <para><b>Gap yalnız dekont içindir</b> (tasarım §4.4; S2b): banka onaylı ödeme (<see cref="PaymentSource.Bank"/>) gap'e
+    /// dönmez, sayılmaz. Satırı bulunamayan Id bugünkü gibi dekont sayılır (bağ FK'sız; S2b planı Karar 12). Banka satırlarını S3b
+    /// yazar; okuyucu önce gelir, S3b geri alınırsa önceki imaj onların verisiyle çalışır.</para></summary>
     public async Task<int> ReturnPaymentsToGapsAsync(Guid licenseId, IReadOnlyCollection<Guid> paymentIds, CancellationToken ct)
     {
         var ids = paymentIds.Distinct().ToList();
+        if (ids.Count == 0) return 0;
+        // Banka olduğu bilinen ödeme çıkar, bulunamayan kalır (özet).
+        var notReceipts = await _db.Payments
+            .Where(p => ids.Contains(p.Id) && p.LicenseId == licenseId && p.Source != PaymentSource.Receipt)
+            .Select(p => p.Id).ToListAsync(ct);
+        ids = ids.Except(notReceipts).ToList();
         if (ids.Count == 0) return 0;
         var existing = await _db.PaymentMatchGaps.Where(g => ids.Contains(g.PaymentId)).ToListAsync(ct);
         foreach (var gap in existing) { gap.ResolvedAt = null; gap.ResolvedBankTransactionId = null; }

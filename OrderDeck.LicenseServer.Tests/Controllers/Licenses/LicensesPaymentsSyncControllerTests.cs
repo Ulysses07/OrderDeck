@@ -377,4 +377,97 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
             "ufkun içindeki satır okunup imleç oraya taşınırsa, damgası daha eski olduğu " +
             "hâlde henüz commit etmemiş bir onay imlecin gerisinde kalıp kalıcı olarak kaybolur");
     }
+
+    // ── Onaylı dekont ve banka satırı (S2b; tasarım §2.3): senkron dört alanı ezmez ─────
+
+    /// <summary>Satırı doğrudan yazar (WPF'in göndermediği yollar: panel onayı, banka onayı). Değerler üretilir; banka satırı
+    /// tasarım §2.3'ün biçiminde (adsız, PDF'siz, referansı <c>bank:</c>).</summary>
+    private async Task<Payment> SeedPaymentAsync(Guid licenseId, PaymentStatus status, PaymentSource source = PaymentSource.Receipt)
+    {
+        var bank = source == PaymentSource.Bank;
+        var at = Settled;
+        var txId = Guid.NewGuid();
+        var p = new Payment
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, Source = source, Status = status,
+            PayerName = bank ? "" : $"p-{Guid.NewGuid():N}", Amount = Random.Shared.Next(100, 10_000), PaidAt = at.AddHours(-1),
+            ReferansNo = bank ? $"bank:{txId:N}:1" : $"r-{Guid.NewGuid():N}",
+            PdfHash = bank ? null : $"{Guid.NewGuid():N}{Guid.NewGuid():N}", BankTransactionId = bank ? txId : null,
+            ApprovedAt = status == PaymentStatus.Approved ? at : null, RejectedAt = status == PaymentStatus.Rejected ? at : null,
+            CreatedAt = at, UpdatedAt = at,
+        };
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.Payments.Add(p);
+        await db.SaveChangesAsync();
+        return p;
+    }
+
+    /// <summary>WPF'in yeniden gönderimi: aynı Id ve referans, dört alan yeni üretilmiş değerlerle, kargo yönergesi "hold".</summary>
+    private sealed record PushedPayment(Guid Id, string PayerName, decimal Amount, DateTimeOffset PaidAt, string ReferansNo,
+        string PdfHash, string ShipmentDirective);
+
+    private static PushedPayment Repush(Payment p) => new(p.Id, $"n-{Guid.NewGuid():N}", p.Amount + 1m, p.PaidAt.AddMinutes(-7),
+        p.ReferansNo, $"{Guid.NewGuid():N}{Guid.NewGuid():N}", "hold");
+
+    private static (string PayerName, decimal Amount, DateTimeOffset PaidAt, string? PdfHash) Fields(Payment p)
+        => (p.PayerName, p.Amount, p.PaidAt, p.PdfHash);
+
+    private async Task<Dictionary<Guid, Payment>> StoredAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.Payments.AsNoTracking().Where(p => p.LicenseId == licenseId).ToDictionaryAsync(p => p.Id);
+    }
+
+    [Fact]
+    public async Task Sync_onayli_dekontun_dort_alanini_ezmez_yonergeyi_gunceller()
+    {
+        // Onaylı dekontun adı, tutarı, tarihi ve PDF özeti onaylanmış kayıttır (tasarım §2.3): WPF'in sonraki gönderimi onları ezmez.
+        // Kargo yönergesi ve UpdatedAt bugünkü gibi yazılır (plan Karar 12), yanıt sunucunun durumunu yankılar. Reddedilen ve bekleyen
+        // dekont bugünkü gibi güncellenir.
+        var (client, _, licenseId) = await SetupAsync();
+        var approved = await SeedPaymentAsync(licenseId, PaymentStatus.Approved);
+        var rejected = await SeedPaymentAsync(licenseId, PaymentStatus.Rejected);
+        var pending = await SeedPaymentAsync(licenseId, PaymentStatus.Pending);
+        var pushed = new[] { approved, rejected, pending }.Select(Repush).ToArray();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/payments/sync", new { payments = pushed });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<List<SyncedPaymentDto>>())!.Single(d => d.Id == approved.Id).Status
+            .Should().Be("approved");
+        var stored = await StoredAsync(licenseId);
+        Fields(stored[approved.Id]).Should().Be(Fields(approved), "onaylı dekontun dört alanı ezilmez");
+        stored[approved.Id].ShipmentDirective.Should().Be(ShipmentDirective.Hold, "yönerge bugünkü gibi güncellenir");
+        stored[approved.Id].UpdatedAt.Should().BeAfter(approved.UpdatedAt, "UpdatedAt bugünkü gibi ilerler (payments/since imleci)");
+        foreach (var (seeded, sent) in new[] { (rejected, pushed[1]), (pending, pushed[2]) })
+        {
+            Fields(stored[seeded.Id]).Should().Be((sent.PayerName, sent.Amount, sent.PaidAt, (string?)sent.PdfHash),
+                $"{seeded.Status} dekont bugünkü gibi güncellenir");
+            stored[seeded.Id].ShipmentDirective.Should().Be(ShipmentDirective.Hold);
+        }
+    }
+
+    [Fact]
+    public async Task Sync_banka_satirinin_alanlarini_ezmez()
+    {
+        // Banka onayının satırı (Source = Bank; S3b yazar, okuyucu önce) hareketin tutarını ve anını taşır, adı ve PDF'i yoktur
+        // (tasarım §2.3). WPF onu payments/since'ten alır; yeniden gönderirse dört alan ezilmez. Geri alınan banka onayı Rejected kalır:
+        // onu durum değil kaynak korur. Yönerge bugünkü gibi yazılır (plan Karar 12, 14).
+        var (client, _, licenseId) = await SetupAsync();
+        var approved = await SeedPaymentAsync(licenseId, PaymentStatus.Approved, PaymentSource.Bank);
+        var reverted = await SeedPaymentAsync(licenseId, PaymentStatus.Rejected, PaymentSource.Bank);
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/payments/sync",
+            new { payments = new[] { approved, reverted }.Select(Repush).ToArray() });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var stored = await StoredAsync(licenseId);
+        foreach (var seeded in new[] { approved, reverted })
+        {
+            Fields(stored[seeded.Id]).Should().Be(Fields(seeded), $"{seeded.Status} banka satırının dört alanı ezilmez");
+            stored[seeded.Id].ShipmentDirective.Should().Be(ShipmentDirective.Hold, "yönerge bugünkü gibi");
+        }
+    }
 }

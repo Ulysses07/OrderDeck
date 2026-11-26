@@ -1833,6 +1833,62 @@ public sealed class PaymentMatchReconcilerTests
             (PaymentMatchStatus.Proposed, (Guid?)a.IgId, PaymentMatcher.BothConfidence, (int?)PaymentMatcher.PersonLevelVersion));
     }
 
+    // ---- Gap yalnız dekont içindir (S2b; tasarım §4.4, plan Karar 12): banka onaylı ödeme gap'e dönmez ----
+
+    /// <summary>Banka onayının ödemesi (S3b yazar; S2b'de prod'da yok), tasarım §2.3'ün biçiminde: hareketin tutarı ve anı, adsız,
+    /// PDF'siz. Kaydeder.</summary>
+    private static Payment BankPayment(LicenseDbContext db, Guid lic, BankTransaction tx)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var p = new Payment { Id = Guid.NewGuid(), LicenseId = lic, Source = PaymentSource.Bank, PayerName = "", Amount = tx.Amount,
+            PaidAt = tx.OccurredAt, ReferansNo = $"bank:{tx.Id:N}:1", Status = PaymentStatus.Approved,
+            ApprovalSource = PaymentApprovalSource.BankHuman, BankTransactionId = tx.Id, ApprovedAt = now, CreatedAt = now, UpdatedAt = now };
+        db.Payments.Add(p); db.SaveChanges();
+        return p;
+    }
+
+    [Fact]
+    public async Task Banka_odemesi_gap_e_donmez_dekont_ve_baglanmamis_Id_doner()
+    {
+        // Kaldırma ve hesap reddinin ortak kuralı: banka onaylı ödeme gap'e dönmez. Dekont ve ödeme satırı bulunamayan Id (bağ FK'sız;
+        // banka olduğu bilinmedikçe dekont) bugünkü gibi döner. Dönüş gap'e dönen sayıdır: hesap reddinin GapsReopened'ı onu toplar.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var bank = BankPayment(db, s.LicenseId, Tx(db, s.LicenseId, 490m, when, "EFT GELEN"));
+        var receipt = Approved(db, s.LicenseId, s.ShopperId, 490m, when);
+        var unbound = Guid.NewGuid();
+
+        var returned = await Recon(db).ReturnPaymentsToGapsAsync(s.LicenseId, [bank.Id, receipt.Id, unbound], CancellationToken.None);
+        await db.SaveChangesAsync();
+
+        returned.Should().Be(2);
+        (await db.PaymentMatchGaps.AsNoTracking().Select(g => g.PaymentId).ToListAsync())
+            .Should().BeEquivalentTo(new[] { receipt.Id, unbound }, "banka ödemesine gap açılmaz");
+    }
+
+    [Fact]
+    public async Task Banka_odemesine_bagli_satirin_kaldirilmasi_gap_acmaz()
+    {
+        // Banka onayının satırı (karar katmanında, ödemesi Source = Bank) admin kaldırmasıyla bağını kaybeder, ödeme gap'e düşmez.
+        // Düşseydi banka onayı "havalesi bulunamayan dekont" sayılır, ölçüme girer, gap çözümü onu başka bir havaleye bağlardı.
+        // Satırları S3b yazar; S3b geri alınırsa S3a imajı (S2b'yi içerir) bu veriyle çalışır.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, s.LicenseId, 495m, when, "HAVALE ornek_musteri34");
+        var bank = BankPayment(db, s.LicenseId, tx);
+        db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = tx.Id,
+            Decision = PaymentMatchDecision.Approved, Status = PaymentMatchStatus.ConfirmedByHuman, ProposedWpfCustomerId = s.WpfCustomerId,
+            Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.UsernameConfidence,
+            Evidence = "username=ornekmusteri34", MatcherVersion = PaymentMatcher.PersonLevelVersion, ActualWpfCustomerId = s.WpfCustomerId,
+            DecidedAt = when, PaymentId = bank.Id, CreatedAt = when, UpdatedAt = when });
+        db.SaveChanges();
+
+        await Recon(db).UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+
+        (await RowAsync(db, tx)).PaymentId.Should().BeNull("bağ kalkar");
+        (await db.PaymentMatchGaps.CountAsync()).Should().Be(0, "banka ödemesine gap açılmaz");
+    }
+
     /// <summary>İzlenen hareketin varlık olarak kaç kez okunduğunu sayar (izlenmeden okuma dahil): bir seçim sorgusu onu döndürdüyse
     /// okunmuştur. Kilitli satırı eşleştirici yine dokunmadan döndürdüğü için seçim sonuç durumunda görünmez; sayaç görünür kılar.</summary>
     private sealed class TransactionReads : IMaterializationInterceptor

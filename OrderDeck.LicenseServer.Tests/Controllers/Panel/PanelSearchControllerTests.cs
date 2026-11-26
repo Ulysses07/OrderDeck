@@ -129,4 +129,47 @@ public class PanelSearchControllerTests : IClassFixture<ApiFactory>
         var body = await resp.Content.ReadFromJsonAsync<SearchResultDto>();
         body!.Customers.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task Arama_banka_referansiyla_dekontu_listeden_dusurmez()
+    {
+        // Banka satırının referansı "bank:{hareket}:{n}" (tasarım §2.3; satırları S3b yazar): kısa bir arama ondaki hex'e de vurur.
+        // Adsız ve daha yeni on banka satırı 10'luk listeyi doldurup aynı terimle bulunan dekontu düşürürdü; banka onayları yalnız
+        // havale listesinde görünür. Terim (t) ve değerler üretilir.
+        var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var t = Guid.NewGuid().ToString("N")[..4];
+        var now = DateTimeOffset.UtcNow;
+        var receiptId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var licenseId = Guid.NewGuid();
+            db.Licenses.Add(new License
+            {
+                Id = licenseId, LicenseKey = "LDK-SEARCH-" + Guid.NewGuid().ToString("N"), CustomerId = customerId, SkuCode = "STD",
+                ActivationSlots = 1, IssuedAt = now, ExpiresAt = now.AddDays(30)
+            });
+            db.Payments.Add(new Payment
+            {
+                Id = receiptId, LicenseId = licenseId, PayerName = $"p-{Guid.NewGuid():N}", Amount = 100m, PaidAt = now.AddHours(-1),
+                ReferansNo = $"r-{t}-{Guid.NewGuid():N}", Status = PaymentStatus.Pending,
+                CreatedAt = now.AddMinutes(-30), UpdatedAt = now.AddMinutes(-30)
+            });
+            for (var i = 0; i < 10; i++)
+                db.Payments.Add(new Payment
+                {
+                    Id = Guid.NewGuid(), LicenseId = licenseId, Source = PaymentSource.Bank, PayerName = "", Amount = 100m,
+                    PaidAt = now.AddMinutes(-i), ReferansNo = $"bank:{t}{Guid.NewGuid():N}:1", BankTransactionId = Guid.NewGuid(),
+                    Status = PaymentStatus.Approved, ApprovalSource = PaymentApprovalSource.BankHuman, ApprovedAt = now,
+                    CreatedAt = now.AddMinutes(-i), UpdatedAt = now.AddMinutes(-i)
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync($"/api/panel/search?q={t}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SearchResultDto>())!.Payments.Select(p => p.Id)
+            .Should().Equal(new[] { receiptId }, "dekont listede, banka satırı yok");
+    }
 }
