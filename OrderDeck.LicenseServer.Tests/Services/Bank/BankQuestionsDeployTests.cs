@@ -35,6 +35,18 @@ public sealed class BankQuestionsDeployTests
             .And.Contain("# OrderDeck__Bank__StaleFeedAfterMinutes=120");
     }
 
+    /// <summary>Havale sorularını yalnız CLI açar ve kapatır; açılışın ve kill switch'in komutu ile S2a'nın geri alma
+    /// uyarısı (eski imajda komut ikinci bir sunucu süreci başlatır, pencerenin iki kalıntısı) README'de bulunmalı.</summary>
+    [Fact]
+    public void README_komutlari_ve_geri_alma_uyarisi_var()
+    {
+        var readme = ReadRepoFile("deploy/README.md");
+
+        readme.Should().Contain("bank-questions enable --license", "açılışın komutu yazılı olmalı")
+            .And.Contain("bank-questions disable --license", "kill switch komutu yazılı olmalı")
+            .And.Contain("Banka Faz 2 S2a tabanı", "geri alma bölümünde S2a bloğu olmalı");
+    }
+
     private static string ReadRepoFile(string relativePath) => File.ReadAllText(FindRepoFile(relativePath));
 
     /// <summary>Testler bin klasöründen koşuyor; repo kökünü yukarı yürüyerek buluyoruz (PersonBalanceDeployTests gibi).</summary>
