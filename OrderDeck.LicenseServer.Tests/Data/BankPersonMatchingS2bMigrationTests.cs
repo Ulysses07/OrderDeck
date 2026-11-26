@@ -118,6 +118,7 @@ internal static class BankPersonMatchingS2bMigrationScenario
         await migrator.MigrateAsync(previous);
 
         var seed = await SeedAsync(connectionString);
+        await AssertReaderAsync(connectionString, seed, "göçten önce");
         var bondsBefore = await BondsAsync(connectionString, seed.License);
         var matchesBefore = await MatchesAsync(connectionString, seed.License);
         var stampsBefore = await StampsAsync(connectionString, seed);
@@ -136,7 +137,7 @@ internal static class BankPersonMatchingS2bMigrationScenario
         (await db.Database.GetAppliedMigrationsAsync()).Should().Contain(target);
         await AssertBondsAsync(connectionString, seed, bondsBefore, matchesBefore);
         await AssertRederivationAsync(connectionString, seed, stampsBefore);
-        await AssertReaderAsync(connectionString, seed);
+        await AssertReaderAsync(connectionString, seed, "göçten sonra");
         await AssertOnceAsync(connectionString, conn);
     }
 
@@ -188,9 +189,11 @@ internal static class BankPersonMatchingS2bMigrationScenario
         }
     }
 
-    /// <summary>Okuyucu eşliği: her durumun özetiyle yeni hareket. Taşınan bağ asıl kaydın IBAN önerisini verir; taşınmayan bağı
-    /// kişi düzeyi okuyucu da saymaz (aynı kural, Karar 7).</summary>
-    private static async Task AssertReaderAsync(string connectionString, Seed seed)
+    /// <summary>Okuyucu eşliği (aynı kural, Karar 7): her durumun özetiyle yeni hareket, göçten önce ve sonra. Göçten önce bağlar
+    /// kopyadadır: kişi düzeyi okuyucu taşınabilir kopyanın bağını asıl kayda sayar (IBAN önerisi asıl kayıt), taşınmayanı saymaz.
+    /// Göçten sonra sonuç aynıdır. Yalnız sonraki koşu okuyucunun kopya kuralını sınamazdı: taşınan bağ artık asıl kayıttadır.
+    /// Önceki koşunun satırları göçün anlık görüntülerinden önce yazılır.</summary>
+    private static async Task AssertReaderAsync(string connectionString, Seed seed, string phase)
     {
         var probes = new List<(BondCase Case, BankTransaction Tx)>();
         await using (var db = S2a.NewDb(connectionString))
@@ -219,7 +222,7 @@ internal static class BankPersonMatchingS2bMigrationScenario
             var row = await matcher.MatchAsync(tx, CancellationToken.None);
             (row.Status, row.ProposedWpfCustomerId, row.Evidence).Should().Be(c.MovesTo is { } canonical
                 ? (PaymentMatchStatus.Proposed, (Guid?)canonical, "iban-memory")
-                : (PaymentMatchStatus.NoProposal, (Guid?)null, "no-signal"), c.Name);
+                : (PaymentMatchStatus.NoProposal, (Guid?)null, "no-signal"), $"{c.Name} ({phase})");
         }
     }
 
@@ -408,7 +411,9 @@ internal static class BankPersonMatchingS2bMigrationScenario
         Guid license = s.License(), other = s.License();
 
         // IBAN bağları (Karar 7). A: K → P. E: K3 → K2 → K1 → P. B geçici kopya, C' silinmiş geçici kopya, D silinmiş asıl kaydın
-        // kopyası, F başka lisansa yönelen kopya, G 4 adımlı zincir (sınırda kalan kopya), H geçici ara adımlı zincir.
+        // kopyası, F başka lisansa yönelen kopya, G 4 adımlı zincir (sınırda kalan kopya), H geçici ara adımlı zincir. Kuralın
+        // maddeleri tek tek de sınanır (C' iki maddeye birden takılır): I silinmiş, geçici olmayan kopya; J ilk ara adımı silinmiş
+        // zincir; L ikinci ara adımı silinmiş zincir; M ikinci ara adımı geçici zincir (L ve M sınırdaki 3 adımlı zincir).
         var p = s.Customer(license);
         var kA = s.Customer(license, p);
         var e1 = s.Customer(license, p);
@@ -427,6 +432,15 @@ internal static class BankPersonMatchingS2bMigrationScenario
         var g4 = s.Customer(license, g3);
         var h1 = s.Customer(license, p, provisional: true);
         var h2 = s.Customer(license, h1);
+        var kI = s.Customer(license, p, purged: true);
+        var j1 = s.Customer(license, p, purged: true);
+        var kJ = s.Customer(license, j1);
+        var l2 = s.Customer(license, p, purged: true);
+        var l1 = s.Customer(license, l2);
+        var kL = s.Customer(license, l1);
+        var m2 = s.Customer(license, p, provisional: true);
+        var m1 = s.Customer(license, m2);
+        var kM = s.Customer(license, m1);
 
         var bonds = new List<BondCase>();
         void Bond(string name, Guid copy, Guid? movesTo)
@@ -447,6 +461,10 @@ internal static class BankPersonMatchingS2bMigrationScenario
         Bond("F", kF, null);
         Bond("G", g4, null);
         Bond("H", h2, null);
+        Bond("I", kI, null);
+        Bond("J", kJ, null);
+        Bond("L", kL, null);
+        Bond("M", kM, null);
 
         // Dekontlar: S2a senaryosunun (a)-(j) durumları aynen, sonra S2b'nin (k)-(n) durumları.
         Guid rp = s.Customer(license), rk1 = s.Customer(license, rp), rk2 = s.Customer(license, rk1), rk3 = s.Customer(license, rk2);
