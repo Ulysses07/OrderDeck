@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Push;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.PdfParsing;
 
 namespace OrderDeck.LicenseServer.Services.ShopperPayments;
@@ -238,6 +239,22 @@ public sealed class ShopperPaymentSubmissionService
         await _storage.UploadAsync(objectKey, input.PdfBytes, "application/pdf", ct);
 
         // 12. Persist Payment + Audit
+        //
+        // Dekontun müşterisi (Payment.WpfCustomerId; spec 2026-10-10 §2.3, S2b planı Karar 11) türetme kuralıyla, yüklemeden
+        // SONRA ve kayıttan hemen önce çözülür: yükleme saniyeler sürebilir, çözümle kayıt arasındaki pencere dar kalsın.
+        // Kayıttan sonra koşul yeniden sınanır (12b). Okuma düşerse nesne kayıt hatasındaki gibi geri silinir (aşağıdaki
+        // gerekçe: hiçbir satırın göstermediği dekont KVKK silmesinden kaçar).
+        DerivedCustomer? derived;
+        try
+        {
+            derived = await ShopperCustomerResolver.DeriveAsync(_db, input.LicenseId, input.ShopperId, ct);
+        }
+        catch
+        {
+            await TryDeleteOrphanAsync(objectKey, ct);
+            throw;
+        }
+
         var paymentId = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
         var fraudFlagsString = string.Join(",", flags);
@@ -261,6 +278,7 @@ public sealed class ShopperPaymentSubmissionService
             RecipientName = recipientName,
             FraudFlags = fraudFlagsString,
             ParserConfidence = confidence,
+            WpfCustomerId = derived?.CustomerId,
             CreatedAt = now,
             UpdatedAt = now,
         });
@@ -302,6 +320,24 @@ public sealed class ShopperPaymentSubmissionService
         {
             await TryDeleteOrphanAsync(objectKey, ct);
             throw await ClassifyWriteFailureAsync(input, parseResult.PdfHash, effRef ?? "", ex, ct);
+        }
+
+        // 12b. Çözümle kayıt arasında bağı kesen bir yol commit olduysa (silme, ReproveLinksAsync, birleştirme işi) dekont
+        //      kesilen bağın müşterisinde kalmaz (S2b planı Karar 11). Dekont kaydedildi: düşerse yanıt değişmez (13'ün deseni);
+        //      log yalnız Id, istisna türü ve yığın izi (ileti SQL parametresi taşıyabilir).
+        if (derived is { CustomerId: not null } bond)
+        {
+            try
+            {
+                await ShopperCustomerResolver.ClearIfLinkChangedAsync(_db, paymentId, input.ShopperId, bond, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(
+                    "[PaymentSubmit] Dekont {PaymentId} kaydedildi ama bağlantı denetimi yapılamadı ({ErrorType}); çözümden "
+                    + "sonra kesilen bağ dekontta kalmış olabilir. Yığın: {StackTrace}",
+                    paymentId, ex.GetType().Name, ex.StackTrace);
+            }
         }
 
         // 13. Push notification to broadcaster (best-effort, don't throw)

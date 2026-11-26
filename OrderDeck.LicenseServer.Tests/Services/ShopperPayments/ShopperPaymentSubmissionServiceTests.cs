@@ -1,5 +1,7 @@
+using System.Linq.Expressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -1058,6 +1060,144 @@ public sealed class ShopperPaymentSubmissionServiceTests
         var audit = await db.PaymentSubmissionAudits.SingleAsync();
         audit.PaymentId.Should().Be(result.PaymentId);
         audit.Outcome.Should().Be(SubmissionOutcomes.Ok);
+    }
+
+    // ─── 22. Dekontun müşterisi (banka havalesi onayı S2b, spec 2026-10-10 §2.3) ─
+    //
+    // Gönderim dekontun müşterisini (Payment.WpfCustomerId) türetme kuralıyla yazar (ShopperCustomerResolver.DeriveAsync):
+    // shopper×lisansın en yeni müşterili bağlantısı; kopyadan geçen zincir asıl kayda varır, birleştirilmiş geçici kopyadan
+    // yalnız telefon kanıtıyla (§2.5). Çözüm yüklemeden sonra, kayıttan hemen önce yapılır (S2b planı Karar 11); çözümle
+    // kayıt arasındaki yarışı PaymentSubmitConcurrencyTests sınar. Değerler üretilir.
+
+    private static string NewPdfHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    private static WpfCustomerProjection SeedProjection(
+        LicenseDbContext db, Guid licenseId, Guid? mergedInto = null, string? phone = null, bool provisional = false)
+    {
+        var row = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            Platform = "tiktok",
+            Username = $"u-{Guid.NewGuid():N}",
+            MergedIntoId = mergedInto,
+            Phone = phone,
+            CreatedByShopper = provisional,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.WpfCustomerProjections.Add(row);
+        return row;
+    }
+
+    private static void SeedLink(LicenseDbContext db, Guid shopperId, Guid licenseId, Guid customerId)
+        => db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopperId,
+            LicenseId = licenseId,
+            Platform = "tiktok",
+            Username = $"u-{Guid.NewGuid():N}",
+            WpfCustomerId = customerId,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+
+    /// <summary>Kendi veritabanında tek gönderim: <paramref name="seed"/> kayıtlı shopper ve lisansa bağlantıları kurar;
+    /// dekont veritabanından okunur.</summary>
+    private async Task<Payment> SubmitWithLinksAsync(Action<LicenseDbContext, Shopper, License> seed)
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(
+            db, ParseResults.FullHigh(pdfHash: NewPdfHash(), recipientIban: null));
+        seed(db, shopper, license);
+        await db.SaveChangesAsync();
+
+        var result = await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+        return await db.Payments.AsNoTracking().SingleAsync(p => p.Id == result.PaymentId);
+    }
+
+    [Fact]
+    public async Task Gonderim_dekontun_musterisini_turetme_kuraliyla_yazar()
+    {
+        Guid p = default;
+        var payment = await SubmitWithLinksAsync((db, shopper, license) =>
+        {
+            p = SeedProjection(db, license.Id).Id;
+            SeedLink(db, shopper.Id, license.Id, SeedProjection(db, license.Id, mergedInto: p).Id);
+        });
+
+        payment.WpfCustomerId.Should().Be(p, "bağlantı K kopyasında; dekontun müşterisi zincirin vardığı asıl kayıt");
+        payment.UpdatedAt.Should().Be(payment.CreatedAt, "payments/since imleci UpdatedAt'tir");
+        payment.Source.Should().Be(PaymentSource.Receipt);
+    }
+
+    [Fact]
+    public async Task Gonderim_kanitsiz_gecici_kopyada_musterisiz_birakir()
+    {
+        // Kp (geçici kopya) → P, bağlantı Kp'de. Kanıt P'nin telefonundan: shopper'ın doğrulanmış telefonu P'ninkiyse P;
+        // değilse müşteri bilinmez (kopyanın telefonu kaydolanın kendi beyanı).
+        Guid ViaProvisional(LicenseDbContext db, Shopper shopper, License license, bool proven)
+        {
+            shopper.Phone = TestPhone.NewE164();
+            shopper.PhoneVerifiedAt = DateTimeOffset.UtcNow;
+            var canonical = SeedProjection(db, license.Id, phone: proven ? shopper.Phone : TestPhone.NewE164());
+            SeedLink(db, shopper.Id, license.Id,
+                SeedProjection(db, license.Id, mergedInto: canonical.Id, phone: shopper.Phone, provisional: true).Id);
+            return canonical.Id;
+        }
+
+        (await SubmitWithLinksAsync((db, s, l) => ViaProvisional(db, s, l, proven: false)))
+            .WpfCustomerId.Should().BeNull("kanıtsız geçici kopyadan müşteriye çıkılmaz");
+        Guid p = default;
+        (await SubmitWithLinksAsync((db, s, l) => p = ViaProvisional(db, s, l, proven: true)))
+            .WpfCustomerId.Should().Be(p, "telefon asıl kaydı kanıtlıyor");
+        (await SubmitWithLinksAsync((_, _, _) => { })).WpfCustomerId.Should().BeNull("bağlantı yok");
+    }
+
+    /// <summary>Çözüm yüklemeden SONRA okur; okuma düşerse yüklenen PDF kayıt hatasındaki gibi geri silinir (hiçbir satırın
+    /// göstermediği dekont KVKK silmesinden kaçardı) ve hata yukarı gider.</summary>
+    [Fact]
+    public async Task Musteri_cozumu_duserse_yuklenen_pdf_geri_alinir()
+    {
+        await using var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase($"sps-{Guid.NewGuid():N}")
+            .AddInterceptors(new LinkReadFails())
+            .Options);
+        var (svc, storage, shopper, license) = await SeedForValidationAsync(
+            db, ParseResults.FullHigh(pdfHash: NewPdfHash(), recipientIban: null));
+
+        var act = async () => await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage(LinkReadFails.Message);
+        storage.Count.Should().Be(0, "yüklenen nesne geri silinmeli");
+        (await db.Payments.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>Bağlantı tablosunu okuyan sorguyu derlenirken düşürür: müşteri çözümünün ilk okuması. Sorgu kökü tipinden
+    /// tanınır (ifadenin metni kökün varlık adını yazmaz). Yeni örnek kendi iç servis sağlayıcısını alır: başka testte
+    /// derlenmiş aynı sorgu önbellekten gelmez.</summary>
+    private sealed class LinkReadFails : IQueryExpressionInterceptor
+    {
+        public const string Message = "bağlantı okuması düştü";
+
+        public Expression QueryCompilationStarting(Expression queryExpression, QueryExpressionEventData eventData)
+            => new ReadsLinks().Found(queryExpression) ? throw new InvalidOperationException(Message) : queryExpression;
+
+        private sealed class ReadsLinks : ExpressionVisitor
+        {
+            private bool _found;
+
+            public bool Found(Expression query)
+            {
+                Visit(query);
+                return _found;
+            }
+
+            public override Expression? Visit(Expression? node)
+            {
+                if (node?.Type == typeof(IQueryable<ShopperBroadcasterLink>)) _found = true;
+                return base.Visit(node);
+            }
+        }
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────

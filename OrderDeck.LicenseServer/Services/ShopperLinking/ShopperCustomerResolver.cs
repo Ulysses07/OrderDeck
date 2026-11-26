@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 
 // Namespace kasten "ShopperLinking" (bkz. WpfCustomerLinkMatcher: "Services.Shopper" Shopper varlığıyla çakışırdı).
@@ -73,6 +74,89 @@ public static class ShopperCustomerResolver
     public static async Task<Guid?> PaymentCustomerAsync(
         LicenseDbContext db, Guid licenseId, Guid? shopperId, CancellationToken ct)
         => (await DeriveAsync(db, licenseId, shopperId, ct))?.CustomerId;
+
+    /// <summary>
+    /// Yeniden bağlamada dekontların yeniden yazımı (tasarım §2.3'ün açık maddesi; S2b planı Karar 10, 11). Bağ kaydedildikten
+    /// SONRA her lisans için <see cref="DeriveAsync"/> okunur ve shopper'ın o lisanstaki dekontları (<c>Source = Receipt</c>)
+    /// türetilen müşteriye yazılır (bilinmiyorsa null); müşterili bağlantısı olmayan lisans geçilir. Yazım lisans başına tek
+    /// koşullu UPDATE'tir: seçilen bağlantı hâlâ okunan müşterideyse ve shopper silinmemişse yazar. Bağı kesen yollar (silme
+    /// bağlantıyı siler ve dekontun müşterisini boşaltır; kanıt kaybı bağlantıyı boşaltır) <c>Status</c>'a dokunmaz; koşul
+    /// okumada kalsaydı okumadan sonra commit olan kesme geri yazılırdı, okuyucu da geride kalan asıl kaydı ayırt edemezdi. RCSI
+    /// kapalıyken EXISTS kilitli okur, kesen işlem commit olana dek bekler (RCSI açılırsa bu karar yeniden açılır).
+    /// <c>Status</c>'a bakmaz; onu, <c>UpdatedAt</c>'i (<c>payments/since</c> imleci) ve jetonu yazmaz: araya giren onay yazımı
+    /// düşürmez. İlişkiselde izleyiciyi atlar (<c>ExecuteUpdate</c>; çağıranlar sonra <see cref="Payment"/> okumaz),
+    /// InMemory'de aynı süzgeçle izlenen yazım ve kayıt (<c>SessionReleaser</c> deseni). Değişen satır sayısını döner. Çağıranlar
+    /// yalıtılmış <see cref="TryRederivePaymentsAsync"/>'i kullanır.
+    /// </summary>
+    public static async Task<int> RederivePaymentsAsync(
+        LicenseDbContext db, Guid shopperId, IReadOnlyCollection<Guid> licenseIds, CancellationToken ct)
+    {
+        var changed = 0;
+        foreach (var licenseId in licenseIds.Distinct())
+        {
+            if (await DeriveAsync(db, licenseId, shopperId, ct) is not { } d) continue;
+            var (link, live) = StillLinked(db, shopperId, d);
+            var stale = db.Payments.Where(p => p.LicenseId == licenseId && p.ShopperId == shopperId
+                && p.Source == PaymentSource.Receipt && p.WpfCustomerId != d.CustomerId && link.Any() && live.Any());
+            if (db.Database.IsRelational())
+            {
+                changed += await stale.ExecuteUpdateAsync(u => u.SetProperty(p => p.WpfCustomerId, d.CustomerId), ct);
+                continue;
+            }
+            var rows = await stale.ToListAsync(ct);
+            foreach (var p in rows) p.WpfCustomerId = d.CustomerId;
+            if (rows.Count > 0) await db.SaveChangesAsync(ct);
+            changed += rows.Count;
+        }
+        return changed;
+    }
+
+    /// <summary>
+    /// <see cref="RederivePaymentsAsync"/>; her hatayı yakalar (kilitlenme kurbanı 1205, zaman aşımı, iptal, programlama
+    /// hatası): bağ çağıranın kaydıyla yazılmıştır, yanıt değişmez, dekont önceki müşterisinde kalır. İzlenen
+    /// <see cref="Payment"/> girdileri ayrılır (aynı kapsamdaki sonraki bir kayıt yarım yazımı taşımasın); uyarı logu shopper
+    /// ve lisans Id'lerini, istisna türünü ve yığın izini yazar (ileti değil: SQL parametresi taşıyabilir); 0 döner.
+    /// </summary>
+    public static async Task<int> TryRederivePaymentsAsync(
+        LicenseDbContext db, Guid shopperId, IReadOnlyCollection<Guid> licenseIds, ILogger log, CancellationToken ct)
+    {
+        try
+        {
+            return await RederivePaymentsAsync(db, shopperId, licenseIds, ct);
+        }
+        catch (Exception ex)
+        {
+            foreach (var entry in db.ChangeTracker.Entries<Payment>().ToList()) entry.State = EntityState.Detached;
+            log.LogWarning("Dekont yeniden yazımı: shopper {ShopperId} bağlandı ama lisans {LicenseIds} dekontları yeniden "
+                + "türetilemedi ({ErrorType}); bağ kayıtlı, yanıt değişmedi. Yığın: {StackTrace}",
+                shopperId, licenseIds, ex.GetType().Name, ex.StackTrace);
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Gönderimin kayıttan sonraki denetimi (S2b planı Karar 11): gönderim müşteriyi kayıttan hemen önce
+    /// <see cref="DeriveAsync"/> ile çözer; arada bağı kesen bir yol commit olduysa (silme bağlantıyı siler,
+    /// <c>ReproveLinksAsync</c> ve <c>CustomerIdentityMergeJob</c> bağlantıyı boşaltır) <see cref="RederivePaymentsAsync"/>'in
+    /// koşulu artık tutmaz ve dekontun müşterisi boşaltılır. Yalnız çözülen müşteriyi hâlâ taşıyan satıra yazar. Yalnız
+    /// ilişkiselde koşar: InMemory'de eşzamanlı yazım yok.
+    /// </summary>
+    public static async Task ClearIfLinkChangedAsync(
+        LicenseDbContext db, Guid paymentId, Guid shopperId, DerivedCustomer d, CancellationToken ct)
+    {
+        if (!db.Database.IsRelational()) return;
+        var (link, live) = StillLinked(db, shopperId, d);
+        await db.Payments
+            .Where(p => p.Id == paymentId && p.WpfCustomerId == d.CustomerId && !(link.Any() && live.Any()))
+            .ExecuteUpdateAsync(u => u.SetProperty(p => p.WpfCustomerId, (Guid?)null), ct);
+    }
+
+    /// <summary>Karar 11'in koşulu, yazımın kendi WHERE'inde sınanır: <paramref name="d"/>'de seçilen bağlantı hâlâ okunan
+    /// müşteride ve shopper silinmemiş.</summary>
+    private static (IQueryable<ShopperBroadcasterLink> Link, IQueryable<Shopper> Live) StillLinked(
+        LicenseDbContext db, Guid shopperId, DerivedCustomer d)
+        => (db.ShopperBroadcasterLinks.Where(l => l.Id == d.LinkId && l.WpfCustomerId == d.LinkCustomerId),
+            db.Shoppers.Where(s => s.Id == shopperId && s.DeletedAt == null));
 
     /// <summary>Kuralın kendisi (sınıf özeti); <paramref name="shopperProof"/> yalnız geçici kopyadan geçen zincirde
     /// çağrılır.</summary>

@@ -12,11 +12,12 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
-public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
+// Kanca (HookedApiFactory) boşken fabrika ApiFactory'nin aynısı; yalnız yeniden yazımın yalıtım testi doldurur.
+public class LicensesWpfCustomersSyncControllerTests : IClassFixture<HookedApiFactory>
 {
-    private readonly ApiFactory _factory;
+    private readonly HookedApiFactory _factory;
 
-    public LicensesWpfCustomersSyncControllerTests(ApiFactory factory) => _factory = factory;
+    public LicensesWpfCustomersSyncControllerTests(HookedApiFactory factory) => _factory = factory;
 
     private async Task<(HttpClient client, Guid customerId, Guid licenseId)> SetupAsync()
     {
@@ -1926,7 +1927,8 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
     // o kayda bağlı dekontu da müşterisiz kalır: kalsaydı kanıtsız kişinin dekontu birleştirmeyle gerçek müşteriye geçerdi.
 
     /// <summary>Shopper'ın dekontu; müşterisi S2a geri doldurmasının bağdan türettiği kayıt. ReferansNo lisansta tekil.</summary>
-    private async Task<Guid> SeedPaymentAsync(Guid licenseId, Guid shopperId, Guid wpfCustomerId, DateTimeOffset at)
+    private async Task<Guid> SeedPaymentAsync(Guid licenseId, Guid shopperId, Guid? wpfCustomerId, DateTimeOffset at,
+        PaymentStatus status = PaymentStatus.Pending, PaymentSource source = PaymentSource.Receipt)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -1935,6 +1937,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         {
             Id = id, LicenseId = licenseId, ShopperId = shopperId, WpfCustomerId = wpfCustomerId,
             ReferansNo = $"r-{Guid.NewGuid():N}", Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+            Status = status, Source = source,
         });
         await db.SaveChangesAsync();
         return id;
@@ -2063,5 +2066,95 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         (await LinkTargetAsync(activeLinkId)).Should().Be(other);
         (await PaymentAsync(viaLeft)).WpfCustomerId.Should().BeNull();
         (await PaymentAsync(viaActive)).WpfCustomerId.Should().Be(other, "başka kayda bağlı dekont");
+    }
+
+    // ── S2b (spec 2026-10-10 §2.3, S2b planı Karar 10): yeniden bağlamada dekontun yeniden yazımı ────────────────────────
+    // Geriye dönük eşleştirme bağı kaydettikten SONRA shopper'ın o lisanstaki dekontlarını türetme kuralıyla yeniden yazar:
+    // bağsız gönderilmiş ya da bağı düşüp boşalmış dekont müşterisini alır.
+
+    /// <summary>Telefonu doğrulanmış shopper ve bekleyen (müşterisiz) bağlantısı.</summary>
+    private async Task<(Guid ShopperId, Guid LinkId)> SeedPendingLinkAsync(Guid licenseId, string username, string phone)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = VerifiedShopper(phone);
+        var linkId = Guid.NewGuid();
+        db.Shoppers.Add(shopper);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = linkId, ShopperId = shopper.Id, LicenseId = licenseId, Platform = "tiktok",
+            Username = username, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return (shopper.Id, linkId);
+    }
+
+    /// <summary>Senkron bekleyen bağlantıyı telefonla P'ye bağlar; shopper'ın bu lisanstaki iki dekontu (biri onaylı) P'yi
+    /// alır, Status ve UpdatedAt (payments/since imleci) değişmez. Başka lisanstaki dekontu, banka satırı ve başka shopper'ın
+    /// dekontu değişmez.</summary>
+    [Fact]
+    public async Task Geriye_donuk_eslestirme_shopperin_o_lisanstaki_dekontlarini_yeniden_turetir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (_, _, otherLicenseId) = await SetupAsync();
+        var phone = NewPhone();
+        var username = $"u-{Guid.NewGuid():N}";
+        var (shopperId, linkId) = await SeedPendingLinkAsync(licenseId, username, phone);
+        var at = DateTimeOffset.UtcNow.AddDays(-3);
+        var pending = await SeedPaymentAsync(licenseId, shopperId, null, at);
+        var approved = await SeedPaymentAsync(licenseId, shopperId, null, at, PaymentStatus.Approved);
+        var foreign = await SeedPaymentAsync(otherLicenseId, shopperId, null, at);
+        var bank = await SeedPaymentAsync(licenseId, shopperId, null, at, PaymentStatus.Approved, PaymentSource.Bank);
+        var otherShoppers = await SeedPaymentAsync(licenseId, Guid.NewGuid(), null, at);
+        var p = Guid.NewGuid();
+
+        var body = await PostAsync(client, licenseId, BroadcasterItem(2, p, username, "Yayıncının Kaydı", phone));
+
+        body.RetroactiveMatches.Should().Be(1);
+        (await LinkTargetAsync(linkId)).Should().Be(p);
+        foreach (var (id, status) in new[] { (pending, PaymentStatus.Pending), (approved, PaymentStatus.Approved) })
+        {
+            var row = await PaymentAsync(id);
+            row.WpfCustomerId.Should().Be(p, "bağ kaydedildikten sonra dekont türetme kuralıyla yazılır");
+            row.Status.Should().Be(status, "yazım Status'a bakmaz, onu yazmaz");
+            row.UpdatedAt.Should().Be(at, "payments/since imleci UpdatedAt'tir: ilerlese dekont bilgisayarlara yeniden inerdi");
+        }
+        (await PaymentAsync(foreign)).WpfCustomerId.Should().BeNull("başka lisansın dekontu");
+        (await PaymentAsync(bank)).WpfCustomerId.Should().BeNull("banka satırı dekont değildir");
+        (await PaymentAsync(otherShoppers)).WpfCustomerId.Should().BeNull("başka shopper'ın dekontu");
+    }
+
+    /// <summary>Yeniden yazım (InMemory yolu) partiden ve bağlamadan SONRAKİ kayıtta düşer: yanıt yine 200, bağ kayıtlı,
+    /// dekont boş kalır. Yalıtımsız çağrı 500 dönerdi; istemci kaydedilmiş partiyi boşuna yeniden gönderirdi.</summary>
+    [Fact]
+    public async Task Yeniden_yazim_duserse_senkron_yaniti_degismez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var phone = NewPhone();
+        var username = $"u-{Guid.NewGuid():N}";
+        var (shopperId, linkId) = await SeedPendingLinkAsync(licenseId, username, phone);
+        var paymentId = await SeedPaymentAsync(licenseId, shopperId, null, DateTimeOffset.UtcNow.AddDays(-3));
+        var failed = false;
+        _factory.Hook.BeforeSave = async () =>
+        {
+            if (await LinkTargetAsync(linkId) is null) return;   // parti ve bağlama kayıtları geçer
+            failed = true;
+            throw new InvalidOperationException("yeniden yazımın kaydı düştü");
+        };
+
+        SyncResponseV2 body;
+        try
+        {
+            body = await PostAsync(client, licenseId, BroadcasterItem(2, Guid.NewGuid(), username, "Yayıncının Kaydı", phone));
+        }
+        finally
+        {
+            _factory.Hook.Reset();
+        }
+
+        failed.Should().BeTrue("kanca yeniden yazımın kaydında tetiklenmeli");
+        body.RetroactiveMatches.Should().Be(1);
+        (await LinkTargetAsync(linkId)).Should().NotBeNull("bağ kayıtlı");
+        (await PaymentAsync(paymentId)).WpfCustomerId.Should().BeNull("yeniden yazım düştü");
     }
 }

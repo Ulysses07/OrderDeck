@@ -35,16 +35,18 @@ public sealed class PaymentSubmitConcurrencyTests : IAsyncLifetime
     private static readonly byte[] ValidPdf = { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34 };
 
     private readonly SqlServerContainerFixture _sql;
-    private RelationalApiFactory _factory = null!;
+    // Kanca boşken RelationalApiFactory'nin aynısı; yalnız bağ kesme yarışı kurar.
+    private RaceRelationalApiFactory _factory = null!;
     private readonly StubShopperPaymentStorage _storage = new();
 
     public PaymentSubmitConcurrencyTests(SqlServerContainerFixture sql) => _sql = sql;
 
     public async Task InitializeAsync()
-        => _factory = new RelationalApiFactory(await _sql.CreateDatabaseAsync());
+        => _factory = new RaceRelationalApiFactory(await _sql.CreateDatabaseAsync());
 
     public Task DisposeAsync()
     {
+        _factory.Hook.Disarm();
         _factory.Dispose();
         return Task.CompletedTask;
     }
@@ -112,7 +114,76 @@ public sealed class PaymentSubmitConcurrencyTests : IAsyncLifetime
         _storage.Count.Should().Be(1, "reddedilen gönderimin PDF'i geri alınmalı");
     }
 
+    /// <summary>
+    /// Gönderim dekontun müşterisini kayıttan hemen önce çözer (banka havalesi onayı S2b, S2b planı Karar 11). Çözümden sonra
+    /// kayıttan önce bağı kesen bir yol commit olursa (burada <c>ReproveLinksAsync</c>'in etkisi: bağlantı boşalır) dekont
+    /// kesilen bağın müşterisinde kalmaz: kayıttan sonra aynı koşul sınanır, tutmuyorsa müşteri boşalır. Bağı kesen yollar
+    /// <c>Status</c>'a dokunmaz; okuyucu geride kalan asıl kaydı ayırt edemezdi. Bağlantısı değişmeyen gönderim asıl kayda
+    /// yazılır.
+    /// </summary>
+    [Fact]
+    public async Task Gonderim_cozdukten_sonra_bag_kesilirse_dekont_musterisiz_kalir()
+    {
+        var raced = await SeedAsync();
+        var steady = await SeedAsync();
+        var racedLink = await SeedLinkAsync(raced.ShopperId, raced.LicenseId);
+        var steadyLink = await SeedLinkAsync(steady.ShopperId, steady.LicenseId);
+        var cut = false;
+        _factory.Hook.Once(async saving =>
+        {
+            saving.ChangeTracker.Entries<Payment>().Should().Contain(e => e.State == EntityState.Added,
+                "kanca gönderimin kaydında tetiklenmeli");
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.ShopperBroadcasterLinks.Where(l => l.Id == racedLink.LinkId)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.WpfCustomerId, (Guid?)null))).Should().Be(1);
+            cut = true;
+        });
+
+        (await SubmitInOwnScopeAsync(raced.ShopperId, raced.LicenseId, NewPdfHash(), NewReferansNo()))
+            .Error.Should().BeNull();
+        (await SubmitInOwnScopeAsync(steady.ShopperId, steady.LicenseId, NewPdfHash(), NewReferansNo()))
+            .Error.Should().BeNull();
+
+        cut.Should().BeTrue();
+        (await PaymentCustomerAsync(raced.ShopperId)).Should().BeNull(
+            "bağ çözümden sonra kesildi; dekont kesilen bağın müşterisinde kalmaz");
+        (await PaymentCustomerAsync(steady.ShopperId)).Should().Be(steadyLink.CustomerId);
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    private static string NewPdfHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    private static string NewReferansNo() => $"r-{Guid.NewGuid():N}";
+
+    /// <summary>Asıl kayıt P ve shopper'ın P'ye bağlı bağlantısı.</summary>
+    private async Task<(Guid LinkId, Guid CustomerId)> SeedLinkAsync(Guid shopperId, Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var p = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "tiktok", Username = $"u-{Guid.NewGuid():N}",
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        var link = new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = licenseId, Platform = "tiktok", Username = p.Username,
+            WpfCustomerId = p.Id, JoinedAt = DateTimeOffset.UtcNow,
+        };
+        db.AddRange(p, link);
+        await db.SaveChangesAsync();
+        return (link.Id, p.Id);
+    }
+
+    private async Task<Guid?> PaymentCustomerAsync(Guid shopperId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.Payments.AsNoTracking().Where(p => p.ShopperId == shopperId)
+            .Select(p => p.WpfCustomerId).SingleAsync();
+    }
 
     private sealed record SubmitOutcome(string? Error);
 

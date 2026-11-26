@@ -420,6 +420,63 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
             .WpfCustomerId.Should().Be(projectionId);
     }
 
+    /// <summary>Banka havalesi onayı S2b (spec 2026-10-10 §2.3, S2b planı Karar 10): telefon doğrulaması bekleyen
+    /// bağlantıyı bağlayınca, bağ kaydedildikten SONRA shopper'ın o lisanstaki dekontu türetme kuralıyla müşterisini alır;
+    /// UpdatedAt (payments/since imleci) ilerlemez. Bağlantısız lisanstaki dekont değişmez.</summary>
+    [Fact]
+    public async Task Telefon_dogrulamasi_baglanan_lisansin_dekontlarini_doldurur()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var (otherLicenseId, _, _) = await SeedLicenseAsync();
+        var phone = TestPhone.NewE164();
+        var username = $"u-{Guid.NewGuid():N}";
+        var projectionId = await SeedBroadcasterProjectionAsync(licenseId, username, phone);
+        var client = _factory.CreateClient();
+        var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "Dekontlu Müşteri", phone, $"kayit-{Guid.NewGuid():N}", "Sivas", "tiktok", username));
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
+        var at = DateTimeOffset.UtcNow.AddDays(-1);
+        var paymentId = await SeedReceiptAsync(licenseId, body!.ShopperId, at);
+        var foreignId = await SeedReceiptAsync(otherLicenseId, body.ShopperId, at);
+
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", body.AccessToken);
+        (await client.PostAsync("/api/v1/shopper/auth/phone-verification/request", null))
+            .StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var gelenKod = System.Text.RegularExpressions.Regex
+            .Match(_factory.Sms.Sent.Last(m => m.Phone == phone).Text, @"\d{6}").Value;
+        (await client.PostAsJsonAsync("/api/v1/shopper/auth/phone-verification/confirm", new ConfirmPhoneRequest(gelenKod)))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var payment = await PaymentAsync(paymentId);
+        payment.WpfCustomerId.Should().Be(projectionId);
+        payment.UpdatedAt.Should().Be(at);
+        (await PaymentAsync(foreignId)).WpfCustomerId.Should().BeNull("bu lisansta bağlantı yok");
+    }
+
+    /// <summary>Shopper'ın müşterisiz dekontu (ör. bağ beklerken gönderilmiş). ReferansNo lisansta tekil.</summary>
+    private async Task<Guid> SeedReceiptAsync(Guid licenseId, Guid shopperId, DateTimeOffset at)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var id = Guid.NewGuid();
+        db.Payments.Add(new Payment
+        {
+            Id = id, LicenseId = licenseId, ShopperId = shopperId, ReferansNo = $"r-{Guid.NewGuid():N}",
+            Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+        });
+        await db.SaveChangesAsync();
+        return id;
+    }
+
+    private async Task<Payment> PaymentAsync(Guid paymentId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId);
+    }
+
     // ── A5b: kopya kayıt/eşleştirme adayı değil ─────────────────────────────
 
     private sealed record ConfirmPhoneRequest(string Code);
