@@ -1,11 +1,8 @@
 using System.Security.Claims;
-using Hangfire;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
-using OrderDeck.LicenseServer.Services.Bank;
-using OrderDeck.LicenseServer.Services.Push;
-using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Services.Payments;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +12,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 /// <summary>
 /// OrderDeck Panel mobile app için ödeme (dekont) sorgulama ve onay/red
 /// işlemleri. Yayıncı sadece kendi lisansının ödemelerini görür/yönetir.
+/// Kararı ve yan etkilerini <see cref="PaymentApprovalService"/> yürütür.
 ///
 /// Bu PR'da Payment satırlarının nasıl OLUŞTURULDUĞU dahil değil — sonraki
 /// PR'larda WPF App outbox (PDF parse sonucu) veya customer mobile app
@@ -25,28 +23,13 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
 public sealed class PanelPaymentsController : ControllerBase
 {
-    /// <summary>KVKK K-5: bildirim gövdesi Google FCM'ye gider; tutar ve serbest metin ret gerekçesi YAZILMAZ, ayrıntı uygulamada.</summary>
-    public const string PaymentApprovedPushBody = "Dekontun onaylandı.";
-    public const string PaymentRejectedPushBody = "Dekontun reddedildi. Ayrıntıyı uygulamada görebilirsin.";
-
     private readonly LicenseDbContext _db;
-    private readonly INotificationSender _push;
-    private readonly LabelRuleApplier _labels;
-    private readonly ILogger<PanelPaymentsController> _log;
-    private readonly IBackgroundJobClient _jobs;
+    private readonly PaymentApprovalService _approvals;
 
-    public PanelPaymentsController(
-        LicenseDbContext db,
-        INotificationSender push,
-        LabelRuleApplier labels,
-        ILogger<PanelPaymentsController> log,
-        IBackgroundJobClient jobs)
+    public PanelPaymentsController(LicenseDbContext db, PaymentApprovalService approvals)
     {
         _db = db;
-        _push = push;
-        _labels = labels;
-        _log = log;
-        _jobs = jobs;
+        _approvals = approvals;
     }
 
     public sealed record PaymentDto(
@@ -110,174 +93,22 @@ public sealed class PanelPaymentsController : ControllerBase
 
     [HttpPost("{id:guid}/approve")]
     public async Task<IActionResult> Approve(Guid id, CancellationToken ct)
-    {
-        var customerId = User.GetTenantCustomerId();
-        var payment = await _db.Payments
-            .Include(p => p.License)
-            .FirstOrDefaultAsync(p => p.Id == id && p.License.CustomerId == customerId, ct);
-        if (payment is null) return NotFound();
-
-        if (payment.Status != PaymentStatus.Pending)
-            return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
-
-        var now = DateTimeOffset.UtcNow;
-        payment.Status = PaymentStatus.Approved;
-        payment.ApprovedAt = now;
-        payment.ApprovedByCustomerId = customerId;
-        payment.UpdatedAt = now;
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            // Status jetonu (bkz. LicenseDbContext): biz okuduktan sonra
-            // yarışan başka bir karar kazandı. Etiket/push yalnız kazanandan
-            // gider; buradan sessizce 409 dönüyoruz — pending kontrolündeki
-            // yanıtın aynısı, istemci iki durumu ayırt etmek zorunda değil.
-            return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
-        }
-
-        // Onay commit edildi. Ölçüm etiket ve bildirimden ÖNCE zamanlanır (bkz. ScheduleShadowReconcile).
-        ScheduleShadowReconcile(payment.Id);
-        await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
-        await NotifyShopperPaymentDecisionAsync(payment, approved: true, ct);
-        return NoContent();
-    }
+        => DecisionResult(await _approvals.ApproveAsync(id, User.GetTenantCustomerId(), ct));
 
     public sealed record RejectRequest(string? Reason);
 
     [HttpPost("{id:guid}/reject")]
     public async Task<IActionResult> Reject(Guid id, [FromBody] RejectRequest req, CancellationToken ct)
+        => DecisionResult(await _approvals.RejectAsync(id, User.GetTenantCustomerId(), req?.Reason, ct));
+
+    private IActionResult DecisionResult(PaymentDecisionOutcome outcome) => outcome switch
     {
-        var customerId = User.GetTenantCustomerId();
-        var payment = await _db.Payments
-            .Include(p => p.License)
-            .FirstOrDefaultAsync(p => p.Id == id && p.License.CustomerId == customerId, ct);
-        if (payment is null) return NotFound();
-
-        if (payment.Status != PaymentStatus.Pending)
-            return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
-
-        var reason = (req?.Reason ?? "").Trim();
-        if (reason.Length > 500) reason = reason[..500];
-
-        var now = DateTimeOffset.UtcNow;
-        payment.Status = PaymentStatus.Rejected;
-        payment.RejectedAt = now;
-        payment.RejectedByCustomerId = customerId;
-        payment.RejectReason = reason.Length > 0 ? reason : null;
-        payment.UpdatedAt = now;
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            // Yarışan karar kazandı — bkz. Approve'daki açıklama.
-            return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
-        }
-
-        await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentRejected, ct);
-        await NotifyShopperPaymentDecisionAsync(payment, approved: false, ct);
-        return NoContent();
-    }
-
-    /// <summary>
-    /// Gölge banka eşleştirmesi ölçümü (spec §6): onayı gölge öneriyle bağdaştıran işi
-    /// <see cref="PaymentMatchReconcileJob.ApprovalDelay"/> sonrasına zamanlar — dekontun kendi havalesi çekilmeden
-    /// koşsaydı aynı tutarlı başka bir havaleyi bağlardı. Onay isteğinde KOŞMAZ: eşleştirme onayı yavaşlatmamalı, hatası
-    /// onayı düşürmemeli. Ödeme SaveChanges'inden SONRA: commit olmamış onay için koşan iş "onaylı değil" diye çıkardı.
-    /// Etiket ve bildirimden ÖNCE: onlar istek jetonunu kullanır, etiketin telefon sorgusu da try dışında; istemci commit'ten
-    /// sonra koparsa ya da o sorgu atarsa eylem orada biter ve onay Faz 2 ölçümünden sessizce düşerdi (ne iş, ne gap, ne
-    /// günlük). Ret bağlanmaz (spec §6 "ret öğretmez").
-    /// </summary>
-    private void ScheduleShadowReconcile(Guid paymentId)
-    {
-        try
-        {
-            _jobs.Schedule<PaymentMatchReconcileJob>(j => j.RunAsync(paymentId, CancellationToken.None),
-                PaymentMatchReconcileJob.ApprovalDelay);
-        }
-        catch (Exception ex)
-        {
-            // Onay COMMIT EDİLDİ; kuyruk arızası onu geri almaz, 500 göstermek yalan olur. Bu onay ölçümden düşer (gap de
-            // yazılmaz). Mesaj DEĞİL yalnız tür adı: kuyruk deposunun istisnası bağlantı ayrıntısı taşıyabilir.
-            _log.LogWarning("Gölge eşleştirme işi zamanlanamadı (ödeme {PaymentId}): {ErrorType}",
-                paymentId, ex.GetType().Name);
-        }
-    }
-
-    /// <summary>
-    /// Karar sonrası müşterinin WhatsApp sohbetine otomatik etiket.
-    ///
-    /// <para>Ödeme SaveChanges'inden SONRA çağrılır: etiket yazılamasa bile
-    /// onay kaydı yerinde kalır. Telefon kaynağı <c>Shopper.Phone</c> —
-    /// ShopperId null ise (eski WhatsApp akışından gelen dekont) elimizde
-    /// telefon yoktur, sessizce atlanır.</para>
-    /// </summary>
-    private async Task ApplyConversationLabelAsync(
-        Payment payment, WaLabelEvent eventKey, CancellationToken ct)
-    {
-        if (payment.ShopperId is null) return;
-
-        var phone = await _db.Shoppers
-            .Where(s => s.Id == payment.ShopperId.Value)
-            .Select(s => s.Phone)
-            .FirstOrDefaultAsync(ct);
-
-        await _labels.TryApplyAndSaveAsync(payment.LicenseId, eventKey, phone, ct);
-    }
-
-    /// <summary>
-    /// Yayıncı dekontu onayladıktan / reddettikten sonra shopper'a push.
-    /// ShopperId NULL ise legacy WhatsApp akışından gelen dekont — kimseye
-    /// bildirim yok. NotificationsEnabledPayments kapalıysa skip. Best-effort:
-    /// fail throw etmez, controller response'unu engellemez.
-    /// Gövdede tutar ve ret gerekçesi yok (KVKK K-5): FCM üçüncü taraf, ayrıntı uygulamada.
-    /// </summary>
-    private async Task NotifyShopperPaymentDecisionAsync(
-        Payment payment, bool approved, CancellationToken ct)
-    {
-        if (payment.ShopperId is null) return;
-
-        try
-        {
-            var shopper = await _db.Shoppers
-                .Where(s => s.Id == payment.ShopperId.Value
-                    && s.DeletedAt == null
-                    && s.NotificationsEnabledPayments)
-                .Select(s => new { s.Id })
-                .FirstOrDefaultAsync(ct);
-            if (shopper is null) return;
-
-            var broadcasterName = await _db.Licenses
-                .Where(l => l.Id == payment.LicenseId)
-                .Select(l => l.Customer.Name)
-                .FirstOrDefaultAsync(ct) ?? "Yayıncı";
-
-            // KVKK K-5: tutar ve ret gerekçesi FCM'ye gitmez; yayıncı adı (başlık) ve olgu kalır.
-            var title = broadcasterName;
-            var body = approved ? PaymentApprovedPushBody : PaymentRejectedPushBody;
-
-            await _push.SendToShoppersAsync(
-                new[] { shopper.Id },
-                title: title,
-                body: body,
-                data: new Dictionary<string, string>
-                {
-                    ["type"] = approved ? "payment-approved" : "payment-rejected",
-                    ["paymentId"] = payment.Id.ToString(),
-                    ["licenseId"] = payment.LicenseId.ToString(),
-                },
-                ct: ct);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex,
-                "Shopper payment decision push failed for payment={PaymentId}", payment.Id);
-        }
-    }
+        PaymentDecisionOutcome.Decided => NoContent(),
+        PaymentDecisionOutcome.NotFound => NotFound(),
+        PaymentDecisionOutcome.NotPending =>
+            Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409),
+        _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome, null),
+    };
 
     private static bool TryParseStatus(string raw, out PaymentStatus result)
     {
