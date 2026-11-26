@@ -190,16 +190,25 @@ public sealed class CustomerIdentityMerger
     }
 
     /// <summary>
-    /// Kanıtı düşen Shopper bağlantısının eşi (spec 2026-10-10 §2.3, §12): o shopper'ın bu lisansta müşterisi
-    /// <paramref name="customerId"/> olan dekontlarında Payment.WpfCustomerId boşalır. Kalsaydı kanıtsız kişinin dekontu
-    /// birleştirmeyle gerçek müşteriye geçerdi. Karar izlenen değerden verilir: aynı kayıtta birleştiricinin taşıdığı dekont
-    /// veritabanında hâlâ eski kimliktedir. SaveChanges çağırmaz; UpdatedAt ilerlemez (payments/since imleci), Status jetonuna
-    /// dokunulmaz.
+    /// Kanıtı düşen Shopper bağlantısının eşi (spec 2026-10-10 §2.3, §12): müşterisini o bağlantıdan almış dekontlarda
+    /// Payment.WpfCustomerId boşalır. Onlar shopper'ın, bağlantının veritabanındaki (bu kayıttan önceki) müşterisine bağlı
+    /// dekontlarıdır: birleştirici bağlantıyla birlikte onları da <paramref name="customerId"/>'ye çevirdi (yerinde kanıt
+    /// isteyen bağlantıda ikisi aynı kayıt). Kalsaydı kanıtsız kişinin dekontu birleştirmeyle gerçek müşteriye geçerdi.
+    /// Shopper'ın o kayda zaten bağlı dekontu kalır: müşterisi başka bir bağlantısından geldi, o bağa bu işlem dokunmadı
+    /// (türetme kuralı, ResolveWpfCustomerAsync: en yeni müşterili bağ). Süzgeç veritabanındaki değere bakar (taşınan
+    /// bağlantı da dekont da orada hâlâ eski kimliktedir), karar izlenen değere. SaveChanges çağırmaz; UpdatedAt ilerlemez
+    /// (payments/since imleci), Status jetonuna dokunulmaz.
     /// </summary>
-    public async Task UnbindPaymentsAsync(Guid licenseId, Guid shopperId, Guid customerId, CancellationToken ct)
+    /// <param name="link">Kanıtı düşen bağlantı; WpfCustomerId'si boşaltılmış olabilir, veritabanındaki değeri okunur.</param>
+    /// <param name="customerId">Bağlantının boşaltılmadan önceki (izlenen) müşterisi.</param>
+    public async Task UnbindPaymentsAsync(ShopperBroadcasterLink link, Guid customerId, CancellationToken ct)
     {
+        // Skaler okuma kimlik çözümüne girmez: izlenen örneğin değerini değil, veritabanındakini verir.
+        var boundTo = await _db.ShopperBroadcasterLinks
+            .Where(l => l.Id == link.Id).Select(l => l.WpfCustomerId).SingleOrDefaultAsync(ct);
+        if (boundTo is null) return;
         var payments = await _db.Payments
-            .Where(p => p.LicenseId == licenseId && p.ShopperId == shopperId && p.WpfCustomerId != null)
+            .Where(p => p.LicenseId == link.LicenseId && p.ShopperId == link.ShopperId && p.WpfCustomerId == boundTo)
             .ToListAsync(ct);
         foreach (var p in payments.Where(p => p.WpfCustomerId == customerId))
             p.WpfCustomerId = null;

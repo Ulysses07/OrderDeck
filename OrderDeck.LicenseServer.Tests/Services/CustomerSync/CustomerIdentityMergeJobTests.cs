@@ -563,6 +563,60 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         (await db.Payments.AsNoTracking().SingleAsync(p => p.Id == payment.Id)).WpfCustomerId.Should().Be(wpf.Id);
     }
 
+    /// <summary>Aynı shopper'ın ayrılmış eski bağlantısı geçici kopyada, sonra açtığı etkin bağlantısı asıl kayıtta. Asıl
+    /// kaydın telefonu bağlantıdan sonra değişmiş: kopyadan taşınan bağ kanıt veremez (asıl kayıt da geçiciyse hiç veremez).
+    /// Boşalan yalnız müşterisini o bağdan almış, birleştiricinin kopyadan taşıdığı dekonttur; shopper'ın asıl kayda başka
+    /// bir bağı olsa da (Karar 4). Asıl kayda doğrudan bağlı dekontun müşterisi etkin bağlantıdan geldi, iş o bağa
+    /// dokunmaz: dekont da kalır (türetme kuralı, ResolveWpfCustomerAsync: en yeni müşterili bağ). Boşalsaydı bağ yaşarken
+    /// dekont müşterisiz kalırdı; S2b'den sonra sütun yeniden türetilmediği için kalıcı.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Kanitsiz_tasinan_baglanti_yalniz_kopyadan_gelen_dekontu_bosaltir(bool canonicalProvisional)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var shopperPhone = NewPhone();
+        var canonical = Row(lic, "melis", t0.AddDays(3));
+        canonical.Phone = NewPhone(); // bağlantıdan sonra değişti: shopper'ınki değil
+        canonical.CreatedByShopper = canonicalProvisional;
+        var copy = ProvisionalRow(lic, "Melis", t0, shopperPhone);
+        db.WpfCustomerProjections.AddRange(canonical, copy);
+        db.Orders.Add(OrderFor(lic, canonical, t0)); // ikisi de geçiciyse asıl kaydı en erken sipariş seçer
+        var leftLinkId = AddVerifiedShopperLink(db, lic, copy, shopperPhone, left: true);
+        var leftLink = db.ShopperBroadcasterLinks.Local.Single(l => l.Id == leftLinkId);
+        leftLink.JoinedAt = t0;
+        leftLink.LeftAt = t0.AddDays(1);
+        var activeLinkId = Guid.NewGuid();
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = activeLinkId, ShopperId = leftLink.ShopperId, LicenseId = lic, Platform = canonical.Platform,
+            Username = canonical.Username, WpfCustomerId = canonical.Id, JoinedAt = t0.AddDays(2),
+        });
+        var viaActive = ShopperReceipt(lic, leftLink.ShopperId, canonical.Id, t0);
+        var viaCopy = ShopperReceipt(lic, leftLink.ShopperId, copy.Id, t0);
+        db.Payments.AddRange(viaActive, viaCopy);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.FailedGroups.Should().Be(0);
+        report.PaymentsToMove.Should().Be(1);
+        report.LinksUnbound.Should().Be(1, "yalnız kopyadan taşınan ayrılmış bağ yeniden kanıt ister");
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == copy.Id))
+            .MergedIntoId.Should().Be(canonical.Id);
+        (await LinkTargetAsync(db, leftLinkId)).Should().BeNull();
+        (await LinkTargetAsync(db, activeLinkId)).Should().Be(canonical.Id);
+        var rows = await db.Payments.AsNoTracking().Where(p => p.LicenseId == lic).ToDictionaryAsync(p => p.Id);
+        rows[viaActive.Id].WpfCustomerId.Should().Be(canonical.Id, "müşterisi etkin bağdan geldi, o bağ yaşıyor");
+        rows[viaCopy.Id].WpfCustomerId.Should().BeNull("müşterisi kanıtı düşen bağdan geldi");
+        rows.Values.Should().OnlyContain(p => (p.UpdatedAt - t0).Duration() < TimeSpan.FromMilliseconds(1),
+            "payments/since imleci UpdatedAt'tir");
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

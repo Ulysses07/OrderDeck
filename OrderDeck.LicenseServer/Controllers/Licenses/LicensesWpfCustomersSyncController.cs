@@ -707,7 +707,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
     /// (<see cref="WpfCustomerLinkMatcher.PhoneProves"/>); veremeyen beklemeye
     /// düşer (WpfCustomerId = null). Normal akışlar — geriye dönük eşleştirme,
     /// telefon doğrulaması — yayıncının telefonu eşleşince yeniden bağlar.
-    /// Düşen bağlantının shopper'ının o kayda bağlı dekontu da müşterisiz kalır
+    /// Müşterisini düşen bağlantıdan almış dekont da müşterisiz kalır
     /// (<see cref="CustomerIdentityMerger.UnbindPaymentsAsync"/>).
     /// SaveChanges ÇAĞIRMAZ: değişiklikler partiyle aynı kayıtta; yeniden
     /// deneme bunu da taze okumayla baştan yapar.
@@ -745,7 +745,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             if (row.Link.WpfCustomerId is not { } id || !byId.TryGetValue(id, out var projection)) continue;
             if (WpfCustomerLinkMatcher.PhoneProves(projection.Phone, row.Phone, row.PhoneVerifiedAt)) continue;
             row.Link.WpfCustomerId = null;
-            await _merger.UnbindPaymentsAsync(licenseId, row.Link.ShopperId, id, ct);
+            await _merger.UnbindPaymentsAsync(row.Link, id, ct);
             unbound++;
         }
         return unbound;
