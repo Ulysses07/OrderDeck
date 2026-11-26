@@ -388,11 +388,12 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
 
     private static string NewIbanHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
 
+    /// <summary>Maske ve öğreten havale satıra özgü: kalan satırın kendi değerlerini koruduğu ancak böyle görülür.</summary>
     private static CustomerIbanMemory Bond(
         Guid licenseId, Guid customerId, string ibanHash, DateTimeOffset createdAt,
         IbanMemorySource learnedFrom = IbanMemorySource.HumanApproval, DateTimeOffset? lastConfirmedAt = null) => new()
     {
-        Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = customerId, IbanHash = ibanHash, IbanMasked = "TR..",
+        Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = customerId, IbanHash = ibanHash, IbanMasked = $"m-{Guid.NewGuid():N}",
         LearnedFrom = learnedFrom, SourceBankTransactionId = Guid.NewGuid(), CreatedAt = createdAt, LastConfirmedAt = lastConfirmedAt,
     };
 
@@ -421,6 +422,7 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
     [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm)]
     [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm)]
     [InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval)] // BankConfirm yok: kalanınki
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.ManualMatch, IbanMemorySource.ManualMatch)]   // ters yön: düşenin kaynağı kalana geçmez
     public async Task Iki_kayitta_ayni_IBAN_tek_satira_iner(
         IbanMemorySource copySource, IbanMemorySource canonicalSource, IbanMemorySource expectedSource)
     {
@@ -440,8 +442,9 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         kept.Id.Should().Be(canonicalBond.Id);
         kept.WpfCustomerId.Should().Be(canonical.Id);
         kept.LearnedFrom.Should().Be(expectedSource);
-        (kept.CreatedAt, kept.SourceBankTransactionId).Should().Be((t0, canonicalBond.SourceBankTransactionId),
-            "öğreten havale ve öğrenme anı değişmez (tasarım §2.5)");
+        (kept.CreatedAt, kept.SourceBankTransactionId, kept.IbanMasked).Should()
+            .Be((t0, canonicalBond.SourceBankTransactionId, canonicalBond.IbanMasked),
+                "öğreten havale, öğrenme anı ve maske değişmez (tasarım §2.5)");
         (await db.DataDestructionRecords.AnyAsync(r => r.LicenseId == license.Id)).Should()
             .BeFalse("bağ kalan satırda yaşar: tekilleştirme imha değil");
     }
@@ -477,7 +480,8 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         kept.Id.Should().Be(expected.Id);
         kept.WpfCustomerId.Should().Be(canonical.Id);
         kept.LearnedFrom.Should().Be(expectedSource);
-        (kept.CreatedAt, kept.SourceBankTransactionId).Should().Be((expected.CreatedAt, expected.SourceBankTransactionId));
+        (kept.CreatedAt, kept.SourceBankTransactionId, kept.IbanMasked).Should()
+            .Be((expected.CreatedAt, expected.SourceBankTransactionId, expected.IbanMasked));
     }
 
     [Theory]

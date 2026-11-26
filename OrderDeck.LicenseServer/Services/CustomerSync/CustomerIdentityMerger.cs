@@ -25,11 +25,19 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///
 /// IBAN bağı (banka havalesi onayı, spec 2026-10-10 §9): asıl kayıtta aynı özetli bağ varsa ikisi tek satıra iner; ikisi
 /// de asıl kayda geçseydi geniş tekil (LicenseId, IbanHash, WpfCustomerId) kaydı 2601'le düşürürdü. Çift ancak dar tekil
-/// (LicenseId, IbanHash) düşünce (S3b) doğar. Sonuç tek kayıttakiyle aynıdır: orada ikinci öğrenme yeni satır açmaz, ilk
+/// (LicenseId, IbanHash) düşünce (S3b) doğar. Kural tek kayıttakinin eşidir: orada ikinci öğrenme yeni satır açmaz, ilk
 /// öğrenilen satırı tazeler. Kalan satırı <see cref="PreferBond"/> seçer (eski olan); Id'si, CreatedAt'i, öğreten havalesi
 /// (SourceBankTransactionId) ve maskesi değişmez. İkisinden biri BankConfirm ise kaynağı BankConfirm olur (tasarım §2.5'in
-/// "Evet" upsert'i), son doğrulaması ikisinin en yenisidir (KVKK K-6: süre son doğrulanmış havaleden işler). Düşen satıra imha
+/// "Evet" upsert'i). Son doğrulaması LearnIbanAsync'teki gibi yalnız ileri gider: düşeninki kalanın başlangıcından
+/// (LastConfirmedAt, yoksa CreatedAt) yeniyse alınır (KVKK K-6: süre son doğrulanmış havaleden işler). Düşen satıra imha
 /// kaydı YAZILMAZ: bağ kalan satırda yaşar.
+/// Eşliğin iki sınırı var. (1) İki satırın bugünkü hâline göredir: satırlardan biri kaldırmayla silinip yeniden öğrenildiyse
+/// ayrışma birleşmeden önce, iki kayıtlı dünyada başlamıştır (tek kayıtta o kaldırma tek satırı silerdi); birleşme onu
+/// düzeltemez, iki kayıtlı dünyanın fazlasını korur. (2) Son doğrulama iki satırda tek kayıttakiyle aynıdır. Aynı özetli üç ya
+/// da daha çok satır tek SaveChanges'te birleşirken (birden çok kopya; birleştirme işi kopyaları bağ yaşına değil UpdatedAt'e
+/// göre sıralar) ara adımda kalan satırın son doğrulaması boşsa (P1 öncesi), onun CreatedAt'inden eski diye alınmayan
+/// doğrulama, sonraki adımda daha eski bir satır kalınca kaybolmuş olur: sonuç sıraya bağlıdır. Hata yönü yalnız erken
+/// silmedir: kalanın son doğrulaması hep gerçek bir doğrulamadır, en yenisini aşmaz.
 ///
 /// Dekontun müşterisi (Payment.WpfCustomerId) çevrilir, başka alanı yazılmaz. Payment.Status eşzamanlılık jetonudur: okuma
 /// ile kayıt arasında karara bağlanan dekont DbUpdateConcurrencyException üretir. Onu çağıran ele alır: müşteri senkronu
@@ -227,7 +235,8 @@ public sealed class CustomerIdentityMerger
     /// satırın kaynağını BankConfirm'e yükseltip süresini tazeler; öğreten havale (SourceBankTransactionId) ve CreatedAt
     /// değişmez. Yükseltmeyi çağıran yapar. "BankConfirm önce" seçimi kopyanın daha yeni onayını tutardı: kalan satırın öğreten
     /// havalesi ve CreatedAt'i, eşleme kaldırmanın ve yeni onayın sonucu tek kayıttakinden ayrışırdı (S2a incelemesinin
-    /// SharedConfirm ölçümü). Çift ancak dar tekil düşünce (S3b) doğar, kural orada canlanır.
+    /// SharedConfirm ölçümü). Eşlik iki satırın bugünkü hâline göredir (sınırları sınıf özetinde). Çift ancak dar tekil düşünce
+    /// (S3b) doğar, kural orada canlanır.
     /// </summary>
     private static (CustomerIbanMemory Keep, CustomerIbanMemory Drop) PreferBond(CustomerIbanMemory a, CustomerIbanMemory b)
     {
