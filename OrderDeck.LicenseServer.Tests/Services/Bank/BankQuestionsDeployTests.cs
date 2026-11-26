@@ -36,7 +36,9 @@ public sealed class BankQuestionsDeployTests
     }
 
     /// <summary>Havale sorularını yalnız CLI açar ve kapatır; açılışın ve kill switch'in komutu ile S2a'nın geri alma
-    /// uyarısı (eski imajda komut ikinci bir sunucu süreci başlatır, pencerenin iki kalıntısı) README'de bulunmalı.</summary>
+    /// uyarısı (eski imajda komut ikinci bir sunucu süreci başlatır, pencerenin iki kalıntısı) README'de bulunmalı. Deploy
+    /// geri alması veritabanını geri yüklemez: pencerede silinen shopper'ların listesi imha kaydından çıkar (özet
+    /// e-postaları yedekten dönüşün dayanağıdır, satır atlamaya açık).</summary>
     [Fact]
     public void README_komutlari_ve_geri_alma_uyarisi_var()
     {
@@ -44,7 +46,10 @@ public sealed class BankQuestionsDeployTests
 
         readme.Should().Contain("bank-questions enable --license", "açılışın komutu yazılı olmalı")
             .And.Contain("bank-questions disable --license", "kill switch komutu yazılı olmalı")
-            .And.Contain("Banka Faz 2 S2a tabanı", "geri alma bölümünde S2a bloğu olmalı");
+            .And.Contain("Banka Faz 2 S2a tabanı", "geri alma bölümünde S2a bloğu olmalı")
+            .And.Contain(
+                "`SELECT DISTINCT SubjectId FROM DataDestructionRecords WHERE [Trigger] = 'shopper-purge' AND OccurredAt >= '<geri alma anı>'`",
+                "pencerede silinenler imha kaydından listelenmeli");
     }
 
     private static string ReadRepoFile(string relativePath) => File.ReadAllText(FindRepoFile(relativePath));

@@ -595,10 +595,15 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > silmesi `Payments.WpfCustomerId`'yi bilmez; geri alma penceresi iki kalıntı
 > bırakır:
 > - Silinen kişinin dekontu eski müşterisine bağlı kalır. İleri dönünce o
->   pencerede silinenlerin silmesini yeniden uygula ("Silmeleri yeniden
->   uygula" 4. adım, `shopper-purge` satırları): eski talep işlenmiş göründüğü
->   için aynı ShopperId'ye `ShopperDeletionRequests`'te yeni talep satırı
->   ekleyip sayfadan işle.
+>   pencerede silinenlerin silmesini yeniden uygula. Deploy geri alması
+>   veritabanını geri yüklemez: pencerenin silmeleri imha kaydında eksiksizdir
+>   (salt okunur):
+>   `SELECT DISTINCT SubjectId FROM DataDestructionRecords WHERE [Trigger] = 'shopper-purge' AND OccurredAt >= '<geri alma anı>'`
+>   ("Silmeleri yeniden uygula" 4. adımın özet e-postaları yedek kaynaktır; o
+>   yol yedekten dönüş içindir, orada tablo da yedek anına sarılır). Eski talep
+>   işlenmiş göründüğü için (`HandledAt` dolu, sayfa onu yeniden işlemez) her
+>   ShopperId için `ShopperDeletionRequests`'te yeni talep satırı ekleyip
+>   sayfadan işle.
 > - Telefon kanıtı düşen bağlantının dekontu geçici kopyada kalır ve yanlış
 >   müşteriye çözülür. Elle adımı yok.
 >
