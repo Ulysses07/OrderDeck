@@ -129,10 +129,12 @@ public sealed class PersonBalanceVerifier
     /// <summary>
     /// Kural bozan çekim gruplarını ve yetim bacakların gruplarını yeniden okur: grubun satırları ve geri alınıp
     /// alınmadıkları AYNI ifadede (<see cref="RereadLedgerSuspectsAsync"/>'un kalıbı). Çekim satırları ve geri alma
-    /// hedefleri ayrı taramalardır. Kilitli READ COMMITTED'da bir tarama, tek işlemde eklenmiş bir grubun bir kısmını
-    /// görüp taramanın geçtiği konumlara eklenenleri kaçırabilir. O zaman çapası görünmeyen bacak yetim, geri
-    /// almasının bir kısmı görünen grup D5 sayılır ve 'kural' uyarısı tabandan bağımsız çıkar (sahte e-posta).
-    /// Görülen kısım commit edilmişse grubun tamamı da edilmiştir; yeniden okuma onu bütün görür. İki okumada da tutan
+    /// hedefleri ayrı taramalardır, yani ayrı ifadeler. Prod'da RCSI açık (27.11.2026'da sorguyla doğrulandı): her tarama
+    /// kendi başlangıcındaki son commit'i tutarlı okur, ama iki tarama iki ayrı andır; aralarında commit eden bir çekim
+    /// ya da geri alma iki listede farklı görünebilir. (RCSI kapalı, kilitli READ COMMITTED'da tek bir tarama bile tek
+    /// işlemde eklenmiş bir grubun bir kısmını görüp kalanını kaçırabilirdi.) O zaman çapası görünmeyen bacak yetim, geri
+    /// almasının bir kısmı görünen grup D5 sayılır ve 'kural' uyarısı tabandan bağımsız çıkar (sahte e-posta). Yeniden
+    /// okuma tek ifadedir: grubun satırları ve geri alınmışlıkları aynı anlık görüntüden gelir. İki okumada da tutan
     /// ihlal kalır. S1'de dolu <c>DrawGroupId</c> yok (havuz kipi açılmadan dolmaz, spec §3.2); S2'nin verisiyle aynı
     /// kod koşar.
     /// </summary>
@@ -175,13 +177,14 @@ public sealed class PersonBalanceVerifier
 
     /// <summary>
     /// D1 adaylarını — ilk okumada <c>Balance ≠ Σ</c> olan satırları ve lisansın bütün taban satırlarını — yeniden
-    /// okur; satır başına bakiye ve defter AYNI ifadede. Bakiyeler ve defter yukarıda ayrı sorgular; prod'da RCSI ya da
-    /// snapshot yalıtımı yok ve aralarında commit eden bir yazım (apply, iade, kimlik birleştirici)
-    /// <c>Balance(eski) ≠ Σ(yeni)</c> üretir: günlük işte sahte "D1" uyarısı, taban yakalamasında yanlış farklı,
-    /// her gün "farkı değişen" diye uyaran kalıcı taban satırı. Tek ifade de anlık görüntü değildir (kilitli READ
-    /// COMMITTED), ama pencere bir satırın iki okuması arasına daralır. Önce bakiye satırı OLMAYANLAR, sonra olanlar
-    /// okunur ve ikincisi önceliklidir: arada açılan bakiye satırı ikincide tutarlı görünür. İkisinde de yoksa satırın
-    /// ne bakiyesi ne hareketi kalmıştır.
+    /// okur; satır başına bakiye ve defter AYNI ifadede. Bakiyeler ve defter yukarıda ayrı sorgulardır. Prod'da RCSI açık
+    /// (27.11.2026'da sorguyla doğrulandı): her sorgu kendi başlangıcının anlık görüntüsünü okur, aralarında commit eden
+    /// bir yazım (apply, iade, kimlik birleştirici) <c>Balance(eski) ≠ Σ(yeni)</c> üretir: günlük işte sahte "D1"
+    /// uyarısı, taban yakalamasında yanlış farklı, her gün "farkı değişen" diye uyaran kalıcı taban satırı. Yeniden
+    /// okumada bakiye ve defter tek ifadededir, RCSI'da aynı anlık görüntüden gelir. (Kilitli READ COMMITTED'da tek ifade
+    /// anlık görüntü değildi; pencere yalnız bir satırın iki okuması arasına daralırdı.) Önce bakiye satırı OLMAYANLAR,
+    /// sonra olanlar okunur ve ikincisi önceliklidir: arada açılan bakiye satırı ikincide tutarlı görünür. İkisinde de
+    /// yoksa satırın ne bakiyesi ne hareketi kalmıştır.
     /// </summary>
     private async Task<(List<BalanceRow> Balances, List<LedgerRow> Ledger)> RereadLedgerSuspectsAsync(
         Guid? licenseId, List<BalanceRow> balances, List<LedgerRow> ledger, List<BaselineRow> baselines,

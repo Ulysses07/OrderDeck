@@ -371,9 +371,10 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         if (pool)
         {
             // Havuz kipi (S2): grubun bir satırı S(rota)'da olmalı (silinmiş üyeler dahil, MembersAsync).
-            // Üyelik okuması ReverseGroupAsync'in korunan denemesinin dışında ve CustomerBalances'ı da okur: yazarların
-            // X kilidinin arkasında kilitlenme kurbanı (1205) olabilir. Okuma her yazımdan önce, hiçbir şey yazılmadı →
-            // 503 balance-busy, yeniden denensin (500 değil).
+            // Üyelik okuması ReverseGroupAsync'in korunan denemesinin dışında ve CustomerBalances'ı da okur. Kilitli
+            // READ COMMITTED'da yazarların X kilidinin arkasında kilitlenme kurbanı (1205) olabilirdi; prod'da RCSI
+            // açık (27.11.2026), okuma beklemez ve bu dal güvence olarak kalır. Okuma her yazımdan önce, hiçbir şey
+            // yazılmadı → 503 balance-busy, yeniden denensin (500 değil).
             HashSet<Guid> members;
             try
             {
@@ -441,9 +442,10 @@ public sealed class PanelCustomerBalanceController : ControllerBase
     private async Task<IActionResult> ReverseInPoolAsync(
         Guid licenseId, Guid canonicalId, Guid customerId, CustomerBalanceTransaction target, CancellationToken ct)
     {
-        // Üyelik okuması servislerin korunan denemesinin dışında ve CustomerBalances'ı da okur: yazarların X kilidinin
-        // arkasında kilitlenme kurbanı (1205) olabilir. Okuma her yazımdan önce, hiçbir şey yazılmadı → 503
-        // balance-busy, yeniden denensin (500 değil).
+        // Üyelik okuması servislerin korunan denemesinin dışında ve CustomerBalances'ı da okur. Kilitli READ
+        // COMMITTED'da yazarların X kilidinin arkasında kilitlenme kurbanı (1205) olabilirdi; prod'da RCSI açık
+        // (27.11.2026), okuma beklemez ve bu dal güvence olarak kalır. Okuma her yazımdan önce, hiçbir şey yazılmadı →
+        // 503 balance-busy, yeniden denensin (500 değil).
         HashSet<Guid> members;
         try
         {
