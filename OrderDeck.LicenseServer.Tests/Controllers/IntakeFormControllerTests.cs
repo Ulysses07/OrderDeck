@@ -209,11 +209,13 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         cfg.InstagramDmBotEnabled.Should().BeTrue();
     }
 
-    /// <summary>Uç sözleşmesi tam gövdeli PUT'tur (IsActive gibi): bayrak omit
-    /// edilirse false'a döner. Güvenli taraf — bot istemsiz AÇILAMAZ; panel her
-    /// kayıtta tam gövde yollar. Bu test sözleşmeyi sabitler, sürpriz olmasın.</summary>
+    /// <summary>Bu uca yazan tek istemci WPF'in Ayarlar → Kayıt formu → Kaydet'i ve
+    /// gövdesinde bayrak hiç yok (<c>IntakeFormUpsertRequest</c>). Eksik alan
+    /// "değiştirme" demektir: kayıt kendi alanlarını yazar, açık bot kapanmaz.
+    /// Eski sözleşmede eksik alan false sayılıyordu ve her Kaydet botu sessizce
+    /// kapatıyordu (panel bu ucu hiç çağırmadı).</summary>
     [Fact]
-    public async Task Put_bayragi_gondermezse_false_a_doner()
+    public async Task Put_bayragi_gondermezse_mevcut_deger_korunur()
     {
         var (client, customerId) = await CreateAuthedClientAsync();
         var slug = $"s-{Guid.NewGuid():N}"[..10];
@@ -227,11 +229,68 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
             instagramDmBotEnabled = true
         });
 
-        // Bayrak omit edilmiş ikinci PUT — tam gövde sözleşmesi gereği false'a çeker.
+        // WPF gövdesinin birebiri: bu dört alan var, bayrak yok.
         var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
             slug,
             whatsAppPhone = phone,
+            customTitle = "Yeni başlık",
+            isActive = true
+        });
+        putResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var cfg = await db.IntakeFormConfigs.FirstAsync(c => c.CustomerId == customerId);
+        cfg.CustomTitle.Should().Be("Yeni başlık");
+        cfg.InstagramDmBotEnabled.Should().BeTrue();
+    }
+
+    /// <summary>Eksik alanın korunması kapatma yolunu kapatmaz: bayrak gövdede
+    /// açıkça false gelirse bot kapanır.</summary>
+    [Fact]
+    public async Task Put_bayrak_acikca_false_gelirse_kapanir()
+    {
+        var (client, customerId) = await CreateAuthedClientAsync();
+        var slug = $"s-{Guid.NewGuid():N}"[..10];
+        var phone = TestPhone.NewE164();
+
+        await client.PutAsJsonAsync("/api/v1/me/intake-form", new
+        {
+            slug,
+            whatsAppPhone = phone,
+            isActive = true,
+            instagramDmBotEnabled = true
+        });
+
+        var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
+        {
+            slug,
+            whatsAppPhone = phone,
+            isActive = true,
+            instagramDmBotEnabled = false
+        });
+        putResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var cfg = await db.IntakeFormConfigs.FirstAsync(c => c.CustomerId == customerId);
+        cfg.InstagramDmBotEnabled.Should().BeFalse();
+    }
+
+    /// <summary>Bot yalnız açık bir true ile açılır (Page token'ı ancak o zaman
+    /// sunucuda saklanır): ilk kayıtta bayrak gelmezse kapalı başlar.</summary>
+    [Fact]
+    public async Task Put_ilk_kayitta_bayrak_gelmezse_kapali_baslar()
+    {
+        var (client, customerId) = await CreateAuthedClientAsync();
+        var slug = $"s-{Guid.NewGuid():N}"[..10];
+
+        var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
+        {
+            slug,
+            whatsAppPhone = TestPhone.NewE164(),
+            customTitle = (string?)null,
             isActive = true
         });
         putResp.StatusCode.Should().Be(HttpStatusCode.OK);
