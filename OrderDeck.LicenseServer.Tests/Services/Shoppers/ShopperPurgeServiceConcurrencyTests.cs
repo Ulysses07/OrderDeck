@@ -194,6 +194,50 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Eszamanli_ogretilen_bagin_ozetinden_turetilen_IBAN_onerisi_de_bosalir()
+    {
+        // Geç bağ yolunun eşi (S2b planı Karar 7; sahip kararı 27.11.2026): silme satırı okuduktan sonra dekont onayı satırı
+        // silinen kişiye bağlar, havalenin IBAN'ını öğretir; aynı özetten gelen öteki havalenin yeniden değerlendirmesi o bağla
+        // kişinin öbür satırına IBAN destekli öneri yazar. Yeniden deneme geç bağı siler; ondan türeyen öneri de boşalır, imha
+        // kaydı ilk okumanınkinden ayrı satırdır.
+        var s = await SeedAsync();
+        var hash = NewIbanHash();
+        var sameIbanTxId = await SeedIncomingAsync(s, hash);
+        var siblingRowId = Guid.NewGuid();
+        var link = new BeforeMatchUpdate(async () =>
+        {
+            await LinkConcurrentlyAsync(s, Guid.NewGuid());
+            await SeedIbanMemoryAsync(s, hash);
+            await using var other = NewDb(interceptor: null);
+            var at = DateTimeOffset.UtcNow;
+            other.PaymentMatches.Add(new PaymentMatch
+            {
+                Id = siblingRowId, LicenseId = s.LicenseId, BankTransactionId = sameIbanTxId, ProposedWpfCustomerId = Guid.NewGuid(),
+                Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.BothConfidence, SupportedByIbanMemory = true,
+                Evidence = $"username={BankTextNormalizer.UsernameKey("baska_hesap77")};iban-memory{PaymentMatcher.ReevaluationEvidenceSuffix}",
+                Status = PaymentMatchStatus.Proposed, MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = at, UpdatedAt = at,
+            });
+            await other.SaveChangesAsync();
+        });
+        await using var db = NewDb(link);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        link.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        var row = await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == siblingRowId);
+        (row.Status, row.ProposedWpfCustomerId, row.Layer, row.Confidence, row.SupportedByIbanMemory, row.Evidence).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, false, (string?)null),
+            "geç bağdan türeyen öneri de silinen kişinin bağıyla gider");
+        row.MatcherVersion.Should().Be(PaymentMatcher.PersonLevelVersion);
+        (await verify.DataDestructionRecords.AsNoTracking()
+                .Where(r => r.SubjectId == s.ShopperId && r.Target == "PaymentMatches.WpfCustomerId+Evidence").Select(r => r.RowCount)
+                .ToListAsync())
+            .Should().BeEquivalentTo(new[] { 1, 1 }, "ilk okumanın satırı ve yeniden denemenin bulduğu ayrı satırlarda");
+    }
+
+    [Fact]
     public async Task Eszamanli_budanan_denetim_satiriyla_carpisan_silme_tazeleyip_tamamlanir()
     {
         // KVKK silmesi elle eşleme denetiminde kişinin kimliğini de boşaltır (Ö-14), yani denetim satırı da kaydedilir. Silme

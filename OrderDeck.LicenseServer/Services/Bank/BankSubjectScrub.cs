@@ -13,7 +13,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// banka veri talebi aracı (BankSubjectRequestService) aynı kuralları kullanır. Yeniden uygulanabilir (idempotent); kaydetmez.
 /// <para>Hareket: açıklama, gönderen adı ve ham kayıt silinir; tutar, tarih, kısaltılmış IBAN ve tanıma kodu kalır (özetin
 /// silinmesi avukat kararı). Eşleşme: kişinin müşteri kimliği ve gerekçe metni silinir; satır ölçüm kaydı olarak kalır, ölçüm
-/// sonucu durumdan okunur (<see cref="PaymentMatchMetrics"/>). Elle eşleme denetimi: satır kalır, müşteriyi gösteren ayrıntı
+/// sonucu durumdan okunur (<see cref="PaymentMatchMetrics"/>). Silinen bağın özetinden gelen hareketin kararsız satırında
+/// IBAN'dan türeyen öneri de gider (<see cref="IbanDerivedProposal"/>): kişi düzeyi eşleştirici bağı kişinin öbür satırına ve
+/// kopyadaki bağı asıl kayda sayar, kimlik kuralı o öneriyi bulmaz. Elle eşleme denetimi: satır kalır, müşteriyi gösteren ayrıntı
 /// silinir (<see cref="ManualMatchAudits"/>).</para>
 /// </summary>
 public static class BankSubjectScrub
@@ -24,10 +26,17 @@ public static class BankSubjectScrub
     public const string IbanMemoryTarget = "CustomerIbanMemories";
     /// <summary>Boşaltılan hareket metni (<see cref="Transaction"/>).</summary>
     public const string TransactionTextTarget = "BankTransactions.Description+CounterpartyName+RawJson";
-    /// <summary>Kişiye bağlı eşleşme satırında müşteri kimliği ve kanıt (<see cref="MatchForCustomer"/>).</summary>
+    /// <summary>Kişiye bağlı eşleşme satırında müşteri kimliği ve kanıt (<see cref="MatchForCustomer"/>); IBAN'dan türeyen önerisi
+    /// boşalan satır da (<see cref="IbanDerivedProposal"/>).</summary>
     public const string LinkedMatchTarget = "PaymentMatches.WpfCustomerId+Evidence";
-    /// <summary>Kişiye bağlı olmayan eşleşme satırında yalnız kanıt (<see cref="MatchEvidence"/>).</summary>
+    /// <summary>Kişiye bağlı olmayan eşleşme satırında yalnız kanıt (<see cref="MatchEvidence"/>; önerisiz satırın IBAN'dan
+    /// türeyen kanıtı da, <see cref="IbanDerivedProposal"/>).</summary>
     public const string MatchEvidenceTarget = "PaymentMatches.Evidence";
+
+    /// <summary>Eşleştiricinin IBAN hafızasından gelen kanıt biçimlerinin ortak alt dizesi (<c>iban-memory</c>,
+    /// <c>username={anahtar};iban-memory</c>, <c>conflict:username={anahtar},iban-memory</c>, <c>iban-memory-shared:{n}</c>):
+    /// telafi taramasının 2. aşamasıyla aynı sözleşme. Biçim değişirse burası da değişir.</summary>
+    private const string IbanMemoryEvidence = "iban-memory";
 
     /// <summary>Kaydedildiğinde bir şey silecek mi: açıklama, gönderen adı ya da ham kayıt hâlâ dolu. Saklama kuralının çoktan
     /// boşalttığı hareket "silindi" diye sayılmaz.</summary>
@@ -85,6 +94,79 @@ public static class BankSubjectScrub
     {
         match.Evidence = null;
         match.UpdatedAt = now;
+    }
+
+    /// <summary>
+    /// KVKK silmesinde bağı silinen IBAN özetinden gelen hareketin eşleşme satırı (S2b planı Karar 7; sahip kararı 27.11.2026).
+    /// Kişi düzeyi eşleştirici bağı kişinin öbür satırına (aynı <c>GroupId</c>) ve kopyadaki bağı asıl kayda sayar: öneri bağın
+    /// müşterisini değil kişinin başka bir kaydını gösterebilir, kimlik kuralı (<see cref="MatchForCustomer"/>) onu bulmaz, öneri
+    /// "IBAN destekli" kalırdı. Kural yalnız kararsız satıra (gerçek müşteri ve karar anı boş, Decision ≠ None değil) ve IBAN'dan
+    /// türeyen iz taşıyan satıra uygulanır: katman IBAN hafızası, IBAN desteği ya da kanıtta <c>iban-memory</c>. Önerilen müşteri
+    /// özetin silinmeden kalan bir bağının müşterisi değilse öneri boşalır (<see cref="MatchForCustomer"/>'ın kararsız öneri
+    /// kolunun eşi: öneri yok, katman yok, güven 0, IBAN desteği yok), kanıt da. Sürüm kalır: silme yeniden hesap değildir. Öneri
+    /// ve kanıtı zaten boş satıra yazılmaz. Kalan bağ satır düzeyinde karşılaştırılır: kalan bağ kişinin başka satırındaysa öneri
+    /// fazla boşalır (temkinli yön); dar tekil <c>(LicenseId, IbanHash)</c> dururken kalan bağ olmaz. İnsan kararlı ve karar
+    /// katmanındaki satıra bu kural dokunmaz (kararları kişiyle aramak S4). Yeniden uygulanabilir.
+    /// </summary>
+    /// <param name="remainingBondCustomers">Satırın hareketinin özetinin silinmeden kalan bağlarının müşterileri.</param>
+    /// <returns>Satıra yazdıysa imha kaydının hedefi: öneri boşaldıysa <see cref="LinkedMatchTarget"/>, yalnız kanıt boşaldıysa
+    /// <see cref="MatchEvidenceTarget"/>; dokunmadıysa null.</returns>
+    public static string? IbanDerivedProposal(PaymentMatch match, IReadOnlyCollection<Guid> remainingBondCustomers,
+        DateTimeOffset now)
+    {
+        if (match.ActualWpfCustomerId is not null || match.DecidedAt is not null || match.Decision != PaymentMatchDecision.None)
+            return null;
+        var ibanTrace = match.Layer == PaymentMatchLayer.IbanMemory || match.SupportedByIbanMemory
+            || match.Evidence?.Contains(IbanMemoryEvidence, StringComparison.Ordinal) == true;
+        if (!ibanTrace) return null;
+        if (match.ProposedWpfCustomerId is { } proposed && remainingBondCustomers.Contains(proposed)) return null;
+        var target = match.ProposedWpfCustomerId is not null ? LinkedMatchTarget
+            : match.Evidence is not null ? MatchEvidenceTarget
+            : null;
+        if (target is null) return null;
+        match.ProposedWpfCustomerId = null;
+        if (match.Status == PaymentMatchStatus.Proposed) match.Status = PaymentMatchStatus.NoProposal;
+        match.Layer = PaymentMatchLayer.None;
+        match.Confidence = 0m;
+        match.SupportedByIbanMemory = false;
+        match.Evidence = null;
+        match.UpdatedAt = now;
+        return target;
+    }
+
+    /// <summary>
+    /// <see cref="IbanDerivedProposal"/>'ı silinen bağların (<paramref name="deletedBonds"/>: silinmek üzere işaretli ya da arada
+    /// silinmiş olabilir, yalnız lisansı, özeti ve kimliği okunur) özetlerinden gelen hareketlerin eşleşme satırlarına uygular.
+    /// Satırlar izlenerek okunur; izlenen satır izleyicideki değeriyle döner, kural onu çağıranın öbür kurallarından SONRAki
+    /// haliyle görür. Kalan bağlar izlenmeden okunur, silinenler kimlikle dışlanır. Kaydetmez. Yazılan satırları ve imha kaydı
+    /// hedeflerini döner. KVKK silmesi (ShopperPurgeService) kullanır.
+    /// </summary>
+    public static async Task<List<(PaymentMatch Match, string Target)>> IbanDerivedProposalsAsync(LicenseDbContext db,
+        IEnumerable<CustomerIbanMemory> deletedBonds, DateTimeOffset now, CancellationToken ct)
+    {
+        var written = new List<(PaymentMatch Match, string Target)>();
+        foreach (var license in deletedBonds.GroupBy(b => b.LicenseId))
+        {
+            var licenseId = license.Key;
+            var deletedIds = license.Select(b => b.Id).ToHashSet();
+            var hashes = license.Select(b => b.IbanHash).Distinct(StringComparer.Ordinal).ToList();
+            var remaining = (await db.CustomerIbanMemories.AsNoTracking()
+                    .Where(b => b.LicenseId == licenseId && hashes.Contains(b.IbanHash))
+                    .Select(b => new { b.Id, b.IbanHash, b.WpfCustomerId })
+                    .ToListAsync(ct))
+                .Where(b => !deletedIds.Contains(b.Id))
+                .ToLookup(b => b.IbanHash, b => b.WpfCustomerId, StringComparer.Ordinal);
+            var rows = await (from m in db.PaymentMatches
+                              join t in db.BankTransactions on m.BankTransactionId equals t.Id
+                              where t.LicenseId == licenseId && t.CounterpartyIbanHash != null
+                                    && hashes.Contains(t.CounterpartyIbanHash)
+                              select new { Match = m, Hash = t.CounterpartyIbanHash })
+                .ToListAsync(ct);
+            foreach (var row in rows)
+                if (IbanDerivedProposal(row.Match, remaining[row.Hash!].ToList(), now) is { } target)
+                    written.Add((row.Match, target));
+        }
+        return written;
     }
 
     /// <summary>Elle eşleme denetim satırının ayrıntısının imha kaydı hedefi. bank-data-cleanup'ın eski satır çevirmesi de bunu
