@@ -639,7 +639,8 @@ public sealed class PaymentMatcherTests
     public async Task Ayni_kisi_ayni_grup_ya_da_ayni_Id_aday_disi_satir_satir_duzeyi()
     {
         // Bağdaştırıcı kişi düzeyi öneriyi kişiyle karşılaştırır (S2b Görev 7). Aday olmayan satırda (silinmiş, kopya, başka
-        // lisans, bilinmeyen Id) kişi okunmaz: karşılaştırma satır düzeyidir.
+        // lisans, bilinmeyen Id) kişi okunmaz: karşılaştırma satır düzeyidir. Kural iki yolda aynı: önbellek boşken (yalnız iki satır
+        // okunur) ve eşleştirme önbelleği doldurduktan sonra.
         using var db = NewDb(); var lic = Guid.NewGuid();
         var group = $"G-{Guid.NewGuid():N}";
         var ig = Customer(db, lic, "ornek_musteri34", groupId: group, platform: "instagram");
@@ -649,18 +650,43 @@ public sealed class PaymentMatcherTests
         var copy = Customer(db, lic, "kopya_hesap", groupId: group);
         var foreign = Customer(db, Guid.NewGuid(), "yabanci_hesap", groupId: group);
         purged.PurgedAt = DateTimeOffset.UtcNow; copy.MergedIntoId = ig.Id; db.SaveChanges();
+        var warm = Matcher(db);
+        await warm.MatchAsync(Incoming(db, lic, "EFT GELEN"), CancellationToken.None);
+
+        foreach (var matcher in new[] { Matcher(db), warm })
+        {
+            (await matcher.SamePersonAsync(lic, ig.Id, tt.Id, CancellationToken.None)).Should().BeTrue("aynı grup");
+            (await matcher.SamePersonAsync(lic, tt.Id, ig.Id, CancellationToken.None)).Should().BeTrue("aynı grup");
+            (await matcher.SamePersonAsync(lic, alone.Id, alone.Id, CancellationToken.None)).Should().BeTrue("aynı Id");
+            (await matcher.SamePersonAsync(lic, ig.Id, alone.Id, CancellationToken.None)).Should().BeFalse("gruplanmamış satır kendi kişisidir");
+            foreach (var outside in new[] { purged.Id, copy.Id, foreign.Id, Guid.NewGuid() })
+            {
+                (await matcher.SamePersonAsync(lic, ig.Id, outside, CancellationToken.None)).Should().BeFalse("aday dışı satır: satır düzeyi");
+                (await matcher.SamePersonAsync(lic, outside, ig.Id, CancellationToken.None)).Should().BeFalse("aday dışı satır: satır düzeyi");
+                (await matcher.SamePersonAsync(lic, outside, outside, CancellationToken.None)).Should().BeTrue("aday dışı satırda da aynı Id");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Kisi_karsilastirmasi_bos_onbellekte_aday_listesini_okumaz()
+    {
+        // Onay bağdaştırma işi ve elle eşleme her ödemede yeni kapsamda koşar; eşleşme satırı varsa eşleştirici çağrılmaz, aday
+        // önbelleği boştur. Kişi karşılaştırması o zaman yalnız iki satırı okur: iki Id için lisansın bütün müşterilerini okuyup
+        // belirteçlemez, önbelleği de doldurmaz. Kanıt: karşılaştırmadan sonra eklenen müşteri aynı kapsamın ilk eşleştirmesinde
+        // adaydır (önbelleği eşleştirmenin kendisi doldurur); liste karşılaştırmada okunsaydı yeni müşteri görülmezdi.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Customer(db, lic, "ornek_musteri34", groupId: group, platform: "instagram");
+        var tt = Customer(db, lic, "baska_hesap77", groupId: group, platform: "tiktok");
         var matcher = Matcher(db);
 
-        (await matcher.SamePersonAsync(lic, ig.Id, tt.Id, CancellationToken.None)).Should().BeTrue("aynı grup");
-        (await matcher.SamePersonAsync(lic, tt.Id, ig.Id, CancellationToken.None)).Should().BeTrue("aynı grup");
-        (await matcher.SamePersonAsync(lic, alone.Id, alone.Id, CancellationToken.None)).Should().BeTrue("aynı Id");
-        (await matcher.SamePersonAsync(lic, ig.Id, alone.Id, CancellationToken.None)).Should().BeFalse("gruplanmamış satır kendi kişisidir");
-        foreach (var outside in new[] { purged.Id, copy.Id, foreign.Id, Guid.NewGuid() })
-        {
-            (await matcher.SamePersonAsync(lic, ig.Id, outside, CancellationToken.None)).Should().BeFalse("aday dışı satır: satır düzeyi");
-            (await matcher.SamePersonAsync(lic, outside, ig.Id, CancellationToken.None)).Should().BeFalse("aday dışı satır: satır düzeyi");
-            (await matcher.SamePersonAsync(lic, outside, outside, CancellationToken.None)).Should().BeTrue("aday dışı satırda da aynı Id");
-        }
+        (await matcher.SamePersonAsync(lic, ig.Id, tt.Id, CancellationToken.None)).Should().BeTrue("ön koşul: aynı grup");
+        var later = Customer(db, lic, "mehmet_k");
+        var m = await matcher.MatchAsync(Incoming(db, lic, "HAVALE mehmet_k"), CancellationToken.None);
+
+        (m.Status, m.ProposedWpfCustomerId).Should().Be((PaymentMatchStatus.Proposed, (Guid?)later.Id),
+            "karşılaştırma aday listesini okumadı; eşleştirme listeyi kendisi okur");
     }
 
     [Fact]

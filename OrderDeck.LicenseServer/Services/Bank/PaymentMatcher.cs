@@ -31,7 +31,7 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (<see cref="PaymentMatch.MatcherVersion"/>): dışlama, belirsizlik ve yeniden değerlendirme dahil; sürüm satırın son hesabının
 /// üreticisidir, boş sürüm satır düzeyi eşleştiricinin (S2b öncesi) satırıdır. <see cref="PaymentMatch.SupportedByIbanMemory"/>'yi
 /// de eşleştirici yazar: öneri kişisi IBAN hafızasında (0.98 ve 0.85). İki müşteri Id'sinin aynı kişi olduğunu
-/// <see cref="SamePersonAsync"/> aynı aday listesinden söyler.</para>
+/// <see cref="SamePersonAsync"/> aynı aday kuralıyla söyler (önbellek boşsa yalnız iki satırı okur).</para>
 /// <para><b>IBAN kümesi (tasarım §2.4, §2.5; S2b).</b> IBAN katmanı tek bağ değil kişi kümesi okur: <c>(LicenseId, IbanHash)</c>'in
 /// bütün bağları (sırasız tek satır okuması yok). Her bağ <see cref="CustomerIdResolver.ChainOfAsync"/> ile asıl kayda çözülür; zinciri
 /// geçici ya da silinmiş kopyadan geçen ya da aday olmayan bir kayda (silinmiş, başka lisansın, adım sınırında kalan) varan bağ
@@ -159,14 +159,20 @@ public sealed class PaymentMatcher
     /// <summary>İki müşteri Id'si aynı kişi mi (sınıf özeti, "Kişi"): aynı Id, ya da ikisi de lisansın adayı ve kişi anahtarları
     /// ordinal eşit. Aday olmayan Id'de (silinmiş, kopya, başka lisansın ya da bilinmeyen Id) kişi okunmaz, karşılaştırma satır
     /// düzeyidir. Kişi düzeyi (<see cref="PersonLevelVersion"/>) önerinin dekontun müşterisiyle karşılaştırılması içindir
-    /// (bağdaştırıcı, S2b Görev 7).</summary>
+    /// (bağdaştırıcı, S2b Görev 7). Önbellek doluysa eşleştirmenin gördüğü aday listesi kullanılır; boşsa yalnız iki satır, aday
+    /// sorgusunun süzgeciyle okunur ve önbellek doldurulmaz. Onay bağdaştırma işi ve elle eşleme her ödemede yeni kapsamda koşar ve
+    /// eşleşme satırı varsa eşleştiriciyi çağırmaz: iki Id için lisansın bütün müşterilerini okuyup belirteçlemezler.</summary>
     public async Task<bool> SamePersonAsync(Guid licenseId, Guid a, Guid b, CancellationToken ct)
     {
         if (a == b) return true;
-        var candidates = await CandidatesAsync(licenseId, ct);
-        var personA = candidates.FirstOrDefault(c => c.Id == a)?.PersonKey;
-        var personB = candidates.FirstOrDefault(c => c.Id == b)?.PersonKey;
-        return personA is not null && string.Equals(personA, personB, StringComparison.Ordinal);
+        var persons = _candidates.TryGetValue(licenseId, out var cached)
+            ? cached.Where(c => c.Id == a || c.Id == b).ToDictionary(c => c.Id, c => c.PersonKey)
+            : (await _db.WpfCustomerProjections.AsNoTracking()
+                    .Where(c => c.LicenseId == licenseId && c.PurgedAt == null && (c.Id == a || c.Id == b))
+                    .Select(c => new { c.Id, c.GroupId }).ToListAsync(ct))
+                .ToDictionary(c => c.Id, c => PaymentPersonKey.ForCanonical(c.Id, c.GroupId));
+        return persons.TryGetValue(a, out var personA) && persons.TryGetValue(b, out var personB)
+            && string.Equals(personA, personB, StringComparison.Ordinal);
     }
 
     /// <summary>Havalenin aday kişileri, her biri bir asıl kaydıyla (tasarım §2.4; sınıf özeti, "IBAN kümesi"): önce kullanıcı adının
