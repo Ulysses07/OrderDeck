@@ -69,9 +69,11 @@ public sealed class IntakeFormController : ControllerBase
         var customerId = GetCustomerId();
         try
         {
+            // Bayrak bilerek varsayılansız: gövdede yoksa null kalır ve servis
+            // mevcut değeri korur (WPF bu alanı yollamaz).
             var cfg = await _service.UpsertConfigAsync(
                 customerId, slug, phone, req.CustomTitle?.Trim(),
-                req.IsActive ?? true, req.InstagramDmBotEnabled ?? false, ct);
+                req.IsActive ?? true, req.InstagramDmBotEnabled, ct);
             return Ok(new IntakeFormBody(cfg.Slug, cfg.WhatsAppPhone, cfg.CustomTitle, cfg.IsActive,
                 $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}", cfg.InstagramDmBotEnabled));
         }

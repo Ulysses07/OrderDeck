@@ -81,9 +81,11 @@ public sealed class IntakeFormService
     }
 
     /// <summary>Idempotent claim/update. Throws SlugAlreadyTakenException if slug used by another customer.</summary>
+    /// <param name="instagramDmBotEnabled">null: bayrağa dokunma (yeni kayıt kapalı başlar). WPF bu
+    /// alanı hiç yollamaz; eksik alanı false saymak her Kaydet'te "!kayıt → DM" botunu kapatıyordu.</param>
     public async Task<IntakeFormConfig> UpsertConfigAsync(
         Guid customerId, string slug, string whatsAppPhone, string? customTitle, bool isActive,
-        bool instagramDmBotEnabled = false,
+        bool? instagramDmBotEnabled = null,
         CancellationToken ct = default)
     {
         var conflict = await _db.IntakeFormConfigs
@@ -103,7 +105,7 @@ public sealed class IntakeFormService
                 WhatsAppPhone = whatsAppPhone,
                 CustomTitle = customTitle,
                 IsActive = isActive,
-                InstagramDmBotEnabled = instagramDmBotEnabled,
+                InstagramDmBotEnabled = instagramDmBotEnabled ?? false,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -116,7 +118,7 @@ public sealed class IntakeFormService
         existing.WhatsAppPhone = whatsAppPhone;
         existing.CustomTitle = customTitle;
         existing.IsActive = isActive;
-        existing.InstagramDmBotEnabled = instagramDmBotEnabled;
+        existing.InstagramDmBotEnabled = instagramDmBotEnabled ?? existing.InstagramDmBotEnabled;
         existing.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
         return existing;
