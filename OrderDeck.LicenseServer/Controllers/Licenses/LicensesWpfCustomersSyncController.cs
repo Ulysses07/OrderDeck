@@ -333,6 +333,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             .ToListAsync(ct);
 
         var retroactiveMatches = 0;
+        var reboundShoppers = new HashSet<Guid>();
         if (matchableProjections.Count > 0)
         {
             // Bağlantı ↔ projeksiyon eşleşmesi KİMLİK ANAHTARIYLA: shopper kullanıcı
@@ -361,6 +362,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                             projection.Phone, row.Phone, row.PhoneVerifiedAt)) continue;
                     row.Link.WpfCustomerId = projection.Id;
                     retroactiveMatches++;
+                    reboundShoppers.Add(row.Link.ShopperId);
                 }
             }
         }
@@ -387,6 +389,13 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 retroactiveMatches = 0;
             }
         }
+
+        // Bağ kaydedildiyse shopper'ın bu lisanstaki dekontları türetme kuralıyla yeniden yazılır (spec 2026-10-10 §2.3, S2b
+        // planı Karar 10): bağ beklerken gönderilmiş ya da bağı düşüp boşalmış dekont müşterisini alır. Bağlamayla aynı kayda
+        // konmaz (yukarıdaki yakalayıcı bağlamayı da düşürürdü); yazım koşulludur, düşerse yanıt değişmez (uyarı logu).
+        if (retroactiveMatches > 0)
+            foreach (var shopperId in reboundShoppers)
+                await ShopperCustomerResolver.TryRederivePaymentsAsync(_db, shopperId, [licenseId], _logger, ct);
 
         return Ok(new SyncResponse(outcome.Synced + skipped, retroactiveMatches, outcome.Redirects));
     }

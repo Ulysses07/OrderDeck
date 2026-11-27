@@ -5,6 +5,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Sync;
 
@@ -201,6 +202,10 @@ public sealed class ShopperPurgeService
         //    alanı zaten boş olan sayılmaz. Sayım boşaltmadan ÖNCE.
         //    Dekontun müşterisi (WpfCustomerId) de boşalır: bağ S2a geri doldurmasıyla geldi (banka havalesi onayı, spec
         //    2026-10-10 §12) ve projeksiyon kullanıcı adını koruduğu için kişiye çözülürdü. Banka satırını bulma S4'te.
+        //    Okunan değer boş olsa da yazılır (IsModified): EF değişmeyen boş değeri UPDATE'e koymaz, oysa bu okumadan sonra
+        //    commit olan bir yeniden yazım (geriye dönük eşleştirme, telefon doğrulaması:
+        //    ShopperCustomerResolver.RederivePaymentsAsync) müşteriyi dekonta geri yazmış olabilir; zorunlu yazım onu da
+        //    boşaltır (S2b planı Karar 11). İmha kaydının sayımı yine okunan değerdendir.
         var paymentsWithPersonal = payments.Where(HasPersonalFields).ToList();
         foreach (var p in payments)
         {
@@ -210,6 +215,7 @@ public sealed class ShopperPurgeService
             p.MediaObjectKey = null;
             p.MediaContentType = null;
             p.WpfCustomerId = null;
+            _db.Entry(p).Property(x => x.WpfCustomerId).IsModified = true;
             p.UpdatedAt = now;
 
             // Damga YALNIZCA silinecek bir şey kalmadığında. Dosya hâlâ
@@ -243,12 +249,17 @@ public sealed class ShopperPurgeService
         // Pending linkin platform+kullanıcı adı herkese açık olabilir; onu
         // fallback kimlik saymak başka bir kişinin projeksiyonunu sildirebilir.
         // Telefon da purge tarafından boşaltıldığı için retry anahtarı olamaz.
-        var projectionKeys = links
-            .Where(l => l.WpfCustomerId is not null)
-            .Select(l => (
-                LicenseId: l.LicenseId,
-                WpfCustomerId: l.WpfCustomerId!.Value))
-            .ToHashSet();
+        // Anahtarlar bağlantının Id'si ve kanıt kuralıyla çözülen asıl kaydıdır (kural ve dayanağı 3b'de); shopper'ın
+        // telefonu adım 6 boşaltmadan önce okunur.
+        var projectionKeys = new HashSet<(Guid LicenseId, Guid WpfCustomerId)>();
+        foreach (var l in links.Where(l => l.WpfCustomerId is not null))
+        {
+            var linkCustomer = l.WpfCustomerId!.Value;
+            projectionKeys.Add((l.LicenseId, linkCustomer));
+            if (await ShopperCustomerResolver.ResolveLinkAsync(_db, l.LicenseId, linkCustomer, shopper.Phone,
+                    shopper.PhoneVerifiedAt, ct) is { } canonical)
+                projectionKeys.Add((l.LicenseId, canonical));
+        }
         var licenseIds = projectionKeys
             .Select(k => k.LicenseId)
             .Distinct()
@@ -307,6 +318,28 @@ public sealed class ShopperPurgeService
         //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:
         //       kanıtın kaynağı o açıklamadır ve silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama,
         //       satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
+        //     - Silinen hafıza özetinden gelen hareketin satırında IBAN'dan türeyen öneri de boşalır
+        //       (BankSubjectScrub.IbanDerivedProposal; S2b planı Karar 7, sahip kararı 27.11.2026). Kişi düzeyi eşleştirici bağı
+        //       kişinin öbür satırına (aynı GroupId) ve kopyadaki bağı asıl kayda sayar: bağ TT satırında, kullanıcı adı IG
+        //       satırındaysa öneri IG'yi "IBAN destekli" gösterir. Satır silinen kimliklere ve kullanıcı adı anahtarına bakmadığı
+        //       için yukarıdaki kurallara takılmaz; hareketin metni silindiğinden tarama da onu yeniden hesaplamaz, öneri kalırdı.
+        //       Kural kimlik kuralından SONRA, özetin kalan bağının müşterisine giden öneriye dokunmadan: kararsız satırda öneri,
+        //       kararlı satırda (kişinin dekontu havaleyi TT'ye ya da IG'ye bağlamış; başka bir kişiye karar da) yalnız öneri
+        //       alanları boşalır, karar ve ölçüm kalır. Açıklama silindiği için yeniden hesap yok. Karar katmanındaki satır kalır
+        //       (Karar 7; silmenin o soruyu ne yapacağı S3a'da kararlaştırılır).
+        //     - Dışlanan hareket (kod ya da TL/TRY dışı para birimi, PaymentMatcher.IsExcluded) kullanıcı adı aramasına girmez:
+        //       eşleştirici ona öneri ve kullanıcı adı kanıtı yazmaz ("excluded:{neden}"). Açıklaması yalnız silinen bir bağın
+        //       özetinden geliyorsa burada gider, yoksa eşleşmeyen açıklamanın saklamasıyla (BankDataRetentionJob 3. adım,
+        //       30. gün). S2b'den önce TL dışı havale kullanıcı adı önerisi alır ve burada bulunurdu; K-7'nin anlıklığını oraya
+        //       genişletmek sahip kararıdır (S2b planı, PR gövdesi).
+        //     Kimlik kümesi adım 3'ün anahtarlarıdır (tasarım §2.5, §12): bağlantının Id'si (K) birleştirmeden sonra kopyada
+        //     kalmış olabilir ve S2b göçü kopyadaki bağı onu gösteren kararla birlikte asıl kayda (C) taşır. Yalnız K ile
+        //     aransaydı kişinin asıl kaydı silinmez, taşınan bağ ve karar bulunmazdı. Her bağlantı için {K} ∪ {C}; C,
+        //     ShopperCustomerResolver.ResolveLinkAsync'in kanıt kuralıyla çözülür. K her zaman kalır (taşınmamış bağ ve karar,
+        //     geçici kopyanın satırları). Kanıtsız geçici (CreatedByShopper) kopyada C eklenmez: bağlantı sahte bir hesabın
+        //     olabilir, silmesi gerçek müşterinin bağını ve kararını silerdi. MarkPurged varsayılan süzgeçli projeksiyonlara
+        //     uygulanır (C dahil, kopya K hariç). IBAN ve eşleşme aramaları, geç bağ taraması, 3a ve 3c bu kümeyle; kişinin
+        //     öbür kopyalarındaki bağı aramak S4'tedir.
         //     Kişinin aynı lisansta birden çok bağı olabilir (Instagram + TikTok) ve bir satır ikisini birden taşıyabilir:
         //     kural satırın lisansındaki her kimliğe uygulanır (ScrubMatch). UpdatedAt eşleşmenin eşzamanlılık jetonudur;
         //     çakışma (arada silinen hareket ya da hafıza dahil) SaveAsync'te bir kez yeniden denenir. Kullanıcı adı
@@ -356,11 +389,16 @@ public sealed class ShopperPurgeService
             scrubbedTransactions.UnionWith(txs.Where(BankSubjectScrub.HasText));
         }
         // Sayım kuraldan ÖNCE: kural kimlikleri boşaltır, satırın kişiye bağlı olduğu ondan sonra görünmez.
-        var linkedMatches = scrubbedMatches.Where(m => IsLinked(m, purgedCustomers)).ToList();
-        var evidenceOnlyMatches = scrubbedMatches.Where(m => !IsLinked(m, purgedCustomers)).ToList();
+        var linkedMatches = scrubbedMatches.Where(m => IsLinked(m, purgedCustomers)).ToHashSet();
         _db.CustomerIbanMemories.RemoveRange(ibanMemories);
         foreach (var m in scrubbedMatches) ScrubMatch(m, purgedCustomers, now);
         foreach (var t in scrubbedTransactions) BankSubjectScrub.Transaction(t, now);
+        // IBAN'dan türeyen öneri (yukarıdaki madde) kimlik kuralından SONRA. Önerisi boşalan satır kimlik ve kanıt kaydına geçer,
+        // yalnız kanıtı boşalan kanıt kaydındadır; satır bir kez sayılır.
+        var ibanDerived = await BankSubjectScrub.IbanDerivedProposalsAsync(_db, ibanMemories, now, ct);
+        linkedMatches.UnionWith(ibanDerived.Where(x => x.Target == BankSubjectScrub.LinkedMatchTarget).Select(x => x.Match));
+        var evidenceOnlyMatches = scrubbedMatches.Concat(ibanDerived.Select(x => x.Match)).Where(m => !linkedMatches.Contains(m))
+            .ToHashSet();
 
         // 3c. Elle eşleme denetimi (KVKK Ö-14, K-7). bank.match.manual ayrıntısı kişinin kayıt numarasını taşır
         //     ({"wpfCustomerId":…}, Görev 16) ve 24 ay durur. 3b eşleşme satırında kimliği boşaltarak "bu kişi bu havaleyi
@@ -467,7 +505,7 @@ public sealed class ShopperPurgeService
         RecordPerLicense(auditLicenses, l => l, BankSubjectScrub.ManualMatchAuditTarget, nulled);
 
         var late = await SaveAsync(new PendingBankScrub(scrubbedMatches, scrubbedTransactions, ibanMemories, purgedCustomers,
-                manualMatchAudits, auditCustomers),
+                manualMatchAudits, auditCustomers, [.. ibanDerived.Select(x => x.Match)]),
             scrubbedOrders, Record, now, ct);
 
         return new ShopperPurgeResult(
@@ -543,6 +581,14 @@ public sealed class ShopperPurgeService
     /// olabilir. Kimliği 3b kuralı boşaltır; o bağ da
     /// <see cref="ScrubLateIbanMemoriesAsync"/> ile silinir, kaydı ayrıca yazılır.</para>
     ///
+    /// <para>3b'nin IBAN'dan türeyen öneri kuralının yazdığı satırlar da tazelenir
+    /// ve kimlik kuralı onlara da uygulanır: eşzamanlı yazan onları silinen kişiye
+    /// bağlamış olabilir (ters yön). İlk denemenin okuyup yazmadığı eşleşme
+    /// satırları izleyiciden ayrılır, yeniden sorgu onları taze okur. Kural ilk
+    /// okumanın ve geç bağların özetlerinden gelen hareketlerin satırlarına yeniden
+    /// uygulanır (<see cref="ScrubIbanDerivedProposalsAsync"/>), yalnız yeni bulunan
+    /// satırın kaydı ayrıca yazılır.</para>
+    ///
     /// <para>Aynısı sipariş metni boşaltması için (ayar açıkken, adım 3a):
     /// <see cref="Order.SyncVersion"/> jetondur ve eşzamanlı bir
     /// <c>orders/sync</c> güncellemesi onu ilerletir. Sipariş tazelenir (eşzamanlı
@@ -574,7 +620,7 @@ public sealed class ShopperPurgeService
             return (0, 0);
         }
         catch (DbUpdateConcurrencyException ex) when (ex.Entries.Count > 0
-            && ex.Entries.All(e => (e.Entity is PaymentMatch && bank.Matches.Count > 0)
+            && ex.Entries.All(e => (e.Entity is PaymentMatch && (bank.Matches.Count > 0 || bank.IbanDerived.Count > 0))
                 || (e.Entity is BankTransaction && bank.Transactions.Count > 0)
                 || (e.Entity is CustomerIbanMemory && bank.IbanMemories.Count > 0)
                 || (e.Entity is AuditLogEntry && bank.ManualMatchAudits.Count > 0)
@@ -593,6 +639,17 @@ public sealed class ShopperPurgeService
                 // Arada silinmiş (ayrıldı). Tazelenen satıra kural yeniden uygulanır (idempotent).
                 if (entry.State == EntityState.Detached)
                     continue;
+                ScrubMatch(m, bank.PurgedCustomers, now);
+            }
+            // IBAN'dan türeyen öneri kuralının satırları da tazelenir ve 3b kuralı onlara da uygulanır: eşzamanlı yazan (dekont
+            // bağdaştırması, elle eşleme) satırı silinen kişiye bağlamış olabilir ("Ters yön"); kural yeniden uygulanabilir, bu
+            // özetlerin açıklaması zaten siliniyor. Öneri kuralı aşağıda yeniden uygulanır (ScrubIbanDerivedProposalsAsync).
+            // Kimlik kuralının satırı yukarıda tazelendi, ikinci kez tazelenmez.
+            foreach (var m in bank.IbanDerived.Where(m => !bank.Matches.Contains(m)))
+            {
+                var entry = _db.Entry(m);
+                await entry.ReloadAsync(ct);
+                if (entry.State == EntityState.Detached) continue;
                 ScrubMatch(m, bank.PurgedCustomers, now);
             }
             foreach (var t in bank.Transactions)
@@ -625,22 +682,33 @@ public sealed class ShopperPurgeService
                 if (entry.State == EntityState.Detached) continue;
                 BankSubjectScrub.ManualMatchAudit(a);
             }
+            // İlk denemenin okuyup yazmadığı eşleşme satırları izleyicide okundukları hâliyle durur; öneri kuralının yeniden sorgusu
+            // onları DB'den tazelemezdi (kimlik çözümlemesi), arada IBAN'dan türeyen öneri almış satır bayat görünürdü. Bekleyen
+            // yazısı olmayan bu girdiler ayrılır, sorgu taze okur (PaymentMatchReconciler.ReevaluateUndecidedAsync deseni).
+            // Yukarıda tazelenen satırlar ayrılmaz: değerleri tazedir ve yeniden sorgu onları aynı örnekle döndürür (kayıt bir kez).
+            var refreshed = bank.Matches.Concat(bank.IbanDerived).ToHashSet();
+            foreach (var entry in _db.ChangeTracker.Entries<PaymentMatch>()
+                         .Where(e => e.State == EntityState.Unchanged && !refreshed.Contains(e.Entity)).ToList())
+                entry.State = EntityState.Detached;
             var late = await ScrubLateIbanMemoriesAsync(bank, record, now, ct);
+            await ScrubIbanDerivedProposalsAsync(bank, late.Bonds, record, now, ct);
             await ScrubLateManualMatchAuditsAsync(bank, record, ct);
             await _db.SaveChangesAsync(ct);
-            return late;
+            return (late.Bonds.Count, late.Transactions);
         }
     }
 
     /// <summary>3b ve 3c'nin kaydedilmeyi bekleyen işi; yeniden deneme bunları tazeler. <paramref name="AuditCustomers"/>:
-    /// 3c'nin aradığı kimlikler (birleştirilmiş kopyalar dahil) → lisans.</summary>
+    /// 3c'nin aradığı kimlikler (birleştirilmiş kopyalar dahil) → lisans. <paramref name="IbanDerived"/>: 3b'nin IBAN'dan türeyen
+    /// öneri kuralının yazdığı satırlar (<see cref="BankSubjectScrub.IbanDerivedProposal"/>).</summary>
     private sealed record PendingBankScrub(
         IReadOnlyCollection<PaymentMatch> Matches,
         IReadOnlyCollection<BankTransaction> Transactions,
         IReadOnlyCollection<CustomerIbanMemory> IbanMemories,
         ILookup<Guid, Guid> PurgedCustomers,
         IReadOnlyCollection<AuditLogEntry> ManualMatchAudits,
-        IReadOnlyDictionary<Guid, Guid> AuditCustomers);
+        IReadOnlyDictionary<Guid, Guid> AuditCustomers,
+        IReadOnlyCollection<PaymentMatch> IbanDerived);
 
     /// <summary>
     /// Yeniden denemede, ilk okumadan sonra yazılmış elle eşleme denetim satırı: eşzamanlı bir elle eşleme tazelenen eşleşmeyi
@@ -667,14 +735,17 @@ public sealed class ShopperPurgeService
     /// Yeniden denemede, ilk okumadan sonra silinen kişi adına öğrenilmiş IBAN hafızası: eşzamanlı yazan tazelenen eşleşmeyi
     /// ona bağlarken havalenin IBAN'ını öğretmiş olabilir (<c>PaymentMatchReconciler.LearnIbanAsync</c>). Kimliği 3b kuralı
     /// boşaltır; bağ kalsaydı IBAN ile kişi arasındaki ilişki KVKK silmesinden sonra da dururdu. Bağ silinir, özetinden gelen
-    /// hareketlerin metni de (3b kuralı; saklama kuralının boşalttığı sayılmaz). İlk okumanın kaydı zaten eklendi: bunların
-    /// kaydı ayrı satırdır, sayısı yalnız yeni bulunanlar.
+    /// hareketlerin metni de (3b kuralı; saklama kuralının boşalttığı sayılmaz); o hareketlerin IBAN'dan türeyen önerisini
+    /// <see cref="ScrubIbanDerivedProposalsAsync"/> boşaltır. İlk okumanın kaydı zaten eklendi: bunların kaydı ayrı satırdır,
+    /// sayısı yalnız yeni bulunanlar.
     /// </summary>
-    private async Task<(int Memories, int Transactions)> ScrubLateIbanMemoriesAsync(
+    /// <returns>Yeni bulunan bağlar ve metni boşaltılan hareket sayısı.</returns>
+    private async Task<(List<CustomerIbanMemory> Bonds, int Transactions)> ScrubLateIbanMemoriesAsync(
         PendingBankScrub bank, Action<Guid?, string, string, int> record, DateTimeOffset now, CancellationToken ct)
     {
         var known = bank.IbanMemories.Select(m => m.Id).ToHashSet();
-        int memories = 0, transactions = 0;
+        var bonds = new List<CustomerIbanMemory>();
+        var transactions = 0;
         foreach (var group in bank.PurgedCustomers)
         {
             var licenseId = group.Key;
@@ -699,10 +770,25 @@ public sealed class ShopperPurgeService
 
             record(licenseId, IbanMemoryTarget, DataDestruction.Actions.Deleted, late.Count);
             record(licenseId, TransactionTextTarget, DataDestruction.Actions.Nulled, txs.Count);
-            memories += late.Count;
+            bonds.AddRange(late);
             transactions += txs.Count;
         }
-        return (memories, transactions);
+        return (bonds, transactions);
+    }
+
+    /// <summary>
+    /// Yeniden denemede 3b'nin IBAN'dan türeyen öneri kuralı (<see cref="BankSubjectScrub.IbanDerivedProposalsAsync"/>): ilk
+    /// okumanın bağlarına ve geç bağlara (<paramref name="lateBonds"/>, <see cref="ScrubLateIbanMemoriesAsync"/>). Tazelenen
+    /// satırlara kural yeniden uygulanır; geç bağın özetinden gelen hareketin satırı ilk kez bulunur. İlk okumanın kaydı zaten
+    /// eklendi: kaydı yalnız yeni bulunan satırların, ayrı satırda.
+    /// </summary>
+    private async Task ScrubIbanDerivedProposalsAsync(PendingBankScrub bank, IReadOnlyCollection<CustomerIbanMemory> lateBonds,
+        Action<Guid?, string, string, int> record, DateTimeOffset now, CancellationToken ct)
+    {
+        var known = bank.Matches.Concat(bank.IbanDerived).ToHashSet();
+        var written = await BankSubjectScrub.IbanDerivedProposalsAsync(_db, bank.IbanMemories.Concat(lateBonds), now, ct);
+        foreach (var g in written.Where(x => !known.Contains(x.Match)).GroupBy(x => (x.Match.LicenseId, x.Target)))
+            record(g.Key.LicenseId, g.Key.Target, DataDestruction.Actions.Nulled, g.Count());
     }
 
     /// <summary>

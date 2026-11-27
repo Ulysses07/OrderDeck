@@ -617,6 +617,105 @@ public sealed class ObifinConnectionServiceTests
         (await db.BankConnections.CountAsync()).Should().Be(1);
     }
 
+    // ---- Sıfırlama reddi (S2b; tasarım §13): banka kararı olan lisansta kimlik değişimi gölge veriyi silmez ----
+
+    /// <summary>Banka onayının ödemesi (S3b yazar; S2b'de prod'da yok), tasarım §2.3'ün biçiminde. Hareketi 180. günde silinmiş
+    /// olabilir: ödeme hareketsiz yaşar (§12). Eklenir, kaydedilmez.</summary>
+    private static Payment BankPayment(Guid lic)
+    {
+        var txId = Guid.NewGuid();
+        var at = DateTimeOffset.UtcNow.AddDays(-200);
+        return new Payment { Id = Guid.NewGuid(), LicenseId = lic, Source = PaymentSource.Bank, PayerName = "", Amount = 10m, PaidAt = at,
+            ReferansNo = $"bank:{txId:N}:1", BankTransactionId = txId, Status = PaymentStatus.Approved,
+            ApprovalSource = PaymentApprovalSource.BankAuto, ApprovedAt = at, CreatedAt = at, UpdatedAt = at };
+    }
+
+    [Theory]
+    [InlineData(PaymentMatchDecision.Approved, false)]
+    [InlineData(PaymentMatchDecision.Approved, true)]
+    [InlineData(PaymentMatchDecision.Excluded, true)]
+    public async Task Karar_katmanina_girmis_lisansta_kimlik_degisimi_reddedilir(PaymentMatchDecision decision, bool allowReset)
+    {
+        // Karar katmanındaki satır finansal karardır (tasarım §13): sıfırlama onu siler, yeniden doldurulan hareket yeni Obifin
+        // numarasıyla gelip yeniden sorulur ya da otomatik onaylanırdı (ikinci ödeme, ikinci push). Onay kutusu bunu açmaz; kimlik
+        // değişimi ayrı bir yeniden anahtarlama işlemidir. Ret bağlantıya dokunmadan gelir ve onay isteyen istisna değildir (plan
+        // Karar 13). Dışlanan hareket de karardır.
+        var dbName = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        SeedShadowData(db, conn);
+        db.PaymentMatches.Single(m => m.LicenseId == lic).Decision = decision;
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+        ObifinConnection before;
+        using (var snapshot = NewDb(dbName)) before = await snapshot.ObifinConnections.AsNoTracking().SingleAsync();
+
+        var act = () => svc.UpsertWithResultAsync(lic, "", "api2@x", password: null, apiKey: null, CancellationToken.None,
+            allowShadowReset: allowReset);
+
+        (await act.Should().ThrowAsync<ShadowResetRefusedException>()).Which.Message
+            .Should().Be(ObifinConnectionService.ShadowResetRefusedMessage);
+        db.ChangeTracker.HasChanges().Should().BeFalse("bağlantıya dokunulmadan reddedilir");
+        using var fresh = NewDb(dbName);
+        var after = await fresh.ObifinConnections.AsNoTracking().SingleAsync();
+        (after.UserCode, after.LastObifinTransactionId, after.UpdatedAt)
+            .Should().Be((before.UserCode, before.LastObifinTransactionId, before.UpdatedAt), "kimlik ve imleç aynı");
+        (await fresh.BankTransactions.CountAsync()).Should().Be(1);
+        (await fresh.PaymentMatches.SingleAsync()).Decision.Should().Be(decision);
+        (await fresh.CustomerIbanMemories.CountAsync()).Should().Be(1);
+        (await fresh.PaymentMatchGaps.CountAsync()).Should().Be(1);
+        (await fresh.DataDestructionRecords.CountAsync(r => r.LicenseId == lic)).Should().Be(0, "imha kaydı yok");
+    }
+
+    [Fact]
+    public async Task Banka_odemesi_olan_lisansta_kimlik_degisimi_reddedilir()
+    {
+        // Banka onaylı ödeme hareketinden ve eşleşmesinden uzun yaşar (180. gün, hesap reddi; tasarım §12): eşleşmesi kalmamış
+        // lisansta da kimlik değişimi reddedilir. Silinecek gölge satır yokken onay da istenmezdi, ama imleç sıfırlanır ve yeniden
+        // doldurma o havaleyi yeni Obifin numarasıyla yeniden getirirdi (§13).
+        var dbName = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        db.Payments.Add(BankPayment(lic));
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+
+        var act = () => svc.UpsertWithResultAsync(lic, "", "api2@x", password: null, apiKey: null, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<ShadowResetRefusedException>()).Which.Message
+            .Should().Be(ObifinConnectionService.ShadowResetRefusedMessage);
+        using var fresh = NewDb(dbName);
+        (await fresh.ObifinConnections.AsNoTracking().SingleAsync()).UserCode.Should().Be("api@x", "kimlik yazılmadı");
+        (await fresh.Payments.CountAsync(p => p.LicenseId == lic)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Ayni_kimlige_yeni_parola_reddedilmez()
+    {
+        // (koruma) Ret yalnız kimlik (kullanıcı kodu ya da adres) değişimindedir: aynı kimliğe yeni parola ve anahtar gölge veriye
+        // dokunmaz, karar katmanlı ve banka ödemeli lisansta da kaydedilir.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        SeedShadowData(db, conn);
+        db.PaymentMatches.Single(m => m.LicenseId == lic).Decision = PaymentMatchDecision.Approved;
+        db.Payments.Add(BankPayment(lic));
+        db.SaveChanges();
+        var oldPassword = conn.PasswordProtected;
+        var oldApiKey = conn.ApiKeyProtected;
+
+        var result = await svc.UpsertWithResultAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+
+        result.ShadowDataReset.Should().BeFalse();
+        (await db.ObifinConnections.AsNoTracking().SingleAsync()).Should().Match<ObifinConnection>(c =>
+            c.PasswordProtected != oldPassword && c.ApiKeyProtected != oldApiKey && c.LastObifinTransactionId == 326404,
+            "yeni parola ve anahtar kaydedildi, imleç kaldı");
+        (await db.PaymentMatches.CountAsync()).Should().Be(1);
+        (await db.BankTransactions.CountAsync()).Should().Be(1);
+    }
+
     private static void SeedShadowData(LicenseDbContext db, ObifinConnection conn)
     {
         var now = DateTimeOffset.UtcNow;

@@ -221,12 +221,22 @@ public sealed class BankSubjectRequestService
     /// <item>Eşleşme satırında bu IBAN'ın bağlı olduğu her müşterinin kimliği ve kanıt silinir
     /// (<see cref="BankSubjectScrub.MatchForCustomer"/>); bağ yoksa yalnız kanıt — gönderen ile ödemesi sayılan müşteri farklı kişi
     /// olabilir (karar 7).</item>
+    /// <item>Ardından aynı hareketlerin satırlarında IBAN'dan türeyen öneri de silinir
+    /// (<see cref="BankSubjectScrub.IbanDerivedProposal"/>; S2b planı Karar 7, sahip kararı 27.11.2026): kişi düzeyi eşleştirici
+    /// bağı kişinin öbür satırına ve kopyadaki bağı asıl kayda sayar, öneri bağın müşterisini göstermediği için bir üstteki kurala
+    /// takılmazdı. Kararsız satırda öneri boşalır; kararlı satırda (kararın müşterisi bir üstteki kuralla ya da önceki bir silmeyle
+    /// boşalmış olsa da, silinmeyen bir müşteri olsa da) yalnız öneri, IBAN desteği ve kanıt (karar ve ölçüm kalır). IBAN izi
+    /// kanıtın okunduğu hâlinden okunur. Talep özetin bütün bağlarını siler, kalan bağ yoktur. Satır yeniden hesaplanmaz, öneri yok
+    /// kalır: aynı silme hareketlerin açıklamasını da siler, yeniden değerlendirme
+    /// (<see cref="PaymentMatchReconciler.ReevaluateUndecidedAsync"/>) açıklaması silinmiş harekete dokunmaz. Karar katmanındaki
+    /// satırın önerisi kalır (Karar 7; silmenin o soruyu ne yapacağı S3a'da kararlaştırılır).</item>
     /// <item>Kararın müşterisi boşalan havalenin elle eşleme denetim satırında o müşterinin (ve ona birleştirilmiş kopyaların)
     /// kimliği silinir (<see cref="BankSubjectScrub.ManualMatchAudit"/>); kişinin başka havalelerinin satırı kalır (talep bu IBAN'ın
     /// verisidir).</item>
     /// </list>
     /// Yalnız gerçekten silinen sayılır (saklama işinin boşalttığı metin, zaten boş kanıt sayılmaz, o satırlara yazılmaz); sayım
-    /// kuraldan ÖNCE. Talep kapanır, özet boşalır, imha kayıtları (özetinki dahil) talep kimliğiyle aynı SaveChanges'te. Eşzamanlı bir yazıyla
+    /// kimlik kuralından ÖNCE, önerisi boşalan satır kimlik ve kanıt kaydına geçer (satır bir kez sayılır). Talep kapanır, özet
+    /// boşalır, imha kayıtları (özetinki dahil) talep kimliğiyle aynı SaveChanges'te. Eşzamanlı bir yazıyla
     /// (eşleşme jetonu, arada silinen hareket, hafıza ya da budanan denetim satırı, talebi kapatan başka bir istek) çakışırsa bir kez
     /// baştan yeniden denenir; ikinci çakışmada izleyici boşalır, <see cref="EraseConflictMessage"/> fırlar (tek kayıt: hiçbir şey
     /// silinmedi).</summary>
@@ -301,9 +311,19 @@ public sealed class BankSubjectRequestService
         foreach (var m in linked)
             foreach (var c in customers) BankSubjectScrub.MatchForCustomer(m, c, now);
         foreach (var m in evidenceOnly) BankSubjectScrub.MatchEvidence(m, now);
+        // S2b planı Karar 7: kimlik kuralından SONRA aynı hareketlerin bütün satırlarında IBAN'dan türeyen öneri de gider
+        // (kişinin öbür satırına ya da kopyadaki bağın asıl kaydına giden öneri kimlik kuralına takılmaz): kararsız ve kararlı
+        // satırda, karar katmanı hariç. İz kanıtın okunduğu hâlinden: kimlik kuralı kanıtı az önce boşalttı.
+        // Talep özetin bütün bağlarını siler: kalan bağ yok. Açıklama da silindiği için satır yeniden hesaplanmaz, öneri yok kalır.
+        var ibanDerived = matches.Select(m => (Match: m, Target: BankSubjectScrub.IbanDerivedProposal(_db, m, [], now)))
+            .Where(x => x.Target is not null).ToList();
         foreach (var a in audits) BankSubjectScrub.ManualMatchAudit(a);
 
-        var matchCount = linked.Count + evidenceOnly.Count;
+        // Önerisi boşalan satır kimlik ve kanıt kaydına geçer, yalnız kanıtı boşalan kanıt kaydındadır; satır bir kez sayılır.
+        var linkedRows = linked
+            .Concat(ibanDerived.Where(x => x.Target == BankSubjectScrub.LinkedMatchTarget).Select(x => x.Match)).ToHashSet();
+        var evidenceRows = evidenceOnly.Concat(ibanDerived.Select(x => x.Match)).Where(m => !linkedRows.Contains(m)).ToHashSet();
+        var matchCount = linkedRows.Count + evidenceRows.Count;
         // KVKK Ö-13: kişisel veri içermeyen imha kaydı, silmeyle aynı SaveChanges'te; talep kimliğiyle (geri yüklemeden sonra
         // yeniden uygulama başvurunun aslına dayanır: özet kapanışta boşaldı — boşalması da kayıtta). Sıfır satırlık hedef
         // yazılmaz.
@@ -317,8 +337,8 @@ public sealed class BankSubjectRequestService
             EraseCriterion, DataDestruction.Triggers.SubjectRequest, actor, request.Id);
         Record(BankSubjectScrub.IbanMemoryTarget, DataDestruction.Actions.Deleted, memories.Count);
         Record(BankSubjectScrub.TransactionTextTarget, DataDestruction.Actions.Nulled, scrubbedTxs.Count);
-        Record(BankSubjectScrub.LinkedMatchTarget, DataDestruction.Actions.Nulled, linked.Count);
-        Record(BankSubjectScrub.MatchEvidenceTarget, DataDestruction.Actions.Nulled, evidenceOnly.Count);
+        Record(BankSubjectScrub.LinkedMatchTarget, DataDestruction.Actions.Nulled, linkedRows.Count);
+        Record(BankSubjectScrub.MatchEvidenceTarget, DataDestruction.Actions.Nulled, evidenceRows.Count);
         Record(BankSubjectScrub.ManualMatchAuditTarget, DataDestruction.Actions.Nulled, audits.Count);
         await _db.SaveChangesAsync(ct);
         return new EraseResult(scrubbedTxs.Count, memories.Count, matchCount, audits.Count, receipts);

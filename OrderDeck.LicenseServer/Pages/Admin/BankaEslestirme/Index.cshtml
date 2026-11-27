@@ -38,8 +38,10 @@
 
 @if (Model.Summary is { } s)
 {
+    @* Güncel (kişi düzeyi) eşleştiricinin satırları; hareket düzeyi sayılar (gelen, dışlanan, açık gap, gecikme) sürümsüzdür ve
+       yalnız bu kutuda. Satır düzeyi (eski) satırların kararları aşağıda ayrı kutuda (tasarım §4.5). *@
     <div class="card mb-3" data-box="metrics"><div class="card-body">
-        <h2 class="h5 card-title">Son @IndexModel.WindowDays gün</h2>
+        <h2 class="h5 card-title">Son @IndexModel.WindowDays gün <small class="text-muted">kişi düzeyi (güncel) eşleştirici</small></h2>
         <div class="row small">
             <div class="col-md-3">Gelen: <b>@s.Incoming</b><br />Dışlanan (POS vb.): @s.Excluded<br />Öneri üretilen: @s.Proposed</div>
             <div class="col-md-3">Doğrulandı: <b>@s.Confirmed</b><br />Çelişti: <b>@s.Contradicted</b> <span class="text-muted">(öneriden farklı elle eşleme dahil)</span><br />Elle (öneri yoktu): @s.ManualOnly</div>
@@ -61,13 +63,29 @@
         </div>
         @* Eşik yalnız çekim anındaki önerilerin dekont onaylı kararlarından (panelde öneri görülmeden verilir); sayfa kararları
            öneriye bakarak verilir, sonradan (IBAN hafızası değişince) üretilmiş önerilerin dekont kararları otomatik onayın çekim
-           anındaki nüfusunda yoktur: ikisi de ayrı gösterilir. Kesir yuvarlı yüzdenin yanında: P1 tek başına 5/245'i %2,0 gösterir. *@
-        <div class="mt-2 small @(s.MeetsPhase2Threshold ? "text-success" : "text-muted")" data-phase2="gate">
+           anındaki nüfusunda yoktur: ikisi de ayrı gösterilir. Kesir yuvarlı yüzdenin yanında: P1 tek başına 5/245'i %2,0 gösterir.
+           Faz 2 satırı kapı değildir, gölge isabeti bilgisidir (§4.5): otomatik onayın kapısı pilotun sayaçlarıdır (§16-6). *@
+        <div class="mt-2 small text-muted" data-phase2="gate">
             Faz 2 (dekont onaylı kararlar): <span data-phase2="receipt">@s.ReceiptDecisions/@(PaymentMatchSummary.Phase2MinReceiptDecisions), çelişki @s.ReceiptContradicted/@s.ReceiptDecisions (@Rate(s.ReceiptContradictionRate))</span>
-            @if (s.MeetsPhase2Threshold) { <b>✓ eşik sağlandı</b> }
+            @if (s.MeetsPhase2Threshold) { <span>· eşik sayısına ulaştı</span> }
+            <span class="text-muted">— bilgi; otomatik onayın kapısı değil (§16-6)</span>
             <div class="text-muted">Eşik: ≥ @(PaymentMatchSummary.Phase2MinReceiptDecisions) dekont onaylı öneri kararı, çelişki ≤ %@(PaymentMatchSummary.Phase2MaxContradictionPercent).
                 Sayfada verilen öneri kararları eşiğe girmez: <span data-phase2="page">✓@s.PageConfirmed ✗@s.PageContradicted</span>.
                 Sonradan (IBAN hafızasıyla) üretilmiş önerilerin dekont kararları da girmez: <span data-phase2="reevaluated">✓@s.ReevaluatedReceiptConfirmed ✗@s.ReevaluatedReceiptContradicted</span></div>
+        </div>
+    </div></div>
+}
+
+@if (Model.LegacySummary is { } legacy)
+{
+    @* Satır düzeyi eşleştiricinin (sürümü boş, S2b öncesi) hesapladığı ve o günden beri yeniden hesaplanmamış satırlar: kararları
+       ayrı sayılır, karışsaydı nüfus değişimi isabet sanılırdı (tasarım §4.5). Hareket sayıları üstteki kutuda; Faz 2 satırı yok. *@
+    <div class="card mb-3" data-box="metrics-legacy"><div class="card-body">
+        <h2 class="h6 card-title">Satır düzeyi (eski) eşleştirici <small class="text-muted">son @IndexModel.WindowDays gün, karar sayıları</small></h2>
+        <div class="row small">
+            <div class="col-md-3">Öneri üretilen: @legacy.Proposed<br />Bekleyen öneri: @legacy.PendingProposals<br />Öneri yok: @legacy.NoProposal</div>
+            <div class="col-md-3">Doğrulandı: <b>@legacy.Confirmed</b><br />Çelişti: <b>@legacy.Contradicted</b> <span class="text-muted">(öneriden farklı elle eşleme dahil)</span><br />Elle (öneri yoktu): @legacy.ManualOnly</div>
+            <div class="col-md-3">Çelişki oranı: <b>@Rate(legacy.ContradictionRate)</b> <span data-fraction="overall">(çelişki @legacy.Contradicted/@(legacy.Confirmed + legacy.Contradicted))</span></div>
         </div>
     </div></div>
 }

@@ -61,8 +61,10 @@ public sealed class PanelPaymentsController : ControllerBase
         var customerId = User.GetTenantCustomerId();
         take = Math.Clamp(take, 1, 200);
 
+        // Yalnız dekont (izin listesi; tasarım §2.3, S2b): banka onayları havale listesinde görünür. Banka satırlarını S3b yazar,
+        // okuyucu önce gelir.
         var query = _db.Payments
-            .Where(p => p.License.CustomerId == customerId);
+            .Where(p => p.License.CustomerId == customerId && p.Source == PaymentSource.Receipt);
 
         if (!string.IsNullOrWhiteSpace(status))
         {

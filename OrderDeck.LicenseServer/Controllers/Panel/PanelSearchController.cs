@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -108,8 +109,10 @@ public sealed class PanelSearchController : ControllerBase
             .ToListAsync(ct);
 
         // ─── Payments by ReferansNo or PayerName ──────────────────────
+        // Yalnız dekont (tasarım §2.3, S2b; banka satırlarını S3b yazar, okuyucu önce): banka satırının "bank:{hareket}:{n}"
+        // referansı kısa aramaya vurur, adsız satırlar dekontları 10'luk listeden düşürürdü.
         var payments = await _db.Payments
-            .Where(p => licenseIds.Contains(p.LicenseId)
+            .Where(p => licenseIds.Contains(p.LicenseId) && p.Source == PaymentSource.Receipt
                 && (p.ReferansNo.Contains(term) || p.PayerName.Contains(term)))
             .OrderByDescending(p => p.CreatedAt)
             .Take(10)

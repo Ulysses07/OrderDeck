@@ -971,6 +971,37 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         (await ShadowCountsAsync(licenseId)).Should().Be((1, 1, 1));
     }
 
+    [Fact]
+    public async Task Karar_katmanli_lisansta_kimlik_degisimi_red_mesajini_gosterir()
+    {
+        // Banka kararı olan lisansta kimlik değişimi reddedilir (tasarım §13). Ret bir onay adımı değildir (plan Karar 13): sayfa
+        // servisin red mesajını gösterir, "kutuyu işaretleyip tekrar kaydedin" demez, formu yeniden basmaz. Hiçbir şey kaydedilmez,
+        // gölge veri kalır. Sayfa kodu değişmedi: ret doğrulama mesajı olarak bildirime düşer.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+        await SeedShadowDataAsync(licenseId);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var tx = await db.BankTransactions.SingleAsync(t => t.LicenseId == licenseId);
+            var now = DateTimeOffset.UtcNow;
+            db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = licenseId, BankTransactionId = tx.Id,
+                Decision = PaymentMatchDecision.Awaiting, Status = PaymentMatchStatus.NoProposal, CreatedAt = now, UpdatedAt = now });
+            await db.SaveChangesAsync();
+        }
+        var before = await ConnectionAsync(licenseId);
+
+        var resp = await SaveAsync(client, licenseId, $"yeni-{Guid.NewGuid():N}@x");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect, "ret onay adımı değil: form yeniden basılmaz");
+        (await ToastAsync(client, "danger")).Should().Be(ObifinConnectionService.ShadowResetRefusedMessage, "onay metni değil");
+        var after = await ConnectionAsync(licenseId);
+        (after.UserCode, after.PasswordProtected, after.UpdatedAt).Should().Be((before.UserCode, before.PasswordProtected, before.UpdatedAt),
+            "hiçbir şey kaydedilmedi");
+        (await ShadowCountsAsync(licenseId)).Should().Be((1, 1, 1), "gölge veri kalır");
+    }
+
     [Theory]
     [InlineData("HTTPS://EXAMPLE.invalid/", false)]
     [InlineData("https://baska.example.invalid", true)]

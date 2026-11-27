@@ -138,7 +138,7 @@ public sealed class IbanReevaluationRelationalTests : IAsyncLifetime
             "iban-memory" + PaymentMatcher.ReevaluationEvidenceSuffix));
         var metrics = await new PaymentMatchMetrics(verify,
                 new PaymentMatcher(verify, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance))
-            .ComputeAsync(s.LicenseId, 30, CancellationToken.None);
+            .ComputeAsync(s.LicenseId, 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None);
         (metrics.PendingProposals, metrics.ReevaluatedPending).Should().Be((1, 1));
     }
 

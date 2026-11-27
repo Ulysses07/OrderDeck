@@ -617,6 +617,78 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > İleri dönüşte (silmeler yeniden uygulandıktan sonra) biri 0'dan büyükse
 > kalıntı S2b'yi bekler; S2b'den sonra ikisi de 0 olmalı.
 
+> **UYARI — Banka Faz 2 S2b tabanı (kişi düzeyi eşleştirme, spec 2026-10-10
+> §2.3, §2.5, §15).** S2b göçü (`BankPersonMatchingS2b`) yalnız veri yazar,
+> şema aynı; otomatik geri alma (yukarıdaki workflow) güvenli, S2a imajı bu
+> veriyle çalışır. Geri alma penceresinin dört kalıntısı var. Sayımlar salt
+> okunurdur ve S2b yeniden yayınlanmadan önce koşulur:
+> - (1) v2 satırı S2a kuralıyla işlenir. O imajın yeniden hesabı (IBAN
+>   hafızası değişince, kaldırmada) satır düzeyi sonucu `MatcherVersion = 2`
+>   ve bayat `SupportedByIbanMemory` ile bırakır (S3a okur). Bağdaştırması ve
+>   elle eşlemesi v2 satırını satır düzeyinde sınıflar: aynı kişinin öbür
+>   satırına giden dekont `Contradicted` yazılır, güncel bloğun çelişkisi
+>   şişer. Sayım:
+>   `SELECT Status, COUNT(*) FROM PaymentMatches WHERE MatcherVersion = 2 AND UpdatedAt >= '<geri alma anı>' GROUP BY Status`
+>   Çelişki payı aynı sorgudur, WHERE'e
+>   `AND Status IN ('Contradicted','ManualOnly') AND DecidedAt >= '<geri alma anı>'`
+>   eklenir.
+> - (2) Pencerede gönderilen dekont müşterisiz kalır (S2a imajı gönderimde
+>   yazmaz, göç bir daha koşmaz): temkinli yön, S3a'da fazladan soru. Sayım:
+>   `SELECT COUNT(*) FROM Payments WHERE ShopperId IS NOT NULL AND Source = 'Receipt' AND WpfCustomerId IS NULL AND CreatedAt >= '<geri alma anı>'`
+> - (3) S2a imajının shopper silmesi bağı ve kararı bağlantının Id'siyle arar,
+>   göçün asıl kayda taşıdığını bulmaz. İleri dönünce yeniden uygulamak da
+>   bulmaz, çünkü silme bağlantıları siler. Bu yüzden pencerede shopper
+>   silmesi ve IBAN talebi uygulanmaz: ikisi de yalnız yönetici eliyle
+>   yapılır, talep bekler, S2b yeniden yayınlanınca işlenir. Uygulandıysa
+>   pencerenin silmeleri şuradan listelenir:
+>   `SELECT DISTINCT SubjectId FROM DataDestructionRecords WHERE [Trigger] = 'shopper-purge' AND OccurredAt >= '<geri alma anı>'`
+>   Bunlardan merge öncesi listede (PR gövdesinin sorgu 3d'si; sonucu depo
+>   dışında saklanır) olan her shopper'ın oradaki her satırı için, o lisansta
+>   kopyayı (K, satırın `WpfCustomerId`'si) gösteren geçici bir bağlantı
+>   satırı eklenir (`Platform`, `Username` yer tutucu). Silme, S2b yayındayken
+>   yeni talep satırıyla yeniden uygulanır; S2b silmesi K'yı asıl kayda çözer
+>   ve bağlantıyı yine siler.
+>   Bu onarım yalnız merge öncesi listedeki kopyaları kapsar. S2b yayındayken
+>   çözücü kararı ve yeni IBAN bağını iki durumda daha asıl kayda yazar:
+>   bağlantı kanıtlı geçici kopyadaysa (liste geçici kopyayı içermez; S2a
+>   silmesi telefonu boşalttığı için geçici kopyaya eklenen bağlantıyla
+>   yeniden uygulamak kanıtı bulamaz) ve bağlantı listeden sonra bir yarışla
+>   kopyada kaldıysa. Bunlarda tek koruma pencerede shopper silmesinin
+>   uygulanmamasıdır. Uygulandıysa pencerenin silmelerinin dekontlarına
+>   bağlanmış, hâlâ müşterili kararlar listelenir (S2a silmesi bağlantının
+>   Id'sindeki kararı zaten boşalttı; kalan müşteri S2b'nin asıl kayda çözdüğü
+>   ya da taşıdığı kayıttır):
+>   `SELECT DISTINCT pm.LicenseId, pm.ActualWpfCustomerId FROM Payments p JOIN PaymentMatches pm ON pm.PaymentId = p.Id WHERE p.ShopperId IN (<pencerenin silmeleri>) AND pm.ActualWpfCustomerId IS NOT NULL`
+>   Her satır için o lisansta o kaydı gösteren geçici bağlantı satırı aynı
+>   yolla eklenir ve silme yeniden uygulanır; S2b silmesi kaydın bağını,
+>   kararlarını ve projeksiyonunu bulur.
+>   S2a imajının iki silmesi IBAN'dan türeyen öneri kuralını (S2b planı
+>   Karar 7) da uygulamaz: silinen bağın özetinden gelen havalenin v2 önerisi
+>   (kişinin öbür satırına ya da asıl kayda, IBAN destekli; müşterisi silinen
+>   kararın ve silinmeyen müşteriye kararlı satırın önerisi de) kalır.
+>   S2b'yle yeniden uygulanan shopper silmesi onu bulmaz (kural yalnız o
+>   koşunun sildiği bağların özetlerine uygulanır, bağ çoktan silindi); IBAN
+>   talebini yeni talep satırıyla yeniden uygulamak bulur. Sayım (açıklaması
+>   pencerede saklamayla giden, bağı yaşam döngüsüyle silinmiş satırı da
+>   sayar; kural gibi gerçek müşteriye bakmaz):
+>   `SELECT COUNT(*) FROM PaymentMatches pm JOIN BankTransactions t ON t.Id = pm.BankTransactionId WHERE pm.ProposedWpfCustomerId IS NOT NULL AND (pm.Layer = 'IbanMemory' OR pm.SupportedByIbanMemory = 1) AND pm.Decision = 'None' AND t.DescriptionPurgedAt >= '<geri alma anı>' AND NOT EXISTS (SELECT 1 FROM CustomerIbanMemories m WHERE m.LicenseId = pm.LicenseId AND m.IbanHash = t.CounterpartyIbanHash)`
+>   Sıfırdan büyükse S2b yeniden yayınlandıktan sonra aynı süzgeçle, kuralın
+>   değerleriyle onarılır. Kararsız satırda (karar anı boş) öneri, katman,
+>   güven, IBAN desteği ve kanıt boşalır, `Proposed` → `NoProposal`. Kararlı
+>   satırda (karar anı dolu; gerçek müşteri dolu ya da boş) yalnız öneri,
+>   IBAN desteği ve kanıt boşalır, `ManualOnly` → `Contradicted`; gerçek
+>   müşteri, karar anı, dekont bağı ve `IbanConfirmedAt` kalır.
+>   `MatcherVersion` iki kolda da kalır. UPDATE'le aynı işlemde
+>   `PaymentMatches.WpfCustomerId+Evidence` imha kaydı yazılır. Onarım
+>   sorgusu o gün yazılır, Burak koşar.
+> - (4) O imajın bağdaştırması, bağlantısı kopyada kalmış kişide kararı (yeni
+>   IBAN'da bağı da) kopyaya yazar. Sayım:
+>   `SELECT (SELECT COUNT(*) FROM PaymentMatches pm JOIN WpfCustomerProjections c ON c.Id = pm.ActualWpfCustomerId AND c.LicenseId = pm.LicenseId WHERE c.MergedIntoId IS NOT NULL AND pm.DecidedAt >= '<geri alma anı>') AS Kararlar, (SELECT COUNT(*) FROM CustomerIbanMemories m JOIN WpfCustomerProjections c ON c.Id = m.WpfCustomerId AND c.LicenseId = m.LicenseId WHERE c.MergedIntoId IS NOT NULL AND m.CreatedAt >= '<geri alma anı>') AS Baglar`
+>   Sıfırdan büyükse S2b yeniden yayınlandıktan sonra `MoveCopyBonds` metni
+>   (göç dosyasındaki sabit) bir kez elle koşulur; kural okuyucununkiyle
+>   aynıdır, tekil indekslere takılmaz. `RederivePaymentCustomers` elle
+>   koşulmaz: kanıtlı geçici kopyanın değerini de NULL'a çeker.
+
 > **Havale soruları (banka havalesi onayı, spec 2026-10-10 §2.7, §14).**
 > Lisansın havale sorularını YALNIZ CLI açar ve kapatır
 > (`Tools/BankQuestionsCommand.cs`); deploy anında hiçbir lisansta açık

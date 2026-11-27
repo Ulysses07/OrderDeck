@@ -494,7 +494,7 @@ public sealed class ShopperAuthController : ControllerBase
             return Problem(title: "invalid-code", statusCode: 400);
 
         shopper.PhoneVerifiedAt = DateTimeOffset.UtcNow;
-        await ResolvePendingLinksAsync(shopper, ct);
+        var boundLicenses = await ResolvePendingLinksAsync(shopper, ct);
         try
         {
             await _db.SaveChangesAsync(ct);
@@ -509,6 +509,7 @@ public sealed class ShopperAuthController : ControllerBase
             if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
                 return Unauthorized();
         }
+        await RederiveBoundPaymentsAsync(shopper.Id, boundLicenses, ct);
         return NoContent();
     }
 
@@ -588,7 +589,7 @@ public sealed class ShopperAuthController : ControllerBase
         shopper.UpdatedAt = now;
         shopper.AuthVersion++;
         shopper.PhoneVerifiedAt ??= now;
-        await ResolvePendingLinksAsync(shopper, ct);
+        var boundLicenses = await ResolvePendingLinksAsync(shopper, ct);
 
         // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout.
         await _refresh.MarkAllRevokedAsync(shopper.Id, now, ct);
@@ -608,6 +609,7 @@ public sealed class ShopperAuthController : ControllerBase
             if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
                 return Problem(title: "invalid-code", statusCode: 400);
         }
+        await RederiveBoundPaymentsAsync(shopper.Id, boundLicenses, ct);
         return NoContent();
     }
 
@@ -766,10 +768,12 @@ public sealed class ShopperAuthController : ControllerBase
             .ToArrayAsync(ct);
     }
 
-    private async Task ResolvePendingLinksAsync(Domain.Shopper shopper, CancellationToken ct)
+    /// <summary>Doğrulanmış telefonla bekleyen bağlantıları bağlar (kaydetmez); bağladığı lisansları döner.</summary>
+    private async Task<List<Guid>> ResolvePendingLinksAsync(Domain.Shopper shopper, CancellationToken ct)
     {
+        var bound = new List<Guid>();
         if (shopper.PhoneVerifiedAt is null)
-            return;
+            return bound;
 
         var pendingLinks = await _db.ShopperBroadcasterLinks
             .Where(l => l.ShopperId == shopper.Id
@@ -791,7 +795,22 @@ public sealed class ShopperAuthController : ControllerBase
             var match = WpfCustomerLinkMatcher.FindProven(
                 candidates, shopper.Phone, shopper.PhoneVerifiedAt);
             if (match is not null)
+            {
                 link.WpfCustomerId = match.Id;
+                bound.Add(link.LicenseId);
+            }
         }
+        return bound;
+    }
+
+    /// <summary>
+    /// Bağ kaydedildikten SONRA (silinmiş hesap yolunda çağrılmaz) shopper'ın bağlanan lisanslardaki dekontlarını türetme
+    /// kuralıyla yeniden yazar (spec 2026-10-10 §2.3, S2b planı Karar 10): bağ beklerken gönderilmiş dekont müşterisini alır.
+    /// Bağlamayla aynı kayda konmaz; yazım koşulludur, düşerse yanıt değişmez (uyarı logu).
+    /// </summary>
+    private async Task RederiveBoundPaymentsAsync(Guid shopperId, List<Guid> boundLicenses, CancellationToken ct)
+    {
+        if (boundLicenses.Count > 0)
+            await ShopperCustomerResolver.TryRederivePaymentsAsync(_db, shopperId, boundLicenses, _log, ct);
     }
 }

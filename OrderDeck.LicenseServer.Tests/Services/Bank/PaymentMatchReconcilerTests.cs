@@ -54,10 +54,10 @@ public sealed class PaymentMatchReconcilerTests
     }
 
     private static BankTransaction Tx(LicenseDbContext db, Guid lic, decimal amount, DateTimeOffset when, string desc, string? ibanHash = null,
-        string? code = null)
+        string? code = null, string currency = "TL")
     {
         var t = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb",
-            Direction = BankTransactionDirection.Incoming, Amount = amount, Currency = "TL", OccurredAt = when, Description = desc, CounterpartyIbanHash = ibanHash, FetchedAt = when,
+            Direction = BankTransactionDirection.Incoming, Amount = amount, Currency = currency, OccurredAt = when, Description = desc, CounterpartyIbanHash = ibanHash, FetchedAt = when,
             TransactionCode = code,
             // Testlerin hareketleri Görev 11'den sonraki çekimi temsil eder: özet geçerli IBAN'dan (KVKK Ö-7).
             CounterpartyIbanHashValid = ibanHash is not null };
@@ -624,6 +624,49 @@ public sealed class PaymentMatchReconcilerTests
     }
 
     [Fact]
+    public async Task Yabanci_para_birimli_tek_aday_dekonta_baglanmaz_elle_esleme_ogretmez()
+    {
+        // Tasarım §3: TL/TRY dışı hareket müşteri havalesi değildir (POS tahsilatı gibi). Açıklamasında müşterinin kullanıcı adı
+        // olsa ve dekontun tek tutar/zaman adayı kalsa da dekonta bağlanmaz; admin'in elle eşlemesi kararı yazar, IBAN öğretmez.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var usd = Tx(db, s.LicenseId, 330m, when, "HAVALE ornek_musteri34", Hasher.HashIban(BankHasherTests.TestIban()), currency: "USD");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(usd, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 330m, when);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).PaymentId.Should().BeNull();
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+
+        var result = await recon.ManualMatchAsync(s.LicenseId, usd.Id, s.WpfCustomerId, CancellationToken.None);
+
+        result.Should().Be(new ManualMatchResult(ManualMatchIbanOutcome.Excluded));
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.ActualWpfCustomerId, m.Status, m.IbanConfirmedAt).Should().Be(
+            ((Guid?)s.WpfCustomerId, PaymentMatchStatus.ManualOnly, (DateTimeOffset?)null));
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Sonradan_gelen_TL_disi_havale_acik_gap_i_cozmez()
+    {
+        // Gap çözümü de dışlanan hareketi aday saymaz: aynı tutarlı yabancı para birimli havale dekontun gap'ini kapatmaz.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 350m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var eur = Tx(db, s.LicenseId, 350m, paidAt.AddHours(1), "HAVALE ornek_musteri34", currency: "EUR");
+
+        await recon.MatchAndResolveGapAsync(eur, CancellationToken.None);
+
+        var gap = await db.PaymentMatchGaps.AsNoTracking().SingleAsync();
+        gap.ResolvedAt.Should().BeNull(); gap.ResolvedBankTransactionId.Should().BeNull();
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).PaymentId.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Ayni_musteriye_yeniden_dogrulanan_IBAN_baginin_LastConfirmedAt_tazelenir()
     {
         // KVKK K-6: IBAN bağı o IBAN'dan gelen son doğrulanmış havaleden 12 ay yaşar; süreler havalenin işlem tarihinden işler
@@ -814,6 +857,65 @@ public sealed class PaymentMatchReconcilerTests
 
         (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(source.OccurredAt);
         (await db.DataDestructionRecords.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>S2b'den önce para birimine bakılmadan verilmiş, bağı doğrulamış (işaretli) TL dışı karar; bağa dokunmaz.</summary>
+    private static void PreS2bConfirmedDecision(LicenseDbContext db, Seed s, BankTransaction tx)
+    {
+        db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = tx.Id,
+            Status = PaymentMatchStatus.ManualOnly, ActualWpfCustomerId = s.WpfCustomerId, DecidedAt = tx.OccurredAt.AddHours(1),
+            IbanConfirmedAt = tx.OccurredAt, Evidence = "no-signal", CreatedAt = tx.OccurredAt, UpdatedAt = tx.OccurredAt.AddHours(1) });
+        db.SaveChanges();
+    }
+
+    [Fact]
+    public async Task TL_disi_hareketin_dogrulamasi_kaldirmada_kalan_sayilmaz()
+    {
+        // KVKK K-6 "son doğrulanmış ödemeden 12 ay": TL/TRY dışı hareket doğrulama değildir. T2'nin (USD) S2b'den önce işaretlenmiş
+        // kararı son doğrulama T3'ün kaldırılmasında kalan sayılmaz; öğreten havale 180 günlük kuralla silinmiş, kalan yok: bağ
+        // imha kaydıyla silinir. Sayılsaydı başlangıç T2'ye geri çekilirdi (S2b'den önceki davranış).
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var now = DateTimeOffset.UtcNow;
+        var source = Tx(db, s.LicenseId, 100m, now.AddDays(-200), "EFT GELEN", hash);
+        var recon = Recon(db);
+        await recon.ManualMatchAsync(s.LicenseId, source.Id, s.WpfCustomerId, CancellationToken.None);
+        PreS2bConfirmedDecision(db, s, Tx(db, s.LicenseId, 110m, now.AddDays(-20), "EFT GELEN", hash, currency: "USD"));
+        var t3 = Tx(db, s.LicenseId, 120m, now.AddDays(-3), "EFT GELEN", hash);
+        await recon.ManualMatchAsync(s.LicenseId, t3.Id, s.WpfCustomerId, CancellationToken.None);
+        db.PaymentMatches.RemoveRange(await db.PaymentMatches.Where(m => m.BankTransactionId == source.Id).ToListAsync());
+        db.BankTransactions.Remove(source);
+        await db.SaveChangesAsync(); // saklama işinin 180 günlük silmesi
+
+        await recon.UnmatchAsync(s.LicenseId, t3.Id, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync()).Criterion
+            .Should().Be("LastConfirmedAt+12ay, kaldırma, kalan doğrulama yok");
+    }
+
+    [Fact]
+    public async Task TL_disi_hareketin_isaretli_karari_kaldirilinca_bagin_suresi_geri_cekilmez()
+    {
+        // Aynı kuralın kaldırmadaki yüzü: S2b'den önce işaretlenmiş TL dışı karar bağın son doğrulamasıysa (bağı o gün tazelemiş),
+        // kaldırılması süreyi geri çekmez; dışlanan kodlu hareketin kaldırılması gibi. Süre kaldırılan kararda kalır (merge öncesi
+        // sorgu (1)'in "Dogrulayan" payı; 0'dan büyükse sahip karar verir). S2b'den önce öğreten havaleye dönerdi.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var now = DateTimeOffset.UtcNow;
+        var source = Tx(db, s.LicenseId, 100m, now.AddDays(-40), "EFT GELEN", hash);
+        var recon = Recon(db);
+        await recon.ManualMatchAsync(s.LicenseId, source.Id, s.WpfCustomerId, CancellationToken.None);
+        var usd = Tx(db, s.LicenseId, 120m, now.AddDays(-3), "EFT GELEN", hash, currency: "USD");
+        PreS2bConfirmedDecision(db, s, usd);
+        (await db.CustomerIbanMemories.SingleAsync()).LastConfirmedAt = usd.OccurredAt; // o kararın tazelemesi
+        await db.SaveChangesAsync();
+
+        await recon.UnmatchAsync(s.LicenseId, usd.Id, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(usd.OccurredAt);
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0);
+        (await RowAsync(db, usd)).IbanConfirmedAt.Should().BeNull("kaldırma kararın işaretini yine boşaltır");
     }
 
     /// <summary>Lisansta başka müşterinin kullanıcı adını taşıyan, bu müşterinin IBAN'ından gelen havaleyi dekonta yalnız tutar ve
@@ -1165,6 +1267,26 @@ public sealed class PaymentMatchReconcilerTests
             (await RowAsync(db, tx)).Should().BeEquivalentTo(before[tx.Id], o => o.Excluding(m => m.BankTransaction), tx.Id.ToString());
     }
 
+    [Fact]
+    public async Task TL_disi_hareket_ayni_IBANin_yeniden_degerlendirmesine_girmez()
+    {
+        // Dışlanan hareket aynı IBAN'ın yeniden değerlendirmesinde atlanır ve sayılmaz: TL dışı hareket de. S2b'den önce bağı
+        // öğreten elle eşleme ona IBAN hafızasından öneri yazardı.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var now = DateTimeOffset.UtcNow;
+        var recon = Recon(db);
+        var usd = Tx(db, s.LicenseId, 100m, now.AddDays(-5), "EFT GELEN", hash, currency: "USD");
+        await recon.Matcher.MatchAsync(usd, CancellationToken.None);
+        var before = await RowAsync(db, usd);
+        var target = Tx(db, s.LicenseId, 140m, now.AddHours(-2), "EFT GELEN", hash);
+
+        var result = await recon.ManualMatchAsync(s.LicenseId, target.Id, s.WpfCustomerId, CancellationToken.None);
+
+        result.Should().Be(new ManualMatchResult(ManualMatchIbanOutcome.Learned));
+        (await RowAsync(db, usd)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+    }
+
     [Theory]
     [InlineData(ManualMatchIbanOutcome.LegacyHash)]
     [InlineData(ManualMatchIbanOutcome.Excluded)]
@@ -1418,6 +1540,369 @@ public sealed class PaymentMatchReconcilerTests
             .Should().Be(PaymentMatchReconciler.MaxReevaluationsPerTrigger);
     }
 
+    // ---- Karar katmanı kilidi (S2b; tasarım §2.4): Decision ≠ None satıra hiçbir arka plan yolu dokunmaz ----
+
+    /// <summary>Karar katmanındaki satır (S3a yazacak; S2b'de prod'da yok): Awaiting, insan kararı yok (Proposed, karar anı ve dekont
+    /// boş), öneri <paramref name="proposed"/>, jeton bir gün önce. Kaydeder, izlenmeyen kopyasını döner.</summary>
+    private static PaymentMatch AwaitingRow(LicenseDbContext db, Guid lic, BankTransaction tx, Guid proposed)
+    {
+        var t0 = DateTimeOffset.UtcNow.AddDays(-1);
+        db.PaymentMatches.Add(new PaymentMatch
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx.Id, Decision = PaymentMatchDecision.Awaiting,
+            Status = PaymentMatchStatus.Proposed, ProposedWpfCustomerId = proposed, Layer = PaymentMatchLayer.NameAmount,
+            Confidence = PaymentMatcher.NameConfidence, Evidence = "name:2", MatcherVersion = PaymentMatcher.PersonLevelVersion,
+            CreatedAt = t0, UpdatedAt = t0,
+        });
+        db.SaveChanges();
+        return db.PaymentMatches.AsNoTracking().Single(m => m.BankTransactionId == tx.Id);
+    }
+
+    [Fact]
+    public async Task Karar_katmanindaki_hareket_dekontun_adayi_olmaz()
+    {
+        // K3 (tasarım §2.4, §4.4): gecikmeli bağdaştırma karar katmanındaki havaleye bağ kurmaz, öneri dekontun müşterisi olsa da.
+        // taken kümesi onu dışlar, dekont gap'e düşer. Dışlanmasaydı bayat seçim denetimi (K2) iki denemeyi de düşürür, dekont ne
+        // bağlı ne gap'te kalırdı.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, s.LicenseId, 420m, when, "HAVALE ornek_musteri34");
+        var before = AwaitingRow(db, s.LicenseId, tx, s.WpfCustomerId);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 420m, when.AddMinutes(10));
+
+        await Recon(db).ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        (await RowAsync(db, tx)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+        var gap = (await db.PaymentMatchGaps.AsNoTracking().ToListAsync()).Should().ContainSingle("dekont gap'e düşer").Subject;
+        (gap.PaymentId, gap.Reason, gap.ResolvedAt).Should().Be((payment.Id, PaymentMatchGapReason.NoCandidate, (DateTimeOffset?)null));
+    }
+
+    [Fact]
+    public async Task Elle_esleme_karar_katmanindaki_ayni_IBAN_satirini_yeniden_degerlendirmez()
+    {
+        // K4a: elle eşleme bağ öğrenince aynı IBAN'ın kararsız satırları yeniden değerlendirilir; karar katmanındaki satır seçilmez.
+        // Seçilseydi eşleştirici (K1) ona yine dokunmaz, sayaç (K4b) da saymazdı; ama tetiğin kotasında yer kaplardı. Seçim bu
+        // yüzden hareketin hiç okunmamasıyla gösterilir.
+        var reads = new TransactionReads();
+        using var db = NewDb(reads); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var now = DateTimeOffset.UtcNow;
+        var awaiting = Tx(db, s.LicenseId, 100m, now.AddDays(-3), "EFT GELEN", hash);
+        var before = AwaitingRow(db, s.LicenseId, awaiting, other.Id);
+        var target = Tx(db, s.LicenseId, 140m, now.AddHours(-2), "EFT GELEN", hash);
+        reads.Watch = awaiting.Id;
+
+        var result = await Recon(db).ManualMatchAsync(s.LicenseId, target.Id, s.WpfCustomerId, CancellationToken.None);
+
+        result.Should().Be(new ManualMatchResult(ManualMatchIbanOutcome.Learned), "bağ öğrenildi, yeniden değerlendirilen satır yok");
+        (await RowAsync(db, awaiting)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+        reads.Count.Should().Be(0, "aynı IBAN'ın seçimi karar katmanındaki hareketi döndürmez");
+    }
+
+    [Fact]
+    public async Task Karar_katmanindaki_satir_yeniden_degerlendirilmis_sayilmaz()
+    {
+        // K4b: eşleştirici karar katmanındaki satırı dokunmadan döndürür (K1), durumu Proposed kalır. Dönüş sayaçları besler (sayfa
+        // bildirimi, tarama günlüğü): sayılsaydı dokunulmayan soru yeniden değerlendirilmiş görünürdü.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var tx = Tx(db, s.LicenseId, 140m, DateTimeOffset.UtcNow.AddDays(-1), "EFT GELEN", hash);
+        var before = AwaitingRow(db, s.LicenseId, tx, s.WpfCustomerId);
+
+        (await Recon(db).ReevaluateUndecidedAsync(tx, CancellationToken.None)).Should().BeNull();
+
+        (await RowAsync(db, tx)).Should().BeEquivalentTo(before, o => o.Excluding(m => m.BankTransaction));
+    }
+
+    // ---- Kişi düzeyi karşılaştırma, bağlantının çözümü, kaldırma (S2b; tasarım §2.4, §2.5; plan Karar 2, 4, 9) ----
+
+    /// <summary>İki satırlı kişi: IG satırı (açıklamadaki kullanıcı adı) ile shopper'ın bağlı olduğu TT satırı aynı üretilmiş
+    /// <c>GroupId</c>'yi paylaşır (tasarım §2 "Kişi").</summary>
+    private sealed record TwoRowPerson(Seed Tt, Guid IgId);
+
+    private static TwoRowPerson SeedTwoRowPerson(LicenseDbContext db)
+    {
+        var group = $"G-{Guid.NewGuid():N}";
+        var tt = SeedShopper(db, "baska_hesap77");
+        var ttRow = db.WpfCustomerProjections.Single(c => c.Id == tt.WpfCustomerId);
+        ttRow.Platform = "tiktok"; ttRow.GroupId = group;
+        var ig = OtherCustomer(db, tt.LicenseId, "ornek_musteri34");
+        ig.Platform = "instagram"; ig.GroupId = group;
+        db.SaveChanges();
+        return new TwoRowPerson(tt, ig.Id);
+    }
+
+    [Fact]
+    public async Task Kisi_duzeyi_oneri_ayni_kisinin_obur_satirinin_dekontuyla_dogrulanir_ve_IBAN_ogretir()
+    {
+        // Kullanıcı adı kişinin IG satırını gösterir, dekont aynı kişinin TT satırına bağlı shopper'dan gelir. Kişi düzeyi öneri
+        // (sürüm 2) kişiyle karşılaştırılır (tasarım §2.4, plan Karar 4): satır düzeyinde Contradicted sayılır, v2'nin çelişkisi
+        // sahte şişer, gönderen adı açıklamada geçmediği için IBAN da öğrenilmezdi. Bağ dekontun satırına (TT) yazılır.
+        using var db = NewDb(); var a = SeedTwoRowPerson(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, a.Tt.LicenseId, 440m, when, "HAVALE ornek_musteri34", hash);
+        var recon = Recon(db);
+        var proposal = await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        (proposal.ProposedWpfCustomerId, proposal.MatcherVersion).Should().Be(((Guid?)a.IgId, (int?)PaymentMatcher.PersonLevelVersion),
+            "ön koşul: öneri kişinin IG satırı, kişi düzeyi eşleştirici");
+        var payment = Approved(db, a.Tt.LicenseId, a.Tt.ShopperId, 440m, when.AddMinutes(10), payer: "DENEME ALICI");
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await RowAsync(db, tx);
+        (m.Status, m.ActualWpfCustomerId, m.PaymentId).Should().Be(
+            (PaymentMatchStatus.ConfirmedByHuman, (Guid?)a.Tt.WpfCustomerId, (Guid?)payment.Id));
+        m.IbanConfirmedAt.Should().NotBeNull("bağı doğrulayan karar işaretlenir");
+        var bond = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
+        (bond.WpfCustomerId, bond.LearnedFrom, bond.SourceBankTransactionId).Should().Be(
+            (a.Tt.WpfCustomerId, IbanMemorySource.HumanApproval, (Guid?)tx.Id), "bağ dekontun satırında");
+    }
+
+    [Fact]
+    public async Task Satir_duzeyi_oneri_bugunku_gibi_siniflanir()
+    {
+        // (koruma) Aynı kurulum, satırı satır düzeyi eşleştirici yazmış (sürüm boş: S2b'den önce hesaplanmış). Karşılaştırma satır
+        // düzeyinde kalır (plan Karar 4): eski ölçüm bloğu deploy anında anlam değiştirmez. Contradicted, IBAN öğrenilmez.
+        using var db = NewDb(); var a = SeedTwoRowPerson(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, a.Tt.LicenseId, 440m, when, "HAVALE ornek_musteri34", hash);
+        var recon = Recon(db);
+        (await recon.Matcher.MatchAsync(tx, CancellationToken.None)).MatcherVersion = null;
+        await db.SaveChangesAsync();
+        var payment = Approved(db, a.Tt.LicenseId, a.Tt.ShopperId, 440m, when.AddMinutes(10), payer: "DENEME ALICI");
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await RowAsync(db, tx);
+        (m.Status, m.ProposedWpfCustomerId, m.ActualWpfCustomerId, m.PaymentId).Should().Be(
+            (PaymentMatchStatus.Contradicted, (Guid?)a.IgId, (Guid?)a.Tt.WpfCustomerId, (Guid?)payment.Id));
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "satır düzeyinde doğrulanmamış bağ öğretmez");
+    }
+
+    [Theory]
+    [InlineData(2, PaymentMatchStatus.ConfirmedByHuman)]
+    [InlineData(null, PaymentMatchStatus.ManualOnly)]
+    public async Task Elle_esleme_ayni_kisinin_obur_satirina(int? version, PaymentMatchStatus expected)
+    {
+        // Admin havaleyi önerinin (IG) kişisinin öbür satırına (TT) verir: kişi düzeyi satırda öneri doğrulanmıştır. Boş sürümlü
+        // (satır düzeyi) satır bugünkü gibi ManualOnly kalır (koruma; plan Karar 4).
+        using var db = NewDb(); var a = SeedTwoRowPerson(db);
+        var tx = Tx(db, a.Tt.LicenseId, 450m, DateTimeOffset.UtcNow.AddHours(-1), "HAVALE ornek_musteri34");
+        var recon = Recon(db);
+        (await recon.Matcher.MatchAsync(tx, CancellationToken.None)).MatcherVersion = version;
+        await db.SaveChangesAsync();
+
+        await recon.ManualMatchAsync(a.Tt.LicenseId, tx.Id, a.Tt.WpfCustomerId, CancellationToken.None);
+
+        var m = await RowAsync(db, tx);
+        (m.Status, m.ProposedWpfCustomerId, m.ActualWpfCustomerId).Should().Be((expected, (Guid?)a.IgId, (Guid?)a.Tt.WpfCustomerId));
+    }
+
+    [Fact]
+    public async Task Baglantisi_kopyada_kalmis_kisinin_dekontu_asil_kayda_baglanir()
+    {
+        // Birleştirmeden sonra bağlantı kopyada (K → C, geçici değil) kalmış. Bağlantı asıl kayda çözülür (tasarım §2.5): kopya
+        // Id'siyle doğru öneri (C) satır düzeyinde bile Contradicted sayılır, karar da kopyaya yazılırdı.
+        using var db = NewDb(); var c = SeedShopper(db);
+        var k = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = c.LicenseId, Platform = "youtube", Username = "ornek_musteri34",
+            MergedIntoId = c.WpfCustomerId, UpdatedAt = DateTimeOffset.UtcNow };
+        db.WpfCustomerProjections.Add(k);
+        db.ShopperBroadcasterLinks.Single(l => l.ShopperId == c.ShopperId).WpfCustomerId = k.Id;
+        db.SaveChanges();
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, c.LicenseId, 460m, when, "HAVALE ornek_musteri34");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, c.LicenseId, c.ShopperId, 460m, when.AddMinutes(10));
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await RowAsync(db, tx);
+        (m.Status, m.ProposedWpfCustomerId, m.ActualWpfCustomerId, m.PaymentId).Should().Be(
+            (PaymentMatchStatus.ConfirmedByHuman, (Guid?)c.WpfCustomerId, (Guid?)c.WpfCustomerId, (Guid?)payment.Id));
+    }
+
+    [Fact]
+    public async Task Kanitsiz_gecici_kopyadaki_baglantinin_dekontu_bagdastirilmaz()
+    {
+        // Bağlantı birleştirilmiş geçici kopyada (Kp → P) kalmış; shopper'ın doğrulanmış telefonu P'ninki değil: müşteri bilinmez
+        // (tasarım §2.5, plan Karar 9). Onay bağdaştırması "bağ yok" yolundadır: ne dekont bağı ne gap. Kopya Id'siyle bağlansaydı
+        // kanıtsız kişinin dekontu P'nin havalesine bağlanır, okuyucu da onu P'ye çözerdi.
+        using var db = NewDb(); var p = SeedShopper(db);
+        db.WpfCustomerProjections.Single(c => c.Id == p.WpfCustomerId).Phone = TestPhone.NewE164();
+        db.Shoppers.Single(s => s.Id == p.ShopperId).PhoneVerifiedAt = DateTimeOffset.UtcNow;
+        var kp = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = p.LicenseId, Platform = "youtube", Username = "ornek_musteri34",
+            MergedIntoId = p.WpfCustomerId, CreatedByShopper = true, UpdatedAt = DateTimeOffset.UtcNow };
+        db.WpfCustomerProjections.Add(kp);
+        db.ShopperBroadcasterLinks.Single(l => l.ShopperId == p.ShopperId).WpfCustomerId = kp.Id;
+        db.SaveChanges();
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, p.LicenseId, 470m, when, "HAVALE ornek_musteri34");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, p.LicenseId, p.ShopperId, 470m, when.AddMinutes(10));
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await RowAsync(db, tx);
+        (m.PaymentId, m.ActualWpfCustomerId, m.Status).Should().Be(((Guid?)null, (Guid?)null, PaymentMatchStatus.Proposed),
+            "dekont bağdaştırılmaz, öneri yerinde kalır");
+        (await db.PaymentMatchGaps.CountAsync()).Should().Be(0, "müşterisi bilinmeyen dekont gap yazmaz");
+    }
+
+    /// <summary>IBAN destekli öneriyi doğrulamış elle karar (kaldırılmaya hazır); sürümü <paramref name="version"/> (boş: S2b'den
+    /// önce hesaplanmış satır). Açıklama müşterinin kullanıcı adını taşır, hareketin IBAN'ı yoktur: yeniden hesap kullanıcı adından
+    /// önerir, IBAN desteği olmadan.</summary>
+    private static BankTransaction DecidedSupportedRow(LicenseDbContext db, Seed s, int? version)
+    {
+        var at = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, s.LicenseId, 480m, at, "HAVALE ornek_musteri34");
+        db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = tx.Id,
+            Status = PaymentMatchStatus.ConfirmedByHuman, ProposedWpfCustomerId = s.WpfCustomerId, Layer = PaymentMatchLayer.UsernameInDescription,
+            Confidence = PaymentMatcher.BothConfidence, Evidence = "username=ornekmusteri34;iban-memory", SupportedByIbanMemory = true,
+            MatcherVersion = version, ActualWpfCustomerId = s.WpfCustomerId, DecidedAt = at, CreatedAt = at, UpdatedAt = at });
+        db.SaveChanges();
+        return tx;
+    }
+
+    [Fact]
+    public async Task Kaldirma_surumu_korur_yeniden_hesap_2_yazar()
+    {
+        // Kaldırma öneri alanlarını boşaltır; IBAN desteği de öneri alanıdır. Sürüm satırın son hesabının üreticisidir, kaldırma
+        // yeniden hesap değildir, onu bırakır (plan Karar 2). Açık bağlantıda ardından yeniden hesap kişi düzeyi eşleştiriciyle yazar
+        // (2); durdurulmuş bağlantıda koşmaz, satır kaldırmanın yazdığı gibi kalır. Sürüm boşaltılsaydı v2 satırı eski bloğa "öneri
+        // yok" olarak geçerdi. Kaldırmanın kendi kaydı iki dalda da yakalanır: açık bağlantıda yeniden hesap onun üstüne yazar.
+        var writes = new UnmatchWrites();
+        using var db = NewDb(writes);
+        var open = SeedShopper(db); var stopped = SeedShopper(db);
+        foreach (var (lic, status) in new[] { (open.LicenseId, ObifinConnectionStatus.Verified), (stopped.LicenseId, ObifinConnectionStatus.Disabled) })
+            db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = lic, BaseUrl = "https://obifin.invalid",
+                UserCode = $"u-{Guid.NewGuid():N}", Status = status,
+                DisabledAt = status == ObifinConnectionStatus.Disabled ? DateTimeOffset.UtcNow : null,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        var openV2 = DecidedSupportedRow(db, open, PaymentMatcher.PersonLevelVersion);
+        var openLegacy = DecidedSupportedRow(db, open, null);
+        var stoppedV2 = DecidedSupportedRow(db, stopped, PaymentMatcher.PersonLevelVersion);
+        var stoppedLegacy = DecidedSupportedRow(db, stopped, null);
+        var recon = Recon(db);
+
+        var recomputed = new List<bool>();
+        foreach (var tx in new[] { openV2, openLegacy, stoppedV2, stoppedLegacy })
+            recomputed.Add(await recon.UnmatchAsync(tx.LicenseId, tx.Id, CancellationToken.None));
+
+        recomputed.Should().Equal(new[] { true, true, false, false }, "durdurulmuş bağlantıda yeniden hesap koşmaz");
+        writes.Rows.Should().Equal(new[]
+            {
+                new UnmatchWrite(openV2.Id, PaymentMatcher.PersonLevelVersion, false), new UnmatchWrite(openLegacy.Id, null, false),
+                new UnmatchWrite(stoppedV2.Id, PaymentMatcher.PersonLevelVersion, false), new UnmatchWrite(stoppedLegacy.Id, null, false),
+            }, "kaldırmanın kendi kaydı sürümü bırakır, IBAN desteğini boşaltır");
+        foreach (var tx in new[] { openV2, openLegacy })
+        {
+            var row = await RowAsync(db, tx);
+            (row.Status, row.MatcherVersion, row.SupportedByIbanMemory).Should().Be(
+                (PaymentMatchStatus.Proposed, (int?)PaymentMatcher.PersonLevelVersion, false), "açık bağlantı: yeniden hesap 2 yazar");
+        }
+        foreach (var (tx, version) in new[] { (stoppedV2, (int?)PaymentMatcher.PersonLevelVersion), (stoppedLegacy, (int?)null) })
+        {
+            var row = await RowAsync(db, tx);
+            (row.Status, row.ProposedWpfCustomerId, row.MatcherVersion, row.SupportedByIbanMemory).Should().Be(
+                (PaymentMatchStatus.NoProposal, (Guid?)null, version, false), "durdurulmuş bağlantı: satır kaldırmanın yazdığı gibi");
+        }
+    }
+
+    [Fact]
+    public async Task Yeniden_degerlendirme_sayaci_ayni_kisinin_obur_satirina_verilen_oneriyi_sayar()
+    {
+        // Elle eşleme IBAN'ı TT satırına öğretir; aynı IBAN'ın eski kararsız havalesi açıklamasındaki kullanıcı adıyla IG satırına
+        // önerilir (kullanıcı adı ile IBAN aynı kişide: 0.98). Sayaç (sayfa bildirimi) kişiyi sayar (plan Karar 4): satır düzeyinde
+        // bu havale "kullanıcı adı başka müşteriyi gösterdi" diye sayılırdı.
+        using var db = NewDb(); var a = SeedTwoRowPerson(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var now = DateTimeOffset.UtcNow;
+        var recon = Recon(db);
+        var older = await UndecidedAsync(db, recon, a.Tt.LicenseId, hash, now.AddDays(-3), "HAVALE ornek_musteri34");
+        var target = Tx(db, a.Tt.LicenseId, 140m, now.AddHours(-2), "EFT GELEN", hash);
+
+        var result = await recon.ManualMatchAsync(a.Tt.LicenseId, target.Id, a.Tt.WpfCustomerId, CancellationToken.None);
+
+        result.Should().Be(new ManualMatchResult(ManualMatchIbanOutcome.Learned, Reevaluated: 1, ProposedToCustomer: 1));
+        var row = await RowAsync(db, older);
+        (row.Status, row.ProposedWpfCustomerId, row.Confidence, row.MatcherVersion).Should().Be(
+            (PaymentMatchStatus.Proposed, (Guid?)a.IgId, PaymentMatcher.BothConfidence, (int?)PaymentMatcher.PersonLevelVersion));
+    }
+
+    // ---- Gap yalnız dekont içindir (S2b; tasarım §4.4, plan Karar 12): banka onaylı ödeme gap'e dönmez ----
+
+    /// <summary>Banka onayının ödemesi (S3b yazar; S2b'de prod'da yok), tasarım §2.3'ün biçiminde: hareketin tutarı ve anı, adsız,
+    /// PDF'siz. Kaydeder.</summary>
+    private static Payment BankPayment(LicenseDbContext db, Guid lic, BankTransaction tx)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var p = new Payment { Id = Guid.NewGuid(), LicenseId = lic, Source = PaymentSource.Bank, PayerName = "", Amount = tx.Amount,
+            PaidAt = tx.OccurredAt, ReferansNo = $"bank:{tx.Id:N}:1", Status = PaymentStatus.Approved,
+            ApprovalSource = PaymentApprovalSource.BankHuman, BankTransactionId = tx.Id, ApprovedAt = now, CreatedAt = now, UpdatedAt = now };
+        db.Payments.Add(p); db.SaveChanges();
+        return p;
+    }
+
+    [Fact]
+    public async Task Banka_odemesi_gap_e_donmez_dekont_ve_baglanmamis_Id_doner()
+    {
+        // Kaldırma ve hesap reddinin ortak kuralı: banka onaylı ödeme gap'e dönmez. Dekont ve ödeme satırı bulunamayan Id (bağ FK'sız;
+        // banka olduğu bilinmedikçe dekont) bugünkü gibi döner. Dönüş gap'e dönen sayıdır: hesap reddinin GapsReopened'ı onu toplar.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var bank = BankPayment(db, s.LicenseId, Tx(db, s.LicenseId, 490m, when, "EFT GELEN"));
+        var receipt = Approved(db, s.LicenseId, s.ShopperId, 490m, when);
+        var unbound = Guid.NewGuid();
+
+        var returned = await Recon(db).ReturnPaymentsToGapsAsync(s.LicenseId, [bank.Id, receipt.Id, unbound], CancellationToken.None);
+        await db.SaveChangesAsync();
+
+        returned.Should().Be(2);
+        (await db.PaymentMatchGaps.AsNoTracking().Select(g => g.PaymentId).ToListAsync())
+            .Should().BeEquivalentTo(new[] { receipt.Id, unbound }, "banka ödemesine gap açılmaz");
+    }
+
+    [Fact]
+    public async Task Banka_odemesine_bagli_satirin_kaldirilmasi_gap_acmaz()
+    {
+        // Banka onayının satırı (karar katmanında, ödemesi Source = Bank) admin kaldırmasıyla bağını kaybeder, ödeme gap'e düşmez.
+        // Düşseydi banka onayı "havalesi bulunamayan dekont" sayılır, ölçüme girer, gap çözümü onu başka bir havaleye bağlardı.
+        // Satırları S3b yazar; S3b geri alınırsa S3a imajı (S2b'yi içerir) bu veriyle çalışır.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, s.LicenseId, 495m, when, "HAVALE ornek_musteri34");
+        var bank = BankPayment(db, s.LicenseId, tx);
+        db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = tx.Id,
+            Decision = PaymentMatchDecision.Approved, Status = PaymentMatchStatus.ConfirmedByHuman, ProposedWpfCustomerId = s.WpfCustomerId,
+            Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.UsernameConfidence,
+            Evidence = "username=ornekmusteri34", MatcherVersion = PaymentMatcher.PersonLevelVersion, ActualWpfCustomerId = s.WpfCustomerId,
+            DecidedAt = when, PaymentId = bank.Id, CreatedAt = when, UpdatedAt = when });
+        db.SaveChanges();
+
+        await Recon(db).UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+
+        (await RowAsync(db, tx)).PaymentId.Should().BeNull("bağ kalkar");
+        (await db.PaymentMatchGaps.CountAsync()).Should().Be(0, "banka ödemesine gap açılmaz");
+    }
+
+    /// <summary>İzlenen hareketin varlık olarak kaç kez okunduğunu sayar (izlenmeden okuma dahil): bir seçim sorgusu onu döndürdüyse
+    /// okunmuştur. Kilitli satırı eşleştirici yine dokunmadan döndürdüğü için seçim sonuç durumunda görünmez; sayaç görünür kılar.</summary>
+    private sealed class TransactionReads : IMaterializationInterceptor
+    {
+        public Guid? Watch { get; set; }
+        public int Count { get; private set; }
+
+        public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
+        {
+            if (entity is BankTransaction t && t.Id == Watch) Count++;
+            return entity;
+        }
+    }
+
     /// <summary>Kararsız satırın yeniden hesap kaydını düşürür (DB kesintisi benzetimi): satır kayıttan önce de sonra da
     /// kararsız. Elle eşlemenin kendi kaydı kararsız satıra karar yazar, buna uymaz.</summary>
     private sealed class ReevaluationFailure : SaveChangesInterceptor
@@ -1434,6 +1919,26 @@ public sealed class PaymentMatchReconcilerTests
                 Fired++;
                 throw new DbUpdateException("DB kesintisi benzetimi");
             }
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>Kaldırmanın kaydettiği satırın sürümü ve IBAN desteği.</summary>
+    private sealed record UnmatchWrite(Guid TransactionId, int? MatcherVersion, bool SupportedByIbanMemory);
+
+    /// <summary>Kaldırmanın kendi kaydını yakalar (insan kararı kalkan satır: karar anı dolu → boş). Açık bağlantıda yeniden hesap onun
+    /// üstüne yazar; kaldırmanın yazdığı yalnız burada görünür.</summary>
+    private sealed class UnmatchWrites : SaveChangesInterceptor
+    {
+        public List<UnmatchWrite> Rows { get; } = [];
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            foreach (var e in eventData.Context!.ChangeTracker.Entries<PaymentMatch>().Where(e => e.State == EntityState.Modified
+                         && e.Entity.DecidedAt is null
+                         && e.OriginalValues.GetValue<DateTimeOffset?>(nameof(PaymentMatch.DecidedAt)) is not null))
+                Rows.Add(new UnmatchWrite(e.Entity.BankTransactionId, e.Entity.MatcherVersion, e.Entity.SupportedByIbanMemory));
             return base.SavingChangesAsync(eventData, result, cancellationToken);
         }
     }

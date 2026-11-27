@@ -45,6 +45,15 @@ public sealed class ShadowResetConfirmationRequiredException : ObifinValidationE
     public ShadowResetConfirmationRequiredException() : base(ObifinConnectionService.ResetConfirmMessage) { }
 }
 
+/// <summary>Kimlik (kullanıcı kodu ya da adres) değişimi reddedildi: lisansta banka kararı var, karar katmanına girmiş bir eşleşme satırı
+/// ya da banka onaylı bir ödeme (tasarım §13; S2b). İzin (<c>allowShadowReset</c>) bunu açmaz; onay isteyen
+/// <see cref="ShadowResetConfirmationRequiredException"/>'dan türemez, sayfa "kutuyu işaretleyin" demez (S2b planı Karar 13). Hiçbir
+/// şey değiştirilmemiş, hiçbir şey kaydedilmemiştir.</summary>
+public sealed class ShadowResetRefusedException : ObifinValidationException
+{
+    public ShadowResetRefusedException() : base(ObifinConnectionService.ShadowResetRefusedMessage) { }
+}
+
 /// <summary>
 /// Lisans başına Obifin bağlantısı: kimlikleri şifreli saklar (DataProtection, Netgsm kalıbı),
 /// doğrular (`hesaplistesi`), banka bağlantısı ekler (banka kimliği SAKLANMAZ — spec §3) ve
@@ -65,6 +74,9 @@ public sealed class ObifinConnectionService
     public const string BaseUrlMessage = "BaseUrl mutlak bir https adresi olmalı.";
     public const string ResetConfirmMessage =
         "Kimlik değişikliği bu lisansın banka verisini siler (hareketler, eşleşmeler, IBAN hafızası, hesaplar, banka bağlantıları). Onaylamak için kutuyu işaretleyip tekrar kaydedin.";
+    /// <summary>Banka kararı olan lisansta kimlik değişimi (<see cref="ShadowResetRefusedException"/>; tasarım §13). Onay metni
+    /// değildir: kutu bu reddi açmaz.</summary>
+    public const string ShadowResetRefusedMessage = "Bu lisansta banka kararları var; kimlik değişikliği banka verisini sıfırlayamaz. Kimlik değişimi ayrı bir yeniden anahtarlama işlemidir.";
     /// <summary>Onaylı sıfırlamanın eşleşme silmesi yeniden denemede de eşzamanlı bir eşleştirme yazısına takıldı; hiçbir
     /// şey kaydedilmedi.</summary>
     public const string ConcurrentMatchWriteMessage =
@@ -302,6 +314,13 @@ public sealed class ObifinConnectionService
     /// yalnız izin varken yüklenir ve silinen, yüklenen kümedir. Silinecek satır yoksa onay gerekmez (imleç yine
     /// sıfırlanır). İki yol da bir anlık görüntüye bakar: denetimden sonra eklenen satırlar için güvence vermez. Yüklenen bir
     /// eşleşmeye kayıttan önce eşzamanlı yazılırsa silme bir kez yeniden denenir (bkz. <see cref="SaveAsync"/>).</para>
+    /// <para><b>Banka kararı olan lisansta kimlik değişimi reddedilir</b> (tasarım §13; S2b): karar katmanına girmiş bir eşleşme satırı
+    /// ya da banka onaylı bir ödeme varsa <see cref="ShadowResetRefusedException"/> (<see cref="ShadowResetRefusedMessage"/>) izinden
+    /// (<paramref name="allowShadowReset"/>) önce ve bağlantıya dokunmadan fırlatılır. O satırlar finansal karardır: yeniden doldurulan
+    /// hareket yeni Obifin numarasıyla gelip yeniden sorulur ya da otomatik onaylanır, ikinci bir ödeme ve push doğardı. Kimlik değişimi
+    /// ayrı bir yeniden anahtarlama işlemidir. Ret de anlık görüntüdür; silmenin yeniden denemesi kayıttan önce bir kez daha sorar.
+    /// Aynı kimliğe yeni parola reddedilmez; başka silme yolları (hesap reddi, "Kaldır ve sil", hizmet sonu, 180. gün, IBAN talebi)
+    /// reddedilmez (§12).</para>
     /// <para>Yerel banka verisi hizmet sonunda silinmiş bağlantıda (<see cref="ObifinConnection.BankDataPurgedAt"/> dolu) kimlik
     /// değişimi reddedilir (<see cref="PurgedCredentialChangeMessage"/>; karar 21(a)): önce "Kaldır ve sil".</para>
     /// <para><paramref name="actor"/>: gölge veri silmesinin kalıcı imha kaydındaki yapan — yönetici sayfası
@@ -370,6 +389,9 @@ public sealed class ObifinConnectionService
                 throw new ObifinValidationException(PurgedCredentialChangeMessage);
             if (credentialChanged)
             {
+                // Tasarım §13 (S2b): banka kararı olan lisansta sıfırlama reddedilir, izinden önce ve bağlantıya dokunmadan (özet).
+                if (await HasBankDecisionsAsync(licenseId, ct))
+                    throw new ShadowResetRefusedException();
                 // İzin yoksa yalnız "var mı" sorulur (satır yüklenmez): varsa onay istenir, yoksa silinecek bir şey yoktur
                 // (boş küme; imleç yine sıfırlanır). İzin varsa satırlar yüklenir, silinen yüklenen kümedir. Bağlantıya
                 // henüz dokunulmadı.
@@ -402,7 +424,8 @@ public sealed class ObifinConnectionService
     /// <summary>Kimlik kaydını (ve varsa gölge veri silmesini) tek SaveChanges'te yazar. <see cref="PaymentMatch.UpdatedAt"/>
     /// eşzamanlılık jetonudur: yüklenen eşleşmenin DELETE'i <c>WHERE UpdatedAt = özgün</c> taşır. Yüklemeden sonra çekimin
     /// eşleştiricisi, telafi taraması, dekont bağdaştırması ya da admin satıra yazdıysa kayıt DbUpdateConcurrencyException'la
-    /// düşer ve bütün işlem geri alınır. Çakışan girdilerin HEPSİ eşleşmeyse eşleşmelerin jetonu DB'den tazelenir, silme
+    /// düşer ve bütün işlem geri alınır. Çakışan girdilerin HEPSİ eşleşmeyse eşleşmelerin jetonu DB'den tazelenir, banka kararı
+    /// bir kez daha sorulur (varsa izleyici boşaltılır ve <see cref="ShadowResetRefusedException"/>; tasarım §13), silme
     /// BİR kez yeniden denenir; ikinci çakışma admin'e gösterilebilir <see cref="ConcurrentMatchWriteMessage"/> olur ve düşen
     /// sıfırlama izleyiciden atılır (kapsamın sonraki bir SaveChanges'i onu tamamlamasın). Başka bir varlığın çakışması
     /// eskisi gibi yukarı gider.</summary>
@@ -417,6 +440,13 @@ public sealed class ObifinConnectionService
             _log.LogInformation("Obifin kimliği değişti — lisans={LicenseId}: eşleşme silinirken eşzamanlı bir yazıyla çakıştı; "
                 + "jetonlar tazelenip bir kez yeniden deneniyor", licenseId);
             await RefreshMatchVersionsAsync(licenseId, shadow.Matches, ct);
+            // Çakışan yazı bir karar ya da banka onayı olabilir (tasarım §13): yeniden silmeden önce bir kez daha sorulur. Düşen
+            // sıfırlama izleyicide kalmaz (kapsamın sonraki bir kaydı onu tamamlamasın).
+            if (await HasBankDecisionsAsync(licenseId, ct))
+            {
+                _db.ChangeTracker.Clear();
+                throw new ShadowResetRefusedException();
+            }
             RecountMatchDestruction(shadow.Matches);
             try
             {
@@ -837,6 +867,13 @@ public sealed class ObifinConnectionService
         public bool Any => Matches.Count + Transactions.Count + Accounts.Count + Memories.Count + Gaps.Count
             + BankConnections.Count > 0;
     }
+
+    /// <summary>Lisansta banka kararı var mı (tasarım §13; S2b): karar katmanına girmiş (Decision ≠ None) bir eşleşme satırı ya da
+    /// banka onaylı (<see cref="PaymentSource.Bank"/>) bir ödeme. Varsa kimlik değişimi gölge veriyi sıfırlayamaz
+    /// (<see cref="ShadowResetRefusedException"/>). Satır yüklemez.</summary>
+    private async Task<bool> HasBankDecisionsAsync(Guid licenseId, CancellationToken ct)
+        => await _db.PaymentMatches.AnyAsync(m => m.LicenseId == licenseId && m.Decision != PaymentMatchDecision.None, ct)
+            || await _db.Payments.AnyAsync(p => p.LicenseId == licenseId && p.Source == PaymentSource.Bank, ct);
 
     /// <summary>Lisansın silinecek gölge satırı var mı — satır yüklemeden (onaysız yol; <see cref="LoadShadowRowsAsync"/> ile
     /// aynı tablolar).</summary>

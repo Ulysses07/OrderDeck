@@ -90,8 +90,13 @@ public sealed class Payment
     /// <summary>Personel onayında onaylayan personel (<see cref="OperatorUser"/>).</summary>
     public Guid? ApprovedByOperatorId { get; set; }
 
-    /// <summary>Ödemenin müşterisi (<see cref="WpfCustomerProjection"/>'ın asıl kaydı). Boş: bilinmiyor. S2a'da bağdan
-    /// türetilir: göç, müşteri birleştiricisi ve bağ kesen yollar yazar; gönderim S2b'de yazar.</summary>
+    /// <summary>Ödemenin müşterisi (<see cref="WpfCustomerProjection"/>'ın asıl kaydı). Boş: bilinmiyor. Shopper bağlantısından
+    /// türetme kuralıyla yazılır (spec 2026-10-10 §2.3, <c>ShopperCustomerResolver.DeriveAsync</c>): gönderim yazar; yeniden
+    /// bağlamada iki yazıcı (geriye dönük eşleştirme; telefon doğrulaması ve parola sıfırlaması) shopper'ın o lisanstaki
+    /// dekontlarını yeniden yazar; katılma yazmaz. Göç, müşteri birleştiricisi ve bağ kesen yollar (S2a) da yazar. Gönderim ve
+    /// yeniden yazım koşulludur: seçilen bağlantı hâlâ okunan müşterideyse ve shopper silinmemişse yazar, kesilen bağı geri
+    /// yazmaz (S2b planı Karar 11). Okuyucu bu Id'yi kanıt kuralıyla çözer
+    /// (<c>ShopperCustomerResolver.ResolveLinkAsync</c>), <c>CustomerIdResolver</c> ile değil.</summary>
     public Guid? WpfCustomerId { get; set; }
 
     /// <summary>Ödemeyi onaylatan banka hareketi. Hareket silinse de kalır: onay sonradan bununla bulunur.</summary>

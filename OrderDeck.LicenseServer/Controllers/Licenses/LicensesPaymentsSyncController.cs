@@ -102,10 +102,16 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
                 // ShipmentDirective (vendor changed decision in WPF).
                 // ReferansNo not updated — would break the LicenseId+ReferansNo
                 // unique index if client tries to change it.
-                current.PayerName = item.PayerName;
-                current.Amount = item.Amount;
-                current.PaidAt = item.PaidAt;
-                current.PdfHash = item.PdfHash;
+                // Onaylı dekont ve banka satırı (Source = Bank) bu dört alanı korur (tasarım §2.3; S2b): onaylanan kayıt WPF'in
+                // sonraki gönderimiyle değişmez. Banka satırlarını S3b yazar (okuyucu önce); geri alınan banka onayı Rejected
+                // kaldığı için onu durum değil kaynak korur. Yönerge ve UpdatedAt bugünkü gibi (S2b planı Karar 12).
+                if (current.Status != PaymentStatus.Approved && current.Source == PaymentSource.Receipt)
+                {
+                    current.PayerName = item.PayerName;
+                    current.Amount = item.Amount;
+                    current.PaidAt = item.PaidAt;
+                    current.PdfHash = item.PdfHash;
+                }
                 current.ShipmentDirective = directive;
                 current.UpdatedAt = now;
             }

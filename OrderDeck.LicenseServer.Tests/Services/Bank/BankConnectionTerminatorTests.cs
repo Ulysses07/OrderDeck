@@ -1061,6 +1061,86 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Hesap_reddi_TL_disi_havalenin_isaretli_kararini_dogrulama_saymaz()
+    {
+        // TL/TRY dışı hareket doğrulama değildir (tasarım §3). S2b'den önce para birimine bakılmadan işaretlenmiş böyle bir karar
+        // (merge öncesi sorgu (1)'in "Dogrulayan" payı): (a) reddedilen hesaptaysa ve bağın son doğrulamasıysa bağın süresi geri
+        // çekilmez (S2b'den önce öğreten havaleye dönerdi); (b) kalan hesaptaysa kalan doğrulama sayılmaz, bağ imha kaydıyla
+        // silinir (S2b'den önce ona dönerdi).
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var now = DateTimeOffset.UtcNow;
+        var customer = Guid.NewGuid();
+        var hashA = NewHash();
+        var teacherA = DecidedTx(db, lic, 6, hashA, customer, now.AddDays(-20), now.AddDays(-20));
+        DecidedTx(db, lic, 9, hashA, customer, now.AddDays(-5), now.AddDays(-5)).Currency = "USD";
+        var memoryA = new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = customer, IbanHash = hashA,
+            IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch, SourceBankTransactionId = teacherA.Id,
+            CreatedAt = now.AddDays(-20), LastConfirmedAt = now.AddDays(-5) };
+        var hashB = NewHash();
+        DecidedTx(db, lic, 6, hashB, customer, now.AddDays(-10), now.AddDays(-10)).Currency = "USD";
+        DecidedTx(db, lic, 9, hashB, customer, now.AddDays(-3), now.AddDays(-3));
+        var memoryB = new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = customer, IbanHash = hashB,
+            IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch, SourceBankTransactionId = Guid.NewGuid(),
+            CreatedAt = now.AddDays(-200), LastConfirmedAt = now.AddDays(-3) };
+        db.CustomerIbanMemories.AddRange(memoryA, memoryB);
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var account9 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 9);
+
+        var r = await Terminator(db, client).RejectAccountAsync(account9.Id, "yonetici-1", CancellationToken.None);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync(m => m.Id == memoryA.Id)).LastConfirmedAt
+            .Should().Be(now.AddDays(-5), "reddedilen TL dışı karar doğrulama sayılmaz, geri sarma koşmaz");
+        (await db.CustomerIbanMemories.AnyAsync(m => m.Id == memoryB.Id)).Should().BeFalse("kalan TL dışı karar doğrulama sayılmaz");
+        r.Memories.Should().Be(1);
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync(x => x.LicenseId == lic && x.Target == "CustomerIbanMemories"))
+            .Criterion.Should().EndWith("kalan doğrulama yok");
+    }
+
+    [Fact]
+    public async Task Hesap_reddi_banka_odemeli_eslesmeye_gap_acmaz()
+    {
+        // Gap yalnız dekont içindir (tasarım §4.4; S2b): reddedilen hesabın havalesi banka onayıyla ödemeye dönmüşse (Source = Bank;
+        // satırları S3b yazar) eşleşme hareketle silinir, ödeme hareketsiz yaşar (§12) ama gap'e düşmez. GapsReopened yalnız dekontu
+        // sayar (bağdaştırıcının kaldırma kuralı, ortak).
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);   // hesap 9 onaysız
+        var now = DateTimeOffset.UtcNow;
+        BankTransaction Add(long obifinId)
+        {
+            var tx = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = obifinId, ObifinAccountId = 9,
+                BankaKodu = "garanti", Direction = BankTransactionDirection.Incoming, Amount = 20m, Currency = "TL", OccurredAt = now,
+                FetchedAt = now, Description = "havale" };
+            db.BankTransactions.Add(tx);
+            return tx;
+        }
+        var bankTx = Add(910); var receiptTx = Add(911);
+        var bankPayment = new Payment { Id = Guid.NewGuid(), LicenseId = lic, Source = PaymentSource.Bank, PayerName = "", Amount = 20m,
+            PaidAt = now, ReferansNo = $"bank:{bankTx.Id:N}:1", Status = PaymentStatus.Approved,
+            ApprovalSource = PaymentApprovalSource.BankHuman, BankTransactionId = bankTx.Id, ApprovedAt = now, CreatedAt = now,
+            UpdatedAt = now };
+        var receipt = new Payment { Id = Guid.NewGuid(), LicenseId = lic, PayerName = $"p-{Guid.NewGuid():N}", Amount = 20m, PaidAt = now,
+            ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, ApprovedAt = now, CreatedAt = now, UpdatedAt = now };
+        db.Payments.AddRange(bankPayment, receipt);
+        db.PaymentMatches.AddRange(
+            new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = bankTx.Id, PaymentId = bankPayment.Id,
+                Decision = PaymentMatchDecision.Approved, Status = PaymentMatchStatus.ManualOnly, ActualWpfCustomerId = Guid.NewGuid(),
+                DecidedAt = now, CreatedAt = now, UpdatedAt = now },
+            new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = receiptTx.Id, PaymentId = receipt.Id,
+                Status = PaymentMatchStatus.ManualOnly, CreatedAt = now, UpdatedAt = now });
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var account9 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 9);
+
+        var r = await Terminator(db, client).RejectAccountAsync(account9.Id, "yonetici-1", CancellationToken.None);
+
+        (r.Transactions, r.Matches, r.GapsReopened).Should().Be((2, 2, 1));
+        (await db.PaymentMatchGaps.AsNoTracking().Where(g => g.PaymentId == bankPayment.Id || g.PaymentId == receipt.Id)
+                .Select(g => g.PaymentId).ToListAsync())
+            .Should().Equal(new[] { receipt.Id }, "banka ödemesine gap açılmaz");
+        (await db.Payments.AsNoTracking().CountAsync(p => p.Id == bankPayment.Id)).Should().Be(1, "ödeme hareketsiz yaşar (§12)");
+    }
+
+    [Fact]
     public async Task Hesap_reddi_parti_parti_siler_sayilar_ve_kayit_toplami_tutar()
     {
         var counter = new SaveLogInterceptor();

@@ -185,7 +185,7 @@ internal static class BankDecisionsS2aMigrationScenario
 
     private sealed record Stamp(int Status, DateTimeOffset UpdatedAt);
 
-    private sealed record IndexInfo(string KeyColumns, string? Filter, bool IsUnique);
+    internal sealed record IndexInfo(string KeyColumns, string? Filter, bool IsUnique);
 
     private sealed record ForeignKeyInfo(string Parent, string Column, string Referenced, string OnDelete);
 
@@ -592,10 +592,10 @@ internal static class BankDecisionsS2aMigrationScenario
         (await CountAsync(conn, "Payments WHERE LicenseId = @license", ("@license", licenseId))).Should().Be(BulkPaymentCount);
     }
 
-    private static LicenseDbContext NewDb(string connectionString) =>
+    internal static LicenseDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(connectionString).Options);
 
-    private static string NewHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+    internal static string NewHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
 
     private static CustomerIbanMemory Memory(Guid licenseId, Guid customerId, string ibanHash, Guid? sourceId = null) => new()
     {
@@ -716,7 +716,7 @@ internal static class BankDecisionsS2aMigrationScenario
     }
 
     /// <summary>İndeksin anahtar kolonları (key_ordinal sırasıyla, virgülle), süzgeci ve tekilliği; yoksa null.</summary>
-    private static async Task<IndexInfo?> IndexAsync(SqlConnection conn, string table, string name)
+    internal static async Task<IndexInfo?> IndexAsync(SqlConnection conn, string table, string name)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
@@ -758,10 +758,10 @@ internal static class BankDecisionsS2aMigrationScenario
         return error!;
     }
 
-    private static Task<int> CountAsync(SqlConnection conn, string from, params (string Name, object Value)[] parameters) =>
+    internal static Task<int> CountAsync(SqlConnection conn, string from, params (string Name, object Value)[] parameters) =>
         ScalarAsync<int>(conn, $"SELECT COUNT(*) FROM {from}", parameters);
 
-    private static async Task<int> ExecAsync(SqlConnection conn, string sql, params (string Name, object Value)[] parameters)
+    internal static async Task<int> ExecAsync(SqlConnection conn, string sql, params (string Name, object Value)[] parameters)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
@@ -770,7 +770,7 @@ internal static class BankDecisionsS2aMigrationScenario
         return await cmd.ExecuteNonQueryAsync();
     }
 
-    private static async Task<T> ScalarAsync<T>(SqlConnection conn, string sql, params (string Name, object Value)[] parameters)
+    internal static async Task<T> ScalarAsync<T>(SqlConnection conn, string sql, params (string Name, object Value)[] parameters)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;

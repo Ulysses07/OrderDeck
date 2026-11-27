@@ -3,6 +3,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -433,6 +434,401 @@ public sealed class BankSubjectRequestServiceTests
                 RequestId = (Guid?)r.Id, Actor = "admin",
             });
         (await db.BankSubjectRequests.AsNoTracking().SingleAsync()).Outcome.Should().Contain("2 elle eşleme denetim satırının");
+    }
+
+    // ── S2b planı Karar 7 (sahip kararı 27.11.2026): kişi düzeyi eşleştirici bağı kişinin öbür satırına ve kopyadaki bağı asıl
+    //    kayda sayar. Talebin silmesi bu IBAN'dan türeyen öneriyi de boşaltır (kararsız ve kararlı satırda; karar katmanı
+    //    hariç); talep özetin bütün bağlarını siler.
+
+    private static PaymentMatcher Matcher(LicenseDbContext db)
+        => new(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance);
+
+    /// <summary>Ölçümün iki kutusu (güncel kişi düzeyi ve satır düzeyi eski): kararlı satırın önerisini boşaltan silme ikisini de
+    /// değiştirmemeli.</summary>
+    private static async Task<(PaymentMatchSummary Current, PaymentMatchSummary Legacy)> MetricsAsync(LicenseDbContext db, Guid lic)
+    {
+        var metrics = new PaymentMatchMetrics(db, Matcher(db));
+        return (await metrics.ComputeAsync(lic, 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None),
+            await metrics.ComputeAsync(lic, 30, null, CancellationToken.None));
+    }
+
+    private static WpfCustomerProjection Projection(LicenseDbContext db, Guid lic, string platform, string username,
+        string? groupId = null, Guid? mergedInto = null)
+    {
+        var row = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, Platform = platform, Username = username, GroupId = groupId,
+            MergedIntoId = mergedInto, UpdatedAt = DateTimeOffset.UtcNow.AddDays(-5),
+        };
+        db.WpfCustomerProjections.Add(row);
+        return row;
+    }
+
+    /// <summary>Eşleştiricinin hareket için yazdığı satır; silme ayrı istekte koşsun diye izleyici boşaltılır.</summary>
+    private static async Task<PaymentMatch> MatchedAsync(LicenseDbContext db, BankTransaction tx)
+    {
+        var row = await Matcher(db).MatchAsync(tx, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        return row;
+    }
+
+    [Fact]
+    public async Task Silme_kisinin_obur_satirina_dogan_IBAN_destekli_kullanici_adi_onerisini_de_bosaltir()
+    {
+        // (i) Bağ kişinin TT satırında, açıklamadaki kullanıcı adı aynı kişinin IG satırının: v2 önerisi IG, IBAN destekli. Müşteri
+        // kümesi bağların Id'leridir (TT); satır onu göstermediği için yalnız kanıtı boşalır, öneri "IBAN destekli" kalırdı. Talep
+        // özetin bütün hareketlerinin açıklamasını siler: satır yeniden hesaplanamaz, öneri yok kalır.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Projection(db, lic, "instagram", "ornek_musteri34", group);
+        var tt = Projection(db, lic, "tiktok", "baska_hesap77", group);
+        db.CustomerIbanMemories.Add(Memory(lic, tt.Id, iban));
+        var tx = Tx(lic, iban, description: "HAVALE ornek_musteri34");
+        db.BankTransactions.Add(tx);
+        await db.SaveChangesAsync();
+        var before = await MatchedAsync(db, tx);
+        (before.Status, before.ProposedWpfCustomerId, before.Layer, before.SupportedByIbanMemory, before.Evidence).Should().Be(
+            (PaymentMatchStatus.Proposed, (Guid?)ig.Id, PaymentMatchLayer.UsernameInDescription, true,
+                "username=ornekmusteri34;iban-memory"), "ön koşul: öneri bağın kişisinin öbür satırına");
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        var result = await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.SupportedByIbanMemory, m.Evidence).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, false, (string?)null),
+            "bağdan türeyen öneri bağla birlikte gider, kanıtta 'iban-memory' kalmaz");
+        m.MatcherVersion.Should().Be(PaymentMatcher.PersonLevelVersion, "silme yeniden hesap değildir, sürüm kalır");
+        (await db.BankTransactions.AsNoTracking().SingleAsync()).DescriptionPurgedAt.Should().NotBeNull(
+            "açıklama silindi: kullanıcı adı önerisi IBAN'sız yeniden hesaplanamaz");
+        result.Matches.Should().Be(1);
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).ToDictionaryAsync(x => x.Target, x => x.RowCount))
+            .Should().BeEquivalentTo(new Dictionary<string, int>
+            {
+                [BankSubjectScrub.IbanMemoryTarget] = 1, [BankSubjectScrub.TransactionTextTarget] = 1,
+                [BankSubjectScrub.LinkedMatchTarget] = 1, [BankSubjectRequestService.IbanHashTarget] = 1,
+            }, "önerisi boşalan satır kimlik ve kanıt kaydında, bir kez sayılır");
+    }
+
+    [Fact]
+    public async Task Silme_kopyadaki_bagin_asil_kayda_dogurdugu_IBAN_onerisini_de_bosaltir()
+    {
+        // (ii) Bağ birleştirilmiş kopyada (K → D) kalmış: okuyucu onu asıl kayda sayar, v2 önerisi D (IBAN hafızası). Müşteri
+        // kümesi bağın Id'si (K) olduğu için satır yalnız kanıtı boşalan satır sayılır, öneri D'de kalırdı.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var d = Projection(db, lic, "tiktok", "ornek_musteri34");
+        var k = Projection(db, lic, "tiktok", "eski_hesap55", mergedInto: d.Id);
+        db.CustomerIbanMemories.Add(Memory(lic, k.Id, iban));
+        var tx = Tx(lic, iban, description: "EFT GELEN aciklamasiz");
+        db.BankTransactions.Add(tx);
+        await db.SaveChangesAsync();
+        var before = await MatchedAsync(db, tx);
+        (before.ProposedWpfCustomerId, before.Layer, before.SupportedByIbanMemory).Should().Be(
+            ((Guid?)d.Id, PaymentMatchLayer.IbanMemory, true), "ön koşul: kopyadaki bağ asıl kayda sayıldı");
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.SupportedByIbanMemory, m.Evidence).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, false, (string?)null));
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).Select(x => x.Target).ToListAsync())
+            .Should().Contain(BankSubjectScrub.LinkedMatchTarget).And.NotContain(BankSubjectScrub.MatchEvidenceTarget);
+    }
+
+    [Fact]
+    public async Task Silme_IBAN_izi_olmayan_kullanici_adi_onerisinin_yalniz_kanitini_bosaltir()
+    {
+        // (koruma) Öneri bağdan türemiyorsa (katman kullanıcı adı, IBAN desteği yok, kanıtta "iban-memory" yok) bugünkü kural
+        // kalır: gönderen ile önerilen müşteri farklı kişi olabilir (karar 7), yalnız kanıt boşalır.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var proposed = Guid.NewGuid();
+        var tx = Tx(lic, iban);
+        db.BankTransactions.Add(tx);
+        var row = Match(tx, proposed: proposed, evidence: "username=ornekmusteri34", status: PaymentMatchStatus.Proposed);
+        row.Layer = PaymentMatchLayer.UsernameInDescription;
+        row.Confidence = PaymentMatcher.UsernameConfidence;
+        row.MatcherVersion = PaymentMatcher.PersonLevelVersion;
+        db.PaymentMatches.Add(row);
+        db.CustomerIbanMemories.Add(Memory(lic, Guid.NewGuid(), iban));
+        await db.SaveChangesAsync();
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.Evidence).Should().Be((PaymentMatchStatus.Proposed,
+            (Guid?)proposed, PaymentMatchLayer.UsernameInDescription, PaymentMatcher.UsernameConfidence, (string?)null));
+    }
+
+    [Fact]
+    public async Task Silme_IBAN_izini_kanitin_okundugu_halinden_okur_bagi_once_silinmis_oneriyi_de_bosaltir()
+    {
+        // Satır düzeyi eşleştiricinin (S2b öncesi: sürüm boş, IBAN desteği hep false) "kullanıcı adı + IBAN" satırı: öneri X, 0,98,
+        // kanıt "username=…;iban-memory". X'in bağı sonradan saklamayla silinmiş, satır yeniden hesaplanmamış. IBAN izi yalnız
+        // kanıttadır ve kimlik kuralı (özette bağ yok: yalnız kanıt) kanıtı önce boşaltır. İz okunduğu hâlinden okunmasaydı öneri
+        // "IBAN destekli" güveniyle kalırdı; shopper silmesi aynı satırı aynı kuralla boşaltır.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var tx = Tx(lic, iban, description: "HAVALE ornek_musteri34");
+        db.BankTransactions.Add(tx);
+        var row = Match(tx, proposed: Guid.NewGuid(), evidence: "username=ornekmusteri34;iban-memory",
+            status: PaymentMatchStatus.Proposed);
+        row.Layer = PaymentMatchLayer.UsernameInDescription;
+        row.Confidence = PaymentMatcher.BothConfidence;
+        db.PaymentMatches.Add(row);
+        await db.SaveChangesAsync();
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        var result = await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.SupportedByIbanMemory, m.Evidence, m.MatcherVersion).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, false, (string?)null, (int?)null),
+            "bağdan türeyen öneri gider, sürüm kalır");
+        result.Matches.Should().Be(1);
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).Select(x => x.Target).ToListAsync())
+            .Should().Contain(BankSubjectScrub.LinkedMatchTarget).And.NotContain(BankSubjectScrub.MatchEvidenceTarget,
+                "önerisi boşalan satır kimlik ve kanıt kaydında, bir kez");
+    }
+
+    [Theory]
+    // S2b öncesi IBAN hafızası satırı (sürüm boş, IBAN desteği false): iz yalnız katmanda.
+    [InlineData(PaymentMatchLayer.IbanMemory, false)]
+    // v2 IBAN destekli kullanıcı adı önerisi: iz yalnız IBAN desteğinde.
+    [InlineData(PaymentMatchLayer.UsernameInDescription, true)]
+    public async Task Silme_IBAN_izini_katmandan_ve_destekten_de_okur(PaymentMatchLayer layer, bool supported)
+    {
+        // (koruma) Kanıtı saklama 30. günde açıklamayla birlikte boşaltmış satırın izi yalnız katmanda ya da IBAN desteğindedir.
+        // Önerinin bağı sonradan silinmiş, özetin bağı artık başka müşterinin: öneri o bağın müşterisine gitmiyor, boşalır.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var tx = Tx(lic, iban);
+        (tx.Description, tx.CounterpartyName, tx.RawJson) = (null, null, null);
+        tx.DescriptionPurgedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        db.BankTransactions.Add(tx);
+        var version = supported ? PaymentMatcher.PersonLevelVersion : (int?)null;
+        var row = Match(tx, proposed: Guid.NewGuid(), status: PaymentMatchStatus.Proposed);
+        row.Layer = layer;
+        row.Confidence = supported ? PaymentMatcher.BothConfidence : PaymentMatcher.IbanConfidence;
+        row.SupportedByIbanMemory = supported;
+        row.MatcherVersion = version;
+        db.PaymentMatches.Add(row);
+        db.CustomerIbanMemories.Add(Memory(lic, Guid.NewGuid(), iban));
+        await db.SaveChangesAsync();
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.Status, m.ProposedWpfCustomerId, m.Layer, m.Confidence, m.SupportedByIbanMemory, m.MatcherVersion).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, false, version));
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync(x => x.RequestId == r.Id
+            && x.Target == BankSubjectScrub.LinkedMatchTarget)).RowCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Silme_kararinin_musterisi_bosalan_satirin_IBAN_destekli_onerisini_de_bosaltir_karar_olcumde_kalir()
+    {
+        // Kimlik kuralı kararın müşterisi bağın müşterisiyse onu boşaltır; durum, katman, güven, karar anı ve dekont bağı ölçüm
+        // için kalır. Önerisi bağın kişisinin öbür satırına giden IBAN destekli öneriydi (S2b'den önce satır düzeyinde "çelişki,
+        // öneri yok" olurdu): kararın müşterisi gidince havaleyi kişiye bağlayan tek iz o kalırdı, o da boşalır. Öneriden farklı
+        // müşteriye elle verilmiş karar çelişki olarak kalır (kimlik kuralının kararlı kolunun eşi).
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var bonded = Guid.NewGuid(); var sibling = Guid.NewGuid();
+        var linkedTx = Tx(lic, iban); var manualTx = Tx(lic, iban);
+        db.BankTransactions.AddRange(linkedTx, manualTx);
+        var linked = Match(linkedTx, actual: bonded, proposed: sibling, evidence: "username=ornekmusteri34;iban-memory",
+            status: PaymentMatchStatus.ConfirmedByHuman);
+        linked.Layer = PaymentMatchLayer.UsernameInDescription;
+        linked.Confidence = PaymentMatcher.BothConfidence;
+        linked.PaymentId = Guid.NewGuid();
+        var manual = Match(manualTx, actual: bonded, proposed: sibling, evidence: "iban-memory", status: PaymentMatchStatus.ManualOnly);
+        manual.Layer = PaymentMatchLayer.IbanMemory;
+        manual.Confidence = PaymentMatcher.IbanConfidence;
+        foreach (var row in new[] { linked, manual })
+        {
+            row.SupportedByIbanMemory = true;
+            row.MatcherVersion = PaymentMatcher.PersonLevelVersion;
+        }
+        db.PaymentMatches.AddRange(linked, manual);
+        db.CustomerIbanMemories.Add(Memory(lic, bonded, iban));
+        await db.SaveChangesAsync();
+        var before = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        var result = await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var after = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        foreach (var (id, status) in new[] { (linked.Id, PaymentMatchStatus.ConfirmedByHuman), (manual.Id, PaymentMatchStatus.Contradicted) })
+        {
+            var (m, b) = (after[id], before[id]);
+            (m.ActualWpfCustomerId, m.ProposedWpfCustomerId, m.SupportedByIbanMemory, m.Evidence).Should().Be(
+                ((Guid?)null, (Guid?)null, false, (string?)null), "kararın müşterisi de ondan türeyen öneri de gider");
+            (m.Status, m.Layer, m.Confidence, m.DecidedAt, m.PaymentId, m.MatcherVersion).Should().Be(
+                (status, b.Layer, b.Confidence, b.DecidedAt, b.PaymentId, b.MatcherVersion), "ölçüm durumdan ve katmandan okunur");
+        }
+        result.Matches.Should().Be(2);
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync(x => x.RequestId == r.Id
+            && x.Target == BankSubjectScrub.LinkedMatchTarget)).RowCount.Should().Be(2, "satır bir kez sayılır");
+    }
+
+    [Fact]
+    public async Task Silme_kisinin_obur_satirina_kararli_satirin_IBAN_destekli_onerisini_de_bosaltir_karar_ve_olcum_kalir()
+    {
+        // (i) durumunda kişinin dekontu havaleyi IG satırına bağlamış (öneriyi doğrulayan karar). Bağ TT'de: kararın müşterisi
+        // silinmez, kimlik kuralı satırın yalnız kanıtını boşaltır, IG'ye giden IBAN destekli öneri silinen bağın izi olarak
+        // kalırdı. Sahip kararı (27.11.2026) bunu da kapsar: öneri ve IBAN desteği de gider; gerçek müşteri, durum, katman, güven,
+        // karar anı, dekont bağı ve IBAN doğrulama işareti kalır, ölçümün iki kutusu silmeden önceki gibidir. İşaret dolu
+        // tohumlanır: boş olsaydı onu boşaltan bir kural da aynı satırı bırakırdı.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = Projection(db, lic, "instagram", "ornek_musteri34", group);
+        var tt = Projection(db, lic, "tiktok", "baska_hesap77", group);
+        db.CustomerIbanMemories.Add(Memory(lic, tt.Id, iban));
+        var tx = Tx(lic, iban, description: "HAVALE ornek_musteri34");
+        db.BankTransactions.Add(tx);
+        await db.SaveChangesAsync();
+        var row = await Matcher(db).MatchAsync(tx, CancellationToken.None);
+        (row.ProposedWpfCustomerId, row.SupportedByIbanMemory, row.Evidence).Should().Be(
+            ((Guid?)ig.Id, true, "username=ornekmusteri34;iban-memory"), "ön koşul: öneri bağın kişisinin öbür satırına");
+        (row.ActualWpfCustomerId, row.Status, row.DecidedAt, row.PaymentId, row.IbanConfirmedAt) =
+            (ig.Id, PaymentMatchStatus.ConfirmedByHuman, DateTimeOffset.UtcNow.AddHours(-1), Guid.NewGuid(), tx.OccurredAt);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        var metricsBefore = await MetricsAsync(db, lic);
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        var result = await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.ProposedWpfCustomerId, m.SupportedByIbanMemory, m.Evidence).Should().Be(((Guid?)null, false, (string?)null),
+            "silinen bağdan türeyen öneri yaşayan kararda da gider");
+        (m.ActualWpfCustomerId, m.IbanConfirmedAt).Should().Be(((Guid?)ig.Id, (DateTimeOffset?)tx.OccurredAt),
+            "kararı boşaltmayan yol IBAN doğrulama işaretini de bırakır");
+        m.Should().BeEquivalentTo(before, o => o.Excluding(x => x.ProposedWpfCustomerId).Excluding(x => x.SupportedByIbanMemory)
+            .Excluding(x => x.Evidence).Excluding(x => x.UpdatedAt),
+            "gerçek müşteri, durum, karar anı, dekont bağı ve IBAN doğrulama işareti kalır");
+        var metricsAfter = await MetricsAsync(db, lic);
+        metricsAfter.Current.Should().BeEquivalentTo(metricsBefore.Current, "ölçüm durumdan, katmandan ve gerçek müşteriden okunur");
+        metricsAfter.Legacy.Should().BeEquivalentTo(metricsBefore.Legacy);
+        result.Matches.Should().Be(1);
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).ToDictionaryAsync(x => x.Target, x => x.RowCount))
+            .Should().BeEquivalentTo(new Dictionary<string, int>
+            {
+                [BankSubjectScrub.IbanMemoryTarget] = 1, [BankSubjectScrub.TransactionTextTarget] = 1,
+                [BankSubjectScrub.LinkedMatchTarget] = 1, [BankSubjectRequestService.IbanHashTarget] = 1,
+            }, "önerisi boşalan satır kimlik ve kanıt kaydında, bir kez sayılır");
+    }
+
+    [Fact]
+    public async Task Silme_baska_kayda_kararli_satirin_IBAN_destekli_onerisini_de_bosaltir_durum_ve_olcum_kalir()
+    {
+        // Kararlı kol bağı olmayan başka bir kayda verilmiş kararda da aynıdır: v2 satırında dekont öneriyle çelişmiş, S2b öncesi
+        // (sürüm boş) satırda öneriden farklı müşteriye elle eşleme var (öneri o zamanki bağın müşterisine). İkisinde de öneri
+        // gider; çelişki çelişki kalır, elle eşleme + öneri çelişkiye çevrilir (ölçüm ikisini aynı sayar). İki kutu aynı kalır.
+        // Dekontlu kararın IBAN doğrulama işareti (kararın müşterisinin o zamanki bağı) dolu tohumlanır, kalır.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var bonded = Guid.NewGuid(); var other = Guid.NewGuid();
+        var contradictedTx = Tx(lic, iban); var manualTx = Tx(lic, iban);
+        db.BankTransactions.AddRange(contradictedTx, manualTx);
+        var contradicted = Match(contradictedTx, actual: other, proposed: Guid.NewGuid(),
+            evidence: "username=ornekmusteri34;iban-memory", status: PaymentMatchStatus.Contradicted);
+        contradicted.Layer = PaymentMatchLayer.UsernameInDescription;
+        contradicted.Confidence = PaymentMatcher.BothConfidence;
+        contradicted.SupportedByIbanMemory = true;
+        contradicted.MatcherVersion = PaymentMatcher.PersonLevelVersion;
+        contradicted.PaymentId = Guid.NewGuid();
+        contradicted.IbanConfirmedAt = contradictedTx.OccurredAt;
+        var manual = Match(manualTx, actual: other, proposed: Guid.NewGuid(), evidence: "iban-memory",
+            status: PaymentMatchStatus.ManualOnly);
+        manual.Layer = PaymentMatchLayer.IbanMemory;
+        manual.Confidence = PaymentMatcher.IbanConfidence;
+        db.PaymentMatches.AddRange(contradicted, manual);
+        db.CustomerIbanMemories.Add(Memory(lic, bonded, iban));
+        await db.SaveChangesAsync();
+        var before = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        var metricsBefore = await MetricsAsync(db, lic);
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var after = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        foreach (var id in new[] { contradicted.Id, manual.Id })
+        {
+            (after[id].ProposedWpfCustomerId, after[id].SupportedByIbanMemory, after[id].Evidence, after[id].Status).Should().Be(
+                ((Guid?)null, false, (string?)null, PaymentMatchStatus.Contradicted), "öneri gider, öneriden farklı karar çelişkidir");
+            after[id].Should().BeEquivalentTo(before[id], o => o.Excluding(x => x.ProposedWpfCustomerId)
+                .Excluding(x => x.SupportedByIbanMemory).Excluding(x => x.Evidence).Excluding(x => x.Status)
+                .Excluding(x => x.UpdatedAt),
+                "gerçek müşteri, katman, güven, karar anı, dekont bağı, IBAN doğrulama işareti ve sürüm kalır");
+        }
+        after[contradicted.Id].IbanConfirmedAt.Should().Be(contradictedTx.OccurredAt);
+        var metricsAfter = await MetricsAsync(db, lic);
+        metricsAfter.Current.Should().BeEquivalentTo(metricsBefore.Current);
+        metricsAfter.Legacy.Should().BeEquivalentTo(metricsBefore.Legacy, "elle eşleme + öneri de çelişki sayılıyordu");
+    }
+
+    [Fact]
+    public async Task Silme_karar_katmanindaki_satirin_IBAN_destekli_onerisine_dokunmaz()
+    {
+        // (koruma) Kural karar katmanına dokunmaz (S2b planı Karar 7): o sorunun IBAN destekli önerisi yayıncının önündedir, silmede
+        // ne olacağı S3a'da kararlaştırılır. Kimlik kuralı satırın yalnız kanıtını boşaltır (karar 7).
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var askedTx = Tx(lic, iban);
+        db.BankTransactions.Add(askedTx);
+        var asked = Match(askedTx, proposed: Guid.NewGuid(), evidence: "iban-memory", status: PaymentMatchStatus.Proposed);
+        asked.Layer = PaymentMatchLayer.IbanMemory;
+        asked.Confidence = PaymentMatcher.IbanConfidence;
+        asked.Decision = PaymentMatchDecision.Awaiting;
+        asked.SupportedByIbanMemory = true;
+        asked.MatcherVersion = PaymentMatcher.PersonLevelVersion;
+        db.PaymentMatches.Add(asked);
+        db.CustomerIbanMemories.Add(Memory(lic, Guid.NewGuid(), iban));
+        await db.SaveChangesAsync();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        var after = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        after.Evidence.Should().BeNull();
+        after.Should().BeEquivalentTo(before, o => o.Excluding(m => m.Evidence).Excluding(m => m.UpdatedAt), "yalnız kanıt boşalır");
+    }
+
+    [Fact]
+    public async Task Silme_baska_ozetin_hareketinin_IBAN_onerisine_dokunmaz()
+    {
+        // (koruma) Kural yalnız talebin özetinden gelen hareketlerin satırlarına: başka IBAN'ın bağı ve ondan doğan öneri kalır,
+        // satıra yazılmaz.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban(); var otherIban = BankHasherTests.TestIban();
+        var stranger = Guid.NewGuid();
+        var otherTx = Tx(lic, otherIban);
+        db.BankTransactions.AddRange(Tx(lic, iban), otherTx);
+        var row = Match(otherTx, proposed: stranger, evidence: "iban-memory", status: PaymentMatchStatus.Proposed);
+        row.Layer = PaymentMatchLayer.IbanMemory;
+        row.Confidence = PaymentMatcher.IbanConfidence;
+        row.SupportedByIbanMemory = true;
+        db.PaymentMatches.Add(row);
+        db.CustomerIbanMemories.AddRange(Memory(lic, Guid.NewGuid(), iban), Memory(lic, stranger, otherIban));
+        await db.SaveChangesAsync();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).Should().BeEquivalentTo(before);
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).WpfCustomerId.Should().Be(stranger);
+        (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == otherTx.Id)).Description.Should().NotBeNull();
     }
 
     [Fact]

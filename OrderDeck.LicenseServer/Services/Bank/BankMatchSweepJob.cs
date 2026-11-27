@@ -21,9 +21,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (<see cref="PaymentMatchReconciler"/>, "IBAN hafızası eski havalelere de uygulanır"); bu aşama telafisidir: o yeniden
 /// değerlendirme düştüyse, bağ dekont onayıyla öğrenildiyse ya da karar bu kuraldan önce verildiyse (ilk koşu geriye dönük
 /// doldurmayı kendisi yapar). Aynı lisans kümesi; pencere <see cref="PaymentMatchReconciler.ReevaluationSince"/> (eşleşmeyen
-/// açıklamanın saklama sınırından bir gün içeride). Satırı olan, kararsız (öneri ya da öneri yok, karar anı ve dekont boş),
-/// açıklaması silinmemiş, IBAN özetli gelen hareketlerden şunlar: (a) özetinin AYNI lisansta bağı var, satır bağdan ÖNCE
-/// hesaplanmış ve bağın özeti lisansta özeti geçerli (<see cref="BankTransaction.CounterpartyIbanHashValid"/>) bir harekette
+/// açıklamanın saklama sınırından bir gün içeride). Satırı olan, kararsız (öneri ya da öneri yok, karar anı ve dekont boş, karar
+/// katmanında değil), açıklaması silinmemiş, IBAN özetli gelen hareketlerden şunlar: (a) özetinin AYNI lisansta bağı var, satır
+/// bağdan ÖNCE hesaplanmış ve bağın özeti lisansta özeti geçerli (<see cref="BankTransaction.CounterpartyIbanHashValid"/>) bir harekette
 /// görünüyor — yoksa eski maskeli özetten öğrenilmiş bir bağ aynı maskeyi taşıyan başka göndericilere yayılırdı; ya da (b)
 /// kanıtında "iban-memory" geçiyor ve aynı lisansta bağ artık yok (kaldırmanın anlık geri alması koşamadı). En yeniden
 /// başlanarak koşu başına en çok <see cref="MaxReevaluationsPerRun"/>. Hesaplandıktan sonra dışlama listesine giren kodlu
@@ -34,6 +34,12 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// bağsız "iban-memory" taşımaz. Bilinen sınır: bağdan sonra hesaplanmış ama o an müşteri projeksiyonu henüz gelmemiş satırı
 /// yakalamaz. Performans: (LicenseId, CounterpartyIbanHash) indeksi yok; (a)'nın iç içe EXISTS'i etkin lisansların hareketlerini
 /// tarar. Bugünkü hacimde kabul edilebilir; büyürse filtreli indeks ayrı bir göçle eklenir.</para>
+/// <para><b>Karar katmanı kilidi (tasarım §2.4).</b> <see cref="PaymentMatch.Decision"/> ≠ None satır bağdan önce hesaplanmış olsa
+/// da 2. aşamada seçilmez: önerisi yayıncının önündeki sorudur. Eşleştirici ona yine dokunmazdı (aynı kilit); seçim onu baştan eler,
+/// yoksa bağdan eski kalan satır her koşuda yeniden seçilip kotada yer kaplardı. Kilidin öbür yerleri
+/// <see cref="PaymentMatchReconciler"/>'dadır (sınıf özeti, "Karar katmanı kilidi"). S2b'de prod'da böyle satır yoktur (okuyucu
+/// önce); tasarım §3'ün <c>Unmatched → Awaiting</c> yeniden değerlendirmesi S3a'da ayrı yoldan gelir. 1. aşama satırı olan hareketi
+/// zaten seçmez.</para>
 /// <para>Lisans süzgeci sorguyu (LicenseId, Direction, OccurredAt) indeksinde lisans başına aramaya çevirir (bağlantısız,
 /// durdurulmuş ya da yerel verisi silinmiş lisansın hareketi de gelmez). Tampon süre: uzun bir çekim hareketi kaydedip henüz sink'e vermemişken (çekim :05'te
 /// başlar, tarama :07'de) tarama aynı hareketi kapmasın; sink bir hareketi çekimden saniyeler sonra işler.</para>
@@ -148,6 +154,8 @@ public sealed class BankMatchSweepJob
                                  && t.DescriptionPurgedAt == null && t.CounterpartyIbanHash != null
                                  && (m.Status == PaymentMatchStatus.Proposed || m.Status == PaymentMatchStatus.NoProposal)
                                  && m.DecidedAt == null && m.PaymentId == null
+                                 // Karar katmanındaki satır seçilmez (sınıf özeti).
+                                 && m.Decision == PaymentMatchDecision.None
                                  && !(m.Evidence != null && m.Evidence.StartsWith(ExcludedEvidencePrefix))
                                  && (_db.CustomerIbanMemories.Any(b => b.LicenseId == t.LicenseId && b.IbanHash == t.CounterpartyIbanHash
                                          && m.UpdatedAt < b.CreatedAt

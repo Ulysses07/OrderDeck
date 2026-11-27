@@ -47,6 +47,7 @@ public sealed class BankQuestionsDeployTests
         readme.Should().Contain("bank-questions enable --license", "açılışın komutu yazılı olmalı")
             .And.Contain("bank-questions disable --license", "kill switch komutu yazılı olmalı")
             .And.Contain("Banka Faz 2 S2a tabanı", "geri alma bölümünde S2a bloğu olmalı")
+            .And.Contain("Banka Faz 2 S2b tabanı", "geri alma bölümünde S2b bloğu olmalı")
             .And.Contain(
                 "`SELECT DISTINCT SubjectId FROM DataDestructionRecords WHERE [Trigger] = 'shopper-purge' AND OccurredAt >= '<geri alma anı>'`",
                 "pencerede silinenler imha kaydından listelenmeli");

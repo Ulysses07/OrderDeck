@@ -331,6 +331,47 @@ public class PanelPaymentsControllerTests : IClassFixture<ApiFactory>
         (await ReadPaymentAsync(rejected)).RejectedByCustomerId.Should().Be(customerId);
     }
 
+    // ─── Banka satırı (S2b; tasarım §2.3): satırları S3b yazar, okuyucu önce ────
+
+    /// <summary>Banka onayının ödemesi, tasarım §2.3'ün biçiminde (adsız, PDF'siz, referansı <c>bank:</c>). Değerler üretilir.</summary>
+    private async Task<Guid> SeedBankPaymentAsync(Guid licenseId, PaymentStatus status)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var txId = Guid.NewGuid();
+        var p = new Payment
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, Source = PaymentSource.Bank, PayerName = "", Amount = 250.50m,
+            PaidAt = now.AddHours(-1), ReferansNo = $"bank:{txId:N}:1", BankTransactionId = txId, Status = status,
+            ApprovalSource = PaymentApprovalSource.BankHuman, ApprovedAt = status == PaymentStatus.Approved ? now : null,
+            RejectedAt = status == PaymentStatus.Rejected ? now : null, CreatedAt = now, UpdatedAt = now,
+        };
+        db.Payments.Add(p);
+        await db.SaveChangesAsync();
+        return p.Id;
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("approved")]
+    [InlineData("rejected")]
+    public async Task Liste_banka_satirini_dondurmez(string? status)
+    {
+        // Banka onayları yalnız havale listesinde görünür (tasarım §2.3, §7): dekont listesine düşseydi adsız satırlar dekontları
+        // sayfadan iter, personelin süzgecini aşardı. Geri alınan banka onayı Rejected kalır (§2.3); durumsuz istek hepsini ister.
+        var (client, _, licenseId) = await CreateAuthedCustomerWithLicenseAsync();
+        var state = status is null ? PaymentStatus.Approved : Enum.Parse<PaymentStatus>(status, ignoreCase: true);
+        var receipt = await SeedPaymentAsync(licenseId, state);
+        var bank = await SeedBankPaymentAsync(licenseId, state);
+
+        var resp = await client.GetAsync(status is null ? "/api/panel/payments" : $"/api/panel/payments?status={status}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<List<PaymentDto>>())!.Select(p => p.Id)
+            .Should().Contain(receipt).And.NotContain(bank, "banka satırı dekont listesinde yok");
+    }
+
     // NOTE: Duplicate referansNo protection (unique index on LicenseId+ReferansNo)
     // configured in LicenseDbContext.OnModelCreating but cannot be verified against
     // the EF Core InMemory provider, which ignores unique constraints. The migration

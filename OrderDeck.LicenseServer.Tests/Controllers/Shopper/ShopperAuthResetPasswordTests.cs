@@ -183,6 +183,98 @@ public class ShopperAuthResetPasswordTests : IClassFixture<ApiFactory>
         link!.WpfCustomerId.Should().Be(projectionId);
     }
 
+    /// <summary>Banka havalesi onayı S2b (spec 2026-10-10 §2.3, S2b planı Karar 10): parola sıfırlaması bekleyen bağlantıyı
+    /// bağlayınca, bağ kaydedildikten SONRA shopper'ın o lisanstaki dekontu türetme kuralıyla müşterisini alır; UpdatedAt
+    /// (payments/since imleci) ilerlemez. Kurgu bir üstteki testinki, artı bağ beklerken gönderilmiş müşterisiz dekont.</summary>
+    [Fact]
+    public async Task Parola_sifirlama_baglanan_lisansin_dekontlarini_doldurur()
+    {
+        var phone = TestPhone.NewE164();
+        var shopperId = Guid.NewGuid();
+        var licenseId = Guid.NewGuid();
+        var projectionId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var username = $"u-{Guid.NewGuid():N}";
+        var at = DateTimeOffset.UtcNow.AddDays(-1);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var hasher = scope.ServiceProvider.GetRequiredService<PasswordHasher>();
+            var now = DateTimeOffset.UtcNow;
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                Email = $"reset-{Guid.NewGuid():N}@x.test",
+                Name = "Reset Broadcaster",
+                PasswordHash = $"hash-{Guid.NewGuid():N}",
+                CreatedAt = now,
+            };
+            db.Customers.Add(customer);
+            db.Licenses.Add(new License
+            {
+                Id = licenseId,
+                CustomerId = customer.Id,
+                LicenseKey = $"license-{Guid.NewGuid():N}",
+                SkuCode = "STD",
+                IssuedAt = now,
+                ExpiresAt = now.AddYears(1),
+            });
+            db.Shoppers.Add(new OrderDeck.LicenseServer.Domain.Shopper
+            {
+                Id = shopperId,
+                FullName = "Reset Link Tester",
+                Phone = phone,
+                PasswordHash = hasher.Hash($"old-{Guid.NewGuid():N}"),
+                Address = "Addr",
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = projectionId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = username,
+                Phone = phone,
+                UpdatedAt = now,
+            });
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = Guid.NewGuid(),
+                ShopperId = shopperId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = username,
+                JoinedAt = now,
+            });
+            db.Payments.Add(new Payment
+            {
+                Id = paymentId,
+                LicenseId = licenseId,
+                ShopperId = shopperId,
+                ReferansNo = $"r-{Guid.NewGuid():N}",
+                Amount = 10m,
+                PaidAt = at,
+                CreatedAt = at,
+                UpdatedAt = at,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var client = _factory.CreateClient();
+        var code = await RequestCodeAsync(client, phone);
+        var reset = await client.PostAsJsonAsync("/api/v1/shopper/auth/reset-password",
+            new ResetPasswordRequest(phone, code, $"new-{Guid.NewGuid():N}"));
+        reset.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var payment = await verifyDb.Payments.FindAsync(paymentId);
+        payment!.WpfCustomerId.Should().Be(projectionId);
+        payment.UpdatedAt.Should().Be(at);
+    }
+
     [Fact]
     public async Task ResetPassword_wrong_code_returns_400()
     {
