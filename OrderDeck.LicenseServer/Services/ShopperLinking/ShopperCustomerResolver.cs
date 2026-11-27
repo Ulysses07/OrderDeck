@@ -44,7 +44,10 @@ namespace OrderDeck.LicenseServer.Services.ShopperLinking;
 /// kesen ardından aynı dekonta yazarsa kilitlenme olur, kurban çoğunlukla az günlük yazmış olan yazımdır. Yeniden yazımda
 /// <see cref="TryRederivePaymentsAsync"/>, denetimde gönderimin 12b adımı yakalar; dekont kesenin değerinde kalır. Plan
 /// ilişkisiz EXISTS'i dekontun kilidinden önce sınarsa, kesen aynı kayıtta dekontu bağlantıdan ya da shopper'dan önce
-/// yazdığında (milisaniye altı) yazım kesmeyi görmeden dekontun kilidinde bekler ve commit'ten sonra yazar.</para>
+/// yazdığında (milisaniye altı) yazım kesmeyi görmeden dekontun kilidinde bekler ve commit'ten sonra yazar. Bugünkü kesenler
+/// (silme, <c>ReproveLinksAsync</c>, birleştirme işi) tek SaveChanges'te dekontu bağlantıdan ve shopper'dan önce yazar (EF
+/// komutları tablo adına göre sıralar, bu tablolar arasında yabancı anahtar yok); <c>DeleteMe</c> dekont yazmaz. Kilitlenme dalı
+/// ancak bu sırayı tersine çeviren yeni bir kesenle doğar; bugünkü kesenlerle kalan pencere ikinci daldır.</para>
 /// </summary>
 public static class ShopperCustomerResolver
 {
