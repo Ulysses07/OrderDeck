@@ -52,6 +52,20 @@ public sealed class License
     /// </summary>
     public DateTimeOffset? PersonBalancePoolSince { get; set; }
 
+    // Banka havalesi onayı (spec 2026-10-10 §2.7): üç alanı da yalnız `bank-questions` CLI'ı yazar. İki bayrak DEFAULT 0,
+    // Since boş: S2a öncesi imaj bu kolonları tanımaz, açtığı lisans kapalı doğar.
+
+    /// <summary>Havale soruları açık mı. Yalnız <c>bank-questions</c> CLI'ı yazar (spec §2.7).</summary>
+    public bool BankQuestionsEnabled { get; set; }
+
+    /// <summary>Otomatik onay açık mı; yalnız sorular açıkken etkili. Yalnız <c>bank-questions</c> CLI'ı yazar
+    /// (spec §2.7; komutu S6).</summary>
+    public bool BankAutoApproveEnabled { get; set; }
+
+    /// <summary>Soruların İLK açılış anı: bundan eski hareketler gölgede kalır. Kapatıp açmak sıfırlamaz. Yalnız
+    /// <c>bank-questions</c> CLI'ı yazar (spec §2.7).</summary>
+    public DateTimeOffset? BankQuestionsSince { get; set; }
+
     // Protokolsüz satış isteği izi bu satırda DEĞİL, SalesLegacyTrace'te:
     // her UPDATE RowVersion'ı ilerletir ve izlenen License'ı kaydeden yollar
     // (payment-account, shopper-code) o çakışmayı yakalamıyor.

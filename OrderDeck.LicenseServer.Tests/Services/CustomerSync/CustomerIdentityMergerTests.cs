@@ -348,6 +348,7 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
             Id = balanceId, LicenseId = license.Id, WpfCustomerId = same.Id,
             Balance = 70m, UpdatedAt = DateTimeOffset.UtcNow,
         });
+        db.Payments.Add(Receipt(license.Id, same.Id, PaymentStatus.Pending, DateTimeOffset.UtcNow));
         await db.SaveChangesAsync();
 
         var merger = scope.ServiceProvider.GetRequiredService<CustomerIdentityMerger>();
@@ -362,9 +363,237 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         counts.IbanMemories.Should().Be(0);
         counts.PaymentMatches.Should().Be(0);
         counts.WaConversations.Should().Be(0);
+        counts.Payments.Should().Be(0);
         (await db.Orders.SingleAsync(o => o.Id == orderId)).SyncVersion.Should().Be(3, "dokunulmamalı — kopya=asıl yozlaşmış çağrı");
         var balance = await db.CustomerBalances.SingleAsync(b => b.Id == balanceId);
         balance.WpfCustomerId.Should().Be(same.Id);
         balance.Balance.Should().Be(70m, "guard olmasaydı bu satır kendi üzerine toplanıp silinirdi");
+    }
+
+    // ── Banka havalesi onayı S2a (spec 2026-10-10 §9): çift IBAN bağı ve dekontun müşterisi ──
+    // InMemory tekil indeks uygulamaz: aynı özetin iki müşteride bağı burada tohumlanabilir (gerçek indeksle, S3b
+    // sonrası şemada: CustomerIdentityMergerRelationalTests).
+
+    private async Task<(License License, WpfCustomerProjection Canonical, WpfCustomerProjection Copy)> SeedPairAsync(
+        LicenseDbContext db)
+    {
+        var (_, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var license = await SeedLicenseAsync(db, customerId);
+        var canonical = NewProjection(license.Id, "ayse");
+        var copy = NewProjection(license.Id, "Ayse");
+        db.WpfCustomerProjections.AddRange(canonical, copy);
+        await db.SaveChangesAsync();
+        return (license, canonical, copy);
+    }
+
+    private static string NewIbanHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    /// <summary>Maske ve öğreten havale satıra özgü: kalan satırın kendi değerlerini koruduğu ancak böyle görülür.</summary>
+    private static CustomerIbanMemory Bond(
+        Guid licenseId, Guid customerId, string ibanHash, DateTimeOffset createdAt,
+        IbanMemorySource learnedFrom = IbanMemorySource.HumanApproval, DateTimeOffset? lastConfirmedAt = null) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = customerId, IbanHash = ibanHash, IbanMasked = $"m-{Guid.NewGuid():N}",
+        LearnedFrom = learnedFrom, SourceBankTransactionId = Guid.NewGuid(), CreatedAt = createdAt, LastConfirmedAt = lastConfirmedAt,
+    };
+
+    private static Payment Receipt(Guid licenseId, Guid customerId, PaymentStatus status, DateTimeOffset at) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = customerId, ReferansNo = $"r-{Guid.NewGuid():N}",
+        Amount = 10m, PaidAt = at, Status = status, CreatedAt = at, UpdatedAt = at,
+    };
+
+    /// <summary>Tohumu kaydeder, izleyiciyi boşaltıp birleştirir. Boş izleyici üretimdeki gibidir: birleştirici bağları ve
+    /// dekontları kendi okumalı, tohumun izlenen satırlarına dayanmamalı.</summary>
+    private static async Task<CustomerIdentityMerger.RepointCounts> SaveAndMergeAsync(
+        LicenseDbContext db, Guid licenseId, Guid copyId, Guid canonicalId)
+    {
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var counts = await new CustomerIdentityMerger(db).RepointReferencesAsync(licenseId, copyId, canonicalId, default);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        return counts;
+    }
+
+    /// <summary>Asıl kayıttaki bağ daha eski: tek kayıtta da ilk öğrenilen satır kalır, ikinci öğrenme onu tazeler.</summary>
+    [Theory]
+    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm)]   // kopyanın "Evet"i kalana geçer
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm)]
+    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm, IbanMemorySource.BankConfirm)]
+    [InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval)] // BankConfirm yok: kalanınki
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.ManualMatch, IbanMemorySource.ManualMatch)]   // ters yön: düşenin kaynağı kalana geçmez
+    public async Task Iki_kayitta_ayni_IBAN_tek_satira_iner(
+        IbanMemorySource copySource, IbanMemorySource canonicalSource, IbanMemorySource expectedSource)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (license, canonical, copy) = await SeedPairAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var hash = NewIbanHash();
+        var canonicalBond = Bond(license.Id, canonical.Id, hash, t0, canonicalSource);
+        var copyBond = Bond(license.Id, copy.Id, hash, t0.AddDays(1), copySource);
+        db.CustomerIbanMemories.AddRange(canonicalBond, copyBond);
+
+        var counts = await SaveAndMergeAsync(db, license.Id, copy.Id, canonical.Id);
+
+        counts.IbanMemories.Should().Be(1, "silinen ikiz de taşınan bağ sayılır");
+        var kept = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == license.Id);
+        kept.Id.Should().Be(canonicalBond.Id);
+        kept.WpfCustomerId.Should().Be(canonical.Id);
+        kept.LearnedFrom.Should().Be(expectedSource);
+        (kept.CreatedAt, kept.SourceBankTransactionId, kept.IbanMasked).Should()
+            .Be((t0, canonicalBond.SourceBankTransactionId, canonicalBond.IbanMasked),
+                "öğreten havale, öğrenme anı ve maske değişmez (tasarım §2.5)");
+        (await db.DataDestructionRecords.AnyAsync(r => r.LicenseId == license.Id)).Should()
+            .BeFalse("bağ kalan satırda yaşar: tekilleştirme imha değil");
+    }
+
+    /// <summary>Asıl kaydın satırı yalnız orada durduğu için kazanmaz: kural iki satıra da aynı uygulanır. Kaynak kalanı
+    /// seçmez, yalnız kalanın kaynağını BankConfirm'e yükseltir.</summary>
+    [Theory]
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval, -1, false, true, IbanMemorySource.HumanApproval)] // kopyanınki daha eski: Id'si büyük olsa da kalır
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval, 0, true, true, IbanMemorySource.HumanApproval)]   // aynı an: küçük Id kopyanınki
+    [InlineData(IbanMemorySource.HumanApproval, IbanMemorySource.HumanApproval, 0, false, false, IbanMemorySource.HumanApproval)] // aynı an: küçük Id asıl kayıttaki
+    [InlineData(IbanMemorySource.ManualMatch, IbanMemorySource.BankConfirm, -1, false, true, IbanMemorySource.BankConfirm)]       // daha yeni BankConfirm düşer, kaynağı eskiye geçer
+    [InlineData(IbanMemorySource.BankConfirm, IbanMemorySource.ManualMatch, -1, false, true, IbanMemorySource.BankConfirm)]       // eski BankConfirm, yeni ManualMatch'e karşı kalır
+    public async Task Kalan_bag_yasa_sonra_Id_ye_gore_secilir_BankConfirm_kalana_gecer(
+        IbanMemorySource copySource, IbanMemorySource canonicalSource, int copyDayOffset, bool copyHasSmallerId, bool copyKept,
+        IbanMemorySource expectedSource)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (license, canonical, copy) = await SeedPairAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var hash = NewIbanHash();
+        var ids = new[] { Guid.NewGuid(), Guid.NewGuid() }.OrderBy(i => i.ToString("N"), StringComparer.Ordinal).ToArray();
+        var canonicalBond = Bond(license.Id, canonical.Id, hash, t0, canonicalSource);
+        var copyBond = Bond(license.Id, copy.Id, hash, t0.AddDays(copyDayOffset), copySource);
+        canonicalBond.Id = ids[copyHasSmallerId ? 1 : 0];
+        copyBond.Id = ids[copyHasSmallerId ? 0 : 1];
+        db.CustomerIbanMemories.AddRange(canonicalBond, copyBond);
+
+        await SaveAndMergeAsync(db, license.Id, copy.Id, canonical.Id);
+
+        var expected = copyKept ? copyBond : canonicalBond;
+        var kept = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == license.Id);
+        kept.Id.Should().Be(expected.Id);
+        kept.WpfCustomerId.Should().Be(canonical.Id);
+        kept.LearnedFrom.Should().Be(expectedSource);
+        (kept.CreatedAt, kept.SourceBankTransactionId, kept.IbanMasked).Should()
+            .Be((expected.CreatedAt, expected.SourceBankTransactionId, expected.IbanMasked));
+    }
+
+    [Theory]
+    [InlineData(10, 2, 2)]         // düşenin doğrulaması daha yeni
+    [InlineData(2, 10, 2)]         // kalanınki daha yeni
+    [InlineData(null, 2, 2)]       // kalan P1 öncesi (boş): başlangıcı 30 günlük CreatedAt'ti
+    [InlineData(null, 40, null)]   // düşeninki kalanın başlangıcından (CreatedAt) eski
+    public async Task Son_dogrulama_ikisinin_en_yenisi_olur(int? keptDaysAgo, int droppedDaysAgo, int? expectedDaysAgo)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (license, canonical, copy) = await SeedPairAsync(db);
+        var now = DateTimeOffset.UtcNow;
+        DateTimeOffset? DaysAgo(int? days) => days is { } d ? now.AddDays(-d) : null;
+        var hash = NewIbanHash();
+        var kept = Bond(license.Id, canonical.Id, hash, now.AddDays(-30), lastConfirmedAt: DaysAgo(keptDaysAgo));
+        db.CustomerIbanMemories.AddRange(kept,
+            Bond(license.Id, copy.Id, hash, now.AddDays(-29), lastConfirmedAt: DaysAgo(droppedDaysAgo)));
+
+        await SaveAndMergeAsync(db, license.Id, copy.Id, canonical.Id);
+
+        var row = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == license.Id);
+        row.Id.Should().Be(kept.Id);
+        row.LastConfirmedAt.Should().Be(DaysAgo(expectedDaysAgo));
+        row.CreatedAt.Should().Be(now.AddDays(-30));
+    }
+
+    [Fact]
+    public async Task Dusenin_bos_son_dogrulamasi_kalani_degistirmez()
+    {
+        // Düşen P1 öncesi (doğrulaması boş) ve daha yeni öğrenilmiş: öğrenme anı doğrulama sayılmaz. Hata yönü erken silme.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (license, canonical, copy) = await SeedPairAsync(db);
+        var now = DateTimeOffset.UtcNow;
+        var hash = NewIbanHash();
+        var kept = Bond(license.Id, canonical.Id, hash, now.AddDays(-30), lastConfirmedAt: now.AddDays(-10));
+        db.CustomerIbanMemories.AddRange(kept, Bond(license.Id, copy.Id, hash, now.AddDays(-1)));
+
+        await SaveAndMergeAsync(db, license.Id, copy.Id, canonical.Id);
+
+        var row = await db.CustomerIbanMemories.SingleAsync(m => m.LicenseId == license.Id);
+        row.Id.Should().Be(kept.Id);
+        row.LastConfirmedAt.Should().Be(now.AddDays(-10));
+    }
+
+    [Fact]
+    public async Task Farkli_IBAN_tasinir_baska_lisansin_satirina_dokunulmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (license, canonical, copy) = await SeedPairAsync(db);
+        var (otherLicense, _, _) = await SeedPairAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var (hashA, hashB) = (NewIbanHash(), NewIbanHash());
+        var canonicalBond = Bond(license.Id, canonical.Id, hashA, t0);
+        var copyBond = Bond(license.Id, copy.Id, hashB, t0);
+        // Aynı özet, aynı lisansın üçüncü müşterisinde (S3b sonrası ortak IBAN): ikiz değil, kalır.
+        var third = Guid.NewGuid();
+        var thirdBond = Bond(license.Id, third, hashB, t0.AddDays(-1));
+        // Müşteri Id'leri yalnız test kurgusuyla aynı: LicenseId koşulu hem taşınanda hem ikiz aramasında olmalı.
+        var otherCopyBond = Bond(otherLicense.Id, copy.Id, hashB, t0.AddDays(-1));
+        var otherCanonicalBond = Bond(otherLicense.Id, canonical.Id, hashB, t0.AddDays(-1));
+        db.CustomerIbanMemories.AddRange(canonicalBond, copyBond, thirdBond, otherCopyBond, otherCanonicalBond);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        // Bağlam öbür satırları izlerken de ikiz sayılmamalılar (karar izleyiciden verilir).
+        await db.CustomerIbanMemories
+            .Where(m => m.LicenseId == otherLicense.Id || m.WpfCustomerId == third).LoadAsync();
+
+        var counts = await new CustomerIdentityMerger(db).RepointReferencesAsync(license.Id, copy.Id, canonical.Id, default);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        counts.IbanMemories.Should().Be(1);
+        (await db.CustomerIbanMemories.Where(m => m.LicenseId == license.Id || m.LicenseId == otherLicense.Id)
+                .ToDictionaryAsync(m => m.Id, m => m.WpfCustomerId))
+            .Should().BeEquivalentTo(new Dictionary<Guid, Guid>
+            {
+                [canonicalBond.Id] = canonical.Id, [copyBond.Id] = canonical.Id, [thirdBond.Id] = third,
+                [otherCopyBond.Id] = copy.Id, [otherCanonicalBond.Id] = canonical.Id,
+            });
+    }
+
+    [Fact]
+    public async Task Dekontun_musterisi_asil_kayda_cevrilir_UpdatedAt_ve_Status_degismez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (license, canonical, copy) = await SeedPairAsync(db);
+        var (otherLicense, _, _) = await SeedPairAsync(db);
+        var at = DateTimeOffset.UtcNow.AddDays(-5);
+        var third = Guid.NewGuid();
+        var pending = Receipt(license.Id, copy.Id, PaymentStatus.Pending, at);
+        var approved = Receipt(license.Id, copy.Id, PaymentStatus.Approved, at);
+        var thirds = Receipt(license.Id, third, PaymentStatus.Pending, at);
+        var foreign = Receipt(otherLicense.Id, copy.Id, PaymentStatus.Pending, at); // Id yalnız test kurgusuyla aynı
+        db.Payments.AddRange(pending, approved, thirds, foreign);
+
+        var counts = await SaveAndMergeAsync(db, license.Id, copy.Id, canonical.Id);
+
+        counts.Payments.Should().Be(2);
+        var rows = await db.Payments.Where(p => p.LicenseId == license.Id || p.LicenseId == otherLicense.Id)
+            .ToDictionaryAsync(p => p.Id);
+        rows.Should().HaveCount(4);
+        rows[pending.Id].WpfCustomerId.Should().Be(canonical.Id);
+        rows[pending.Id].Status.Should().Be(PaymentStatus.Pending);
+        rows[approved.Id].WpfCustomerId.Should().Be(canonical.Id);
+        rows[approved.Id].Status.Should().Be(PaymentStatus.Approved);
+        rows[thirds.Id].WpfCustomerId.Should().Be(third, "başka müşterinin dekontu");
+        rows[foreign.Id].WpfCustomerId.Should().Be(copy.Id, "başka lisansın dekontu");
+        rows.Values.Should().OnlyContain(p => p.UpdatedAt == at,
+            "payments/since imleci UpdatedAt'tir: ilerlese dekontlar bütün bilgisayarlara yeniden inerdi");
     }
 }

@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.WhatsApp;
@@ -78,6 +79,24 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
         (await db.StockMovements.AnyAsync()).Should().BeFalse();
         (await db.Products.AnyAsync()).Should().BeFalse();
         (await db.ProductVariants.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Banka_onay_satirlari_lisansla_gider()
+    {
+        // Banka havalesi onayı (spec 2026-10-10 §2, S2a): karar olayı ve IBAN durumu doğrudan lisanstan, tahsis ve kargo adımı
+        // Payments üzerinden, adımın siparişleri adım üzerinden kaskadlanır. Tahsisin FK'sı isteğe bağlı: kaskadı yazılmasaydı
+        // silme 547 ile düşerdi. Ödemesiz tahsis tohumlanmaz: kaskadla gitmez, onu yayıncı silmesi açıkça siler (S4). Lisansta
+        // ObifinConnection yok (olsaydı silme 409 dönerdi).
+        var (client, customerId, email) = await SeedCustomerAsync();
+        var licenseId = await SeedBankDecisionRowsAsync(customerId);
+        (await BankDecisionRowsAsync(licenseId)).Should().HaveCount(5).And.OnlyContain(t => t.Value == 1);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await BankDecisionRowsAsync(licenseId)).Should().HaveCount(5).And.OnlyContain(t => t.Value == 0);
     }
 
     [Fact]
@@ -405,6 +424,71 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
             OccurredAt = now, CreatedAt = now,
         });
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>Lisans, ödeme ve banka onayının beş tablosuna birer satır.</summary>
+    private async Task<Guid> SeedBankDecisionRowsAsync(Guid customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var licenseId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        db.Licenses.Add(new License
+        {
+            Id = licenseId, CustomerId = customerId, LicenseKey = "LDK-P-" + Guid.NewGuid().ToString("N")[..12],
+            SkuCode = "STD", ActivationSlots = 1, IssuedAt = now, ExpiresAt = now.AddDays(30),
+        });
+        db.Payments.Add(new Payment
+        {
+            Id = paymentId, LicenseId = licenseId, PayerName = "Silinecek", Amount = 100m, PaidAt = now,
+            ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, CreatedAt = now, UpdatedAt = now,
+        });
+        db.PaymentExpectationAllocations.Add(new PaymentExpectationAllocation
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, PaymentId = paymentId, ExpectationId = Guid.NewGuid(),
+            Kind = PaymentAllocationKind.Payment, Amount = 100m, CreatedAt = now,
+        });
+        db.PaymentShipmentSteps.Add(new PaymentShipmentStep
+        {
+            Id = Guid.NewGuid(), PaymentId = paymentId, LicenseId = licenseId, CustomerKey = $"{Guid.NewGuid():N}",
+            State = PaymentShipmentStepState.Waiting, CreatedAt = now, StateChangedAt = now,
+            Orders =
+            [
+                new PaymentShipmentStepOrder
+                {
+                    OrderId = Guid.NewGuid(), LicenseId = licenseId, RecordId = Guid.NewGuid(), PriceAtApproval = 100m,
+                },
+            ],
+        });
+        db.BankDecisionEvents.Add(new BankDecisionEvent
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, CreatedAt = now, PaymentId = paymentId,
+            ActorKind = BankDecisionActorKind.Owner, Surface = BankDecisionSurface.Panel, Action = "test", RuleVersion = 1,
+        });
+        db.BankIbanStates.Add(new BankIbanState
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}",
+            LastTransferAt = now, UpdatedAt = now,
+        });
+        await db.SaveChangesAsync();
+        return licenseId;
+    }
+
+    /// <summary>Lisansın banka onayı satırları, tablo başına sayı.</summary>
+    private async Task<Dictionary<string, int>> BankDecisionRowsAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return new Dictionary<string, int>
+        {
+            ["PaymentExpectationAllocations"] = await db.PaymentExpectationAllocations.CountAsync(a => a.LicenseId == licenseId),
+            ["PaymentShipmentSteps"] = await db.PaymentShipmentSteps.CountAsync(s => s.LicenseId == licenseId),
+            ["PaymentShipmentStepOrders"] = await db.PaymentShipmentStepOrders.CountAsync(o => o.LicenseId == licenseId),
+            ["BankDecisionEvents"] = await db.BankDecisionEvents.CountAsync(e => e.LicenseId == licenseId),
+            ["BankIbanStates"] = await db.BankIbanStates.CountAsync(s => s.LicenseId == licenseId),
+        };
     }
 
     private sealed record IdBody(Guid id);

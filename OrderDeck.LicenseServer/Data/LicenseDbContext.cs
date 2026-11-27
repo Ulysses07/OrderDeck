@@ -121,6 +121,11 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentMatch> PaymentMatches => Set<PaymentMatch>();
     public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
+    public DbSet<BankDecisionEvent> BankDecisionEvents => Set<BankDecisionEvent>();
+    public DbSet<BankIbanState> BankIbanStates => Set<BankIbanState>();
+    public DbSet<PaymentExpectationAllocation> PaymentExpectationAllocations => Set<PaymentExpectationAllocation>();
+    public DbSet<PaymentShipmentStep> PaymentShipmentSteps => Set<PaymentShipmentStep>();
+    public DbSet<PaymentShipmentStepOrder> PaymentShipmentStepOrders => Set<PaymentShipmentStepOrder>();
     public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
     public DbSet<BankSubjectRequest> BankSubjectRequests => Set<BankSubjectRequest>();
     public DbSet<ObifinCopyDeletion> ObifinCopyDeletions => Set<ObifinCopyDeletion>();
@@ -188,6 +193,10 @@ public class LicenseDbContext : DbContext
     /// </summary>
     private void StampCustomerBalanceVersions() => StampVersions<CustomerBalance>(b => b.UpdatedAt);
 
+    /// <summary><see cref="BankIbanState.UpdatedAt"/> de jeton (spec 2026-10-10 §2.5): "Evet" ile "Hayır" aynı satırda
+    /// yarışır. Gerekçe <see cref="StampPaymentMatchVersions"/> ile aynı.</summary>
+    private void StampBankIbanStateVersions() => StampVersions<BankIbanState>(s => s.UpdatedAt);
+
     /// <summary>
     /// <typeparamref name="TEntity"/>'nin değişmiş (<see cref="EntityState.Modified"/>)
     /// her girdisinde sürüm sütununu <c>max(UtcNow, özgün + 1 tick)</c> yapar ve
@@ -227,6 +236,7 @@ public class LicenseDbContext : DbContext
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
         StampCustomerBalanceVersions();
+        StampBankIbanStateVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -238,6 +248,7 @@ public class LicenseDbContext : DbContext
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
         StampCustomerBalanceVersions();
+        StampBankIbanStateVersions();
         return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
@@ -500,6 +511,14 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.FraudFlags).HasMaxLength(256).IsRequired();
             b.Property(p => p.ParserConfidence).HasMaxLength(16).IsRequired();
             b.HasIndex(p => p.ShopperId);
+            // Banka havalesi onayı (spec 2026-10-10 §2.3). DEFAULT yalnız sütunu bilmeyen (geri alınan) imajın INSERT'i
+            // için; ValueGeneratedNever olmasa EF 0. değerde sütunu INSERT'ten çıkarır, OUTPUT ile geri okurdu.
+            b.Property(p => p.Source).HasConversion<string>().HasMaxLength(16)
+                .HasDefaultValue(PaymentSource.Receipt).ValueGeneratedNever().IsRequired();
+            b.Property(p => p.ApprovalSource).HasConversion<string>().HasMaxLength(16);
+            b.HasIndex(p => new { p.LicenseId, p.WpfCustomerId }).HasFilter("[WpfCustomerId] IS NOT NULL");
+            // Tekil DEĞİL: geri alınan onayın Rejected satırı aynı hareketi taşır, yeniden onay yeni satır yazar.
+            b.HasIndex(p => new { p.LicenseId, p.BankTransactionId }).HasFilter("[BankTransactionId] IS NOT NULL");
         });
 
         // Siparişler (PR siparis-sync 2026-05-13): WPF lokal StreamSession + Label'ların
@@ -1242,8 +1261,8 @@ public class LicenseDbContext : DbContext
             b.HasIndex(a => a.BrandCode).IsUnique().HasFilter("[Status] = 'Verified'");
         });
 
-        // Banka (Obifin) tabloları. Lisansa DOĞRUDAN bağlı olanlar (ObifinConnections,
-        // BankAccounts, BankTransactions, CustomerIbanMemories, PaymentMatchGaps) Licenses'a
+        // Banka (Obifin) tabloları. Lisansa DOĞRUDAN bağlı olanlar (ObifinConnections, BankAccounts,
+        // BankTransactions, CustomerIbanMemories, PaymentMatchGaps, BankDecisionEvents, BankIbanStates) Licenses'a
         // Cascade FK taşır: KVKK purge (AdminCustomersController.Purge) lisansı siler ve gerisini
         // DB kaskadına bırakır — FK'sız bir tablo müşteri silindikten sonra IBAN hash'ini ve karşı
         // taraf adını yetim tutardı. BankConnections ve PaymentMatches lisansa ebeveynleri
@@ -1345,6 +1364,15 @@ public class LicenseDbContext : DbContext
             b.Property(m => m.Status).HasConversion<string>().HasMaxLength(24).IsRequired();
             b.Property(m => m.Confidence).HasPrecision(4, 3);
             b.Property(m => m.Evidence).HasMaxLength(500);
+            // Karar katmanı (spec 2026-10-10 §2.4). DEFAULT ve ValueGeneratedNever: bkz. Payment.Source. DecisionRevision
+            // jeton DEĞİL (jeton UpdatedAt).
+            b.Property(m => m.Decision).HasConversion<string>().HasMaxLength(24)
+                .HasDefaultValue(PaymentMatchDecision.None).ValueGeneratedNever().IsRequired();
+            b.Property(m => m.AskReasons).HasMaxLength(BankAskReasons.MaxLength);
+            b.Property(m => m.DecidedVia).HasConversion<string>().HasMaxLength(16);
+            b.Property(m => m.DismissReason).HasConversion<string>().HasMaxLength(24);
+            b.Property(m => m.DismissNote).HasMaxLength(300);
+            b.HasIndex(m => new { m.LicenseId, m.Decision });
         });
 
         mb.Entity<CustomerIbanMemory>(b =>
@@ -1353,6 +1381,9 @@ public class LicenseDbContext : DbContext
             b.HasOne(m => m.License).WithMany().HasForeignKey(m => m.LicenseId).OnDelete(DeleteBehavior.Cascade);
             // Bir IBAN aynı anda tek müşteriye ait olabilir.
             b.HasIndex(m => new { m.LicenseId, m.IbanHash }).IsUnique();
+            // Üstteki dar indeks S3b'de düşer, o zamana dek iki müşteriye eşzamanlı öğretmenin tek hakemidir. Sonra bir IBAN
+            // birden çok müşteriye bağlanabilir (spec 2026-10-10 §2.5); tekil olan bu geniş indekstir.
+            b.HasIndex(m => new { m.LicenseId, m.IbanHash, m.WpfCustomerId }).IsUnique();
             b.HasIndex(m => new { m.LicenseId, m.WpfCustomerId });
             b.Property(m => m.IbanHash).HasMaxLength(64).IsRequired();
             b.Property(m => m.IbanMasked).HasMaxLength(40).IsRequired();
@@ -1369,6 +1400,87 @@ public class LicenseDbContext : DbContext
             // Ödeme başına tek boşluk kaydı.
             b.HasIndex(g => g.PaymentId).IsUnique();
             b.Property(g => g.Reason).HasConversion<string>().HasMaxLength(24).IsRequired();
+        });
+
+        // Havale kararının denetim satırı (spec 2026-10-10 §2.6). Öbür bağlar FK'SIZ: hareket 180. günde silinir, olay kalır.
+        mb.Entity<BankDecisionEvent>(b =>
+        {
+            b.HasKey(e => e.Id);
+            b.HasOne(e => e.License).WithMany().HasForeignKey(e => e.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(e => e.ActorKind).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(e => e.Surface).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(e => e.Action).HasMaxLength(32).IsRequired();
+            b.Property(e => e.ReasonCode).HasMaxLength(32);
+            b.Property(e => e.AskReasons).HasMaxLength(BankAskReasons.MaxLength);
+            b.HasIndex(e => new { e.LicenseId, e.CreatedAt });
+            b.HasIndex(e => new { e.LicenseId, e.TxId }).HasFilter("[TxId] IS NOT NULL");
+            b.HasIndex(e => e.PaymentId).HasFilter("[PaymentId] IS NOT NULL");
+            b.HasIndex(e => e.RelatedPaymentId).HasFilter("[RelatedPaymentId] IS NOT NULL");
+            // Tekil DEĞİL: hakem satır jetonudur, bir istek birden çok olay yazabilir.
+            b.HasIndex(e => new { e.LicenseId, e.RequestId }).HasFilter("[RequestId] IS NOT NULL");
+        });
+
+        // IBAN'ın karar durumu (spec 2026-10-10 §2.5).
+        mb.Entity<BankIbanState>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.HasOne(s => s.License).WithMany().HasForeignKey(s => s.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(s => new { s.LicenseId, s.IbanHash }).IsUnique();
+            // 12 ay saklaması (S4) lisanstan bağımsız, son havaleye göre arar.
+            b.HasIndex(s => s.LastTransferAt);
+            b.Property(s => s.IbanHash).HasMaxLength(64).IsRequired();
+            // Jetonu SaveChanges merkezî damgalar (StampBankIbanStateVersions).
+            b.Property(s => s.UpdatedAt).IsConcurrencyToken();
+            // BankTransaction'daki hash kısıtının aynısı.
+            b.ToTable(tb => tb.HasCheckConstraint("CK_BankIbanStates_IbanHash_Hex64",
+                "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'"));
+        });
+
+        // Ödeme tahsisi (spec 2026-10-10 §2.2) ve kargo adımı (§4.6.3). Lisansa Payments üzerinden kaskadlanırlar (ödemesiz tahsis
+        // hariç: onu yayıncı silmesi açıkça siler, S4); Licenses'a FK BİLEREK yok (ikinci kaskad yolu, 1785). İstek, sipariş ve
+        // dosya bağları da FK'SIZ.
+        mb.Entity<PaymentExpectationAllocation>(b =>
+        {
+            b.HasKey(a => a.Id);
+            // Cascade AÇIKÇA: isteğe bağlı FK'nın varsayılanı ClientSetNull'dır, yayıncı silmesi 547 alırdı.
+            b.HasOne(a => a.Payment).WithMany().HasForeignKey(a => a.PaymentId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(a => a.Amount).HasPrecision(18, 2);
+            b.HasIndex(a => new { a.LicenseId, a.ExpectationId });
+            b.ToTable(tb => tb.HasCheckConstraint("CK_PaymentExpectationAllocations_Kind_Payment",
+                "([Kind] = N'Payment' AND [PaymentId] IS NOT NULL) OR ([Kind] <> N'Payment' AND [PaymentId] IS NULL)"));
+        });
+
+        mb.Entity<PaymentShipmentStep>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.HasOne(s => s.Payment).WithMany().HasForeignKey(s => s.PaymentId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(s => s.CustomerKey).HasMaxLength(64).IsRequired().UseCollation("Latin1_General_100_BIN2");
+            b.Property(s => s.State).HasConversion<string>().HasMaxLength(24).IsRequired();
+            b.Property(s => s.Reason).HasConversion<string>().HasMaxLength(24);
+            b.Property(s => s.Decision).HasConversion<string>().HasMaxLength(16);
+            b.Property(s => s.Version).IsConcurrencyToken();
+            // Ödeme × müşteri satırı başına tek açık adım. Kapanan ve çözülen engellemez: geri alınan dekont, bağı henüz
+            // çözülmemişken de aynı ödemeyle yeniden onaylanabilir.
+            b.HasIndex(s => new { s.PaymentId, s.CustomerKey })
+                .IsUnique()
+                .HasFilter("[State] <> N'Closed' AND [State] <> N'Reverting'")
+                .HasDatabaseName("UX_PaymentShipmentSteps_Open");
+            // Üstteki filtreli indeks EF'in FK indeksini bastırır; kaskad ve geri alma PaymentId ile arar.
+            b.HasIndex(s => s.PaymentId);
+            // Koşucunun taradığı adımlar.
+            b.HasIndex(s => s.NextAttemptAt)
+                .HasFilter("[State] IN (N'Waiting', N'Reverting')")
+                .HasDatabaseName("IX_PaymentShipmentSteps_Due");
+            b.HasIndex(s => new { s.LicenseId, s.State });
+        });
+
+        mb.Entity<PaymentShipmentStepOrder>(b =>
+        {
+            b.HasKey(o => new { o.StepId, o.OrderId });
+            b.HasOne(o => o.Step).WithMany(s => s.Orders).HasForeignKey(o => o.StepId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(o => o.PriceAtApproval).HasPrecision(18, 2);
+            b.HasIndex(o => new { o.LicenseId, o.OrderId });
         });
 
         // Kalıcı imha kaydı (Silme Yönetmeliği md. 7/3). Lisansa FK BİLEREK yok: lisans silinse de kayıt yaşar.

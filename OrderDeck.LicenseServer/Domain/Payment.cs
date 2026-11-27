@@ -77,4 +77,23 @@ public sealed class Payment
     public string FraudFlags { get; set; } = "";
     public string ParserConfidence { get; set; } = "Unknown";
     public DateTimeOffset? PdfPurgedAt { get; set; }
+
+    // Banka havalesi onayı (spec 2026-10-10 §2.3). Bağlar FK'SIZ Guid: hareket 180. günde silinir; NoAction FK silmeyi
+    // düşürür, SetNull ikinci kaskad yolu olurdu.
+
+    /// <summary>Satırın doğduğu yer. Bu sütunu bilmeyen imajın INSERT'i DB varsayılanıyla Receipt yazar.</summary>
+    public PaymentSource Source { get; set; } = PaymentSource.Receipt;
+
+    /// <summary>Ödemeyi kimin hangi yoldan onayladığı. Boş: onaylanmadı ya da bilinmiyor.</summary>
+    public PaymentApprovalSource? ApprovalSource { get; set; }
+
+    /// <summary>Personel onayında onaylayan personel (<see cref="OperatorUser"/>).</summary>
+    public Guid? ApprovedByOperatorId { get; set; }
+
+    /// <summary>Ödemenin müşterisi (<see cref="WpfCustomerProjection"/>'ın asıl kaydı). Boş: bilinmiyor. S2a'da bağdan
+    /// türetilir: göç, müşteri birleştiricisi ve bağ kesen yollar yazar; gönderim S2b'de yazar.</summary>
+    public Guid? WpfCustomerId { get; set; }
+
+    /// <summary>Ödemeyi onaylatan banka hareketi. Hareket silinse de kalır: onay sonradan bununla bulunur.</summary>
+    public Guid? BankTransactionId { get; set; }
 }

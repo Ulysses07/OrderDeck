@@ -338,6 +338,53 @@ public sealed class WpfCustomerIdentityRaceTests : IAsyncLifetime
             .Should().Be(w, "yayıncının telefonu shopper'ın doğrulanmış telefonu: bağlantı W'ye taşındı, kanıtlandı");
     }
 
+    [Fact]
+    public async Task Senkron_sirasinda_onaylanan_dekont_senkronu_dusurmez()
+    {
+        // Devralma S'ye bağlı dekontun müşterisini W'ye çevirir; Payment.Status
+        // jetondur. Sync okuduktan SONRA, kaydetmeden ÖNCE dekont onaylanır: kayıt
+        // jetona takılır, parti taze okumayla bir kez yeniden uygulanır.
+        var (client, licenseId, _) = await SetupAsync();
+        var phone = NewPhone();
+        var (sId, linkId) = await InsertProvisionalAsync(licenseId, "Deniz", phone);
+        var paymentId = Guid.NewGuid();
+        var at = DateTimeOffset.UtcNow.AddDays(-1);
+        await using (var seed = new LicenseDbContext(
+            new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(_cs).Options))
+        {
+            seed.Payments.Add(new Payment
+            {
+                Id = paymentId, LicenseId = licenseId, WpfCustomerId = sId, ReferansNo = $"r-{Guid.NewGuid():N}",
+                ShopperId = (await seed.ShopperBroadcasterLinks.SingleAsync(l => l.Id == linkId)).ShopperId,
+                Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+            });
+            await seed.SaveChangesAsync();
+        }
+        var saves = 0;
+        _race.BeforeSave = async _ =>
+        {
+            if (++saves > 1) return;
+            await using var rival = new LicenseDbContext(
+                new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(_cs).Options);
+            await rival.Payments.Where(p => p.Id == paymentId)
+                .ExecuteUpdateAsync(u => u.SetProperty(p => p.Status, PaymentStatus.Approved));
+        };
+        var w = Guid.NewGuid();
+
+        var body = await OkBodyAsync(await client.PostAsJsonAsync(SyncUrl(licenseId),
+            new { customers = new[] { Item(w, "deniz", fullName: "Deniz Yayıncı", phone: phone) } }));
+
+        saves.Should().Be(2, "ilk kayıt dekontun jetonuna takıldı, parti bir kez yeniden uygulandı");
+        body.Redirects.Should().BeEmpty("devralmada W asıl kayıt");
+        (await RowsAsync(licenseId)).Single(p => p.Id == sId).MergedIntoId.Should().Be(w);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var payment = await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId);
+        payment.Status.Should().Be(PaymentStatus.Approved, "birleştirme onayı geri almaz");
+        payment.WpfCustomerId.Should().Be(w);
+        (await db.ShopperBroadcasterLinks.AsNoTracking().SingleAsync(l => l.Id == linkId)).WpfCustomerId.Should().Be(w);
+    }
+
     // ── Shopper tarafı, deterministik: geçici satır INSERT'ü, okumadan SONRA
     //    açılan asıl kayda çarpar. Telefonu doğrulanmış shopper'ın numarası o
     //    asıl kaydın telefonu → bağlantı kanıtla ona bağlanır (yarış testleri

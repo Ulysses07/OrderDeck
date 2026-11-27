@@ -1920,4 +1920,148 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         provisional.PurgedAt.Should().NotBeNull("silme damgası kopyada kalır");
         provisional.CreatedByShopper.Should().BeTrue();
     }
+
+    // ── Banka havalesi onayı S2a (spec 2026-10-10 §2.3, §12): kanıtı düşen bağlantının dekontu ─────────────
+    // Dekontun müşterisi (Payment.WpfCustomerId) bağdan türetilir. Bağlantı kanıtı veremeyip beklemeye düşünce o shopper'ın
+    // o kayda bağlı dekontu da müşterisiz kalır: kalsaydı kanıtsız kişinin dekontu birleştirmeyle gerçek müşteriye geçerdi.
+
+    /// <summary>Shopper'ın dekontu; müşterisi S2a geri doldurmasının bağdan türettiği kayıt. ReferansNo lisansta tekil.</summary>
+    private async Task<Guid> SeedPaymentAsync(Guid licenseId, Guid shopperId, Guid wpfCustomerId, DateTimeOffset at)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var id = Guid.NewGuid();
+        db.Payments.Add(new Payment
+        {
+            Id = id, LicenseId = licenseId, ShopperId = shopperId, WpfCustomerId = wpfCustomerId,
+            ReferansNo = $"r-{Guid.NewGuid():N}", Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+        });
+        await db.SaveChangesAsync();
+        return id;
+    }
+
+    private async Task<Payment> PaymentAsync(Guid paymentId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId);
+    }
+
+    /// <summary>Telefonu doğrulanmış bir shopper ve <paramref name="boundTo"/>'ya bağlı bağlantısı; shopper'ın Id'sini
+    /// döner.</summary>
+    private async Task<Guid> SeedBoundShopperAsync(Guid licenseId, string username, Guid boundTo, string phone)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = VerifiedShopper(phone);
+        db.Shoppers.Add(shopper);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = licenseId, Platform = "tiktok",
+            Username = username, WpfCustomerId = boundTo, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return shopper.Id;
+    }
+
+    /// <summary>Devralma, yayıncının telefonu shopper'ınki değil: bağlantı beklemeye düşer, dekontu da müşterisiz kalır
+    /// (birleştirici onu önce W'ye çevirmişti). Aynı geçici satıra bağlı, telefonu yayıncınınki olan öbür shopper'ın bağı
+    /// W'de kanıtlanır, dekontu W'de kalır. UpdatedAt ilerlemez (payments/since imleci).</summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(1)]
+    public async Task Devralmada_kanitsiz_baglantinin_dekontu_musterisiz_kalir(int format)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (_, _, otherLicenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "dekontlu");
+        var w = Guid.NewGuid();
+        var broadcasterPhone = NewPhone();
+        var provenShopper = await SeedBoundShopperAsync(licenseId, "dekontlu", s.ProjectionId, broadcasterPhone);
+        var at = DateTimeOffset.UtcNow.AddDays(-3);
+        var unproven = await SeedPaymentAsync(licenseId, s.ShopperId, s.ProjectionId, at);
+        var proven = await SeedPaymentAsync(licenseId, provenShopper, s.ProjectionId, at);
+        // Aynı shopper'ın başka lisanstaki dekontu; müşteri Id'si yalnız test kurgusuyla W: lisans koşulu olmalı.
+        var foreign = await SeedPaymentAsync(otherLicenseId, s.ShopperId, w, at);
+
+        await PostAsync(client, licenseId, BroadcasterItem(format, w, "Dekontlu", "Yayıncının Kaydı", broadcasterPhone));
+
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull();
+        var cut = await PaymentAsync(unproven);
+        cut.WpfCustomerId.Should().BeNull("kanıtsız kişinin dekontu gerçek müşteriye geçmez");
+        cut.UpdatedAt.Should().Be(at, "payments/since imleci UpdatedAt'tir: ilerlese dekont bilgisayarlara yeniden inerdi");
+        (await PaymentAsync(proven)).WpfCustomerId.Should().Be(w, "W'ye kanıtla bağlı başka shopper'ın dekontu");
+        (await PaymentAsync(foreign)).WpfCustomerId.Should().Be(w, "başka lisansın dekontu");
+    }
+
+    [Fact]
+    public async Task Devralmada_kanitli_baglantinin_dekontu_W_ye_gecer()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "dekontlu-erken");
+        var at = DateTimeOffset.UtcNow.AddDays(-3);
+        var paymentId = await SeedPaymentAsync(licenseId, s.ShopperId, s.ProjectionId, at);
+        var w = Guid.NewGuid();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, w, "dekontlu-erken", "Yayıncının Kaydı", s.ShopperPhone));
+
+        (await LinkTargetAsync(s.LinkId)).Should().Be(w);
+        var payment = await PaymentAsync(paymentId);
+        payment.WpfCustomerId.Should().Be(w);
+        payment.UpdatedAt.Should().Be(at);
+    }
+
+    [Fact]
+    public async Task Kendi_Id_farkli_telefonda_dekont_musterisiz_kalir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "dekontlu-tel");
+        var at = DateTimeOffset.UtcNow.AddDays(-3);
+        var paymentId = await SeedPaymentAsync(licenseId, s.ShopperId, s.ProjectionId, at);
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, s.ProjectionId, "dekontlu-tel", null, NewPhone()));
+
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull();
+        var payment = await PaymentAsync(paymentId);
+        payment.WpfCustomerId.Should().BeNull("bağ S'den düştü");
+        payment.UpdatedAt.Should().Be(at);
+    }
+
+    /// <summary>Aynı shopper'ın ayrılmış bağlantısı geçici satırda, sonra başka adla açtığı etkin bağlantısı yayıncının başka
+    /// bir kaydında (telefonu shopper'ınki: kanıtlı). Devralmada ayrılmış bağ da kanıt ister ve düşer; o kayda bağlı dekont
+    /// boşalır, öbür kayda bağlı dekont kalır.</summary>
+    [Fact]
+    public async Task Devralmada_ayrilmis_baglantinin_dekontu_bosalir_etkin_baglantinin_baska_kayittaki_dekontu_kalir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "ilk-ad", left: true);
+        var other = Guid.NewGuid();
+        var activeLinkId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = other, LicenseId = licenseId, Platform = "tiktok", Username = "ikinci-ad", Phone = s.ShopperPhone,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = activeLinkId, ShopperId = s.ShopperId, LicenseId = licenseId, Platform = "tiktok", Username = "ikinci-ad",
+                WpfCustomerId = other, JoinedAt = DateTimeOffset.UtcNow.AddMinutes(1),
+            });
+            await db.SaveChangesAsync();
+        }
+        var at = DateTimeOffset.UtcNow.AddDays(-3);
+        var viaLeft = await SeedPaymentAsync(licenseId, s.ShopperId, s.ProjectionId, at);
+        var viaActive = await SeedPaymentAsync(licenseId, s.ShopperId, other, at);
+        var w = Guid.NewGuid();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, w, "ilk-ad", "Yayıncının Kaydı", NewPhone()));
+
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull("ayrılmış bağlantı da kanıt ister");
+        (await LinkTargetAsync(activeLinkId)).Should().Be(other);
+        (await PaymentAsync(viaLeft)).WpfCustomerId.Should().BeNull();
+        (await PaymentAsync(viaActive)).WpfCustomerId.Should().Be(other, "başka kayda bağlı dekont");
+    }
 }

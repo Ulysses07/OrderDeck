@@ -226,6 +226,7 @@ public static class MergeCustomerIdentities
                $"sipariş={r.OrdersToMove} kargo={r.ShipmentsToMove} Shopper bağlantısı={r.LinksToMove} " +
                $"toplanacak bakiye={r.BalancesToSum} bakiye hareketi={r.BalanceTransactionsToMove} " +
                $"IBAN hafızası={r.IbanMemoriesToMove} ödeme eşleşmesi={r.PaymentMatchesToMove} " +
+               $"dekont müşterisi={r.PaymentsToMove} " +
                $"WhatsApp sohbeti={r.WaConversationsToMove} silinmiş kişi={r.PurgedGroups} | " +
                $"asıl kayıtla kopyada ikisi de dolu ama farklı (grup): telefon={r.PhoneConflicts} adres={r.AddressConflicts} " +
                $"e-posta={r.EmailConflicts} ad={r.NameConflicts} not={r.NotesConflicts} | " +
@@ -254,5 +255,6 @@ public static class MergeCustomerIdentities
         IbanMemoriesToMove = a.IbanMemoriesToMove + b.IbanMemoriesToMove,
         PaymentMatchesToMove = a.PaymentMatchesToMove + b.PaymentMatchesToMove,
         WaConversationsToMove = a.WaConversationsToMove + b.WaConversationsToMove,
+        PaymentsToMove = a.PaymentsToMove + b.PaymentsToMove,
     };
 }

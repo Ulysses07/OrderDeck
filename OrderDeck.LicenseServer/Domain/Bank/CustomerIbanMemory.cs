@@ -1,6 +1,8 @@
 namespace OrderDeck.LicenseServer.Domain.Bank;
 
-public enum IbanMemorySource { ManualMatch = 0, HumanApproval = 1 }
+/// <summary>Bağı neyin öğrettiği: admin elle eşleme, dekont onayı, havaleye "Evet" (banka havalesi spec'i 2026-10-10 §2.5).
+/// String saklanır, ad değişmez.</summary>
+public enum IbanMemorySource { ManualMatch = 0, HumanApproval = 1, BankConfirm = 2 }
 
 /// <summary>Müşteri ↔ gönderen IBAN hafızası. Geri alma satırı SİLER (spec §3): yanlış öğrenip
 /// sessizce tekrarlamayı önlemek için aktif tabloda iptal bayrağı tutulmaz.</summary>

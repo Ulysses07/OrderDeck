@@ -150,6 +150,9 @@ OrderDeck__BroadcastMedia__Provider=r2
 # DEĞİŞTİRME: var olan bütün hash'ler geçersiz olur. docker-compose.yml'de de
 # listeli — orada olmayan anahtar container'a girmez.
 OrderDeck__Bank__HashKey=
+# Havale onayı: ödeme isteğinin ömrü (gün) ve banka verisinin bayatlık eşiği (dakika).
+# OrderDeck__Bank__ExpectationTtlDays=14
+# OrderDeck__Bank__StaleFeedAfterMinutes=120
 # Veri sorumlusu kapısı (KVKK K-3): yazılmazsa "true" (fail-closed). Yalnız pilot
 # geçişinde, geçici olarak; aşağıda "Veri sorumlusu kapısı".
 # Obifin__RequireDataControllerProfile=false
@@ -577,6 +580,86 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > ayaktayken bayraklı her lisansta `disable` koş (kuru, sonra `--apply`);
 > S1 imajı komutu tanımaz (kullanım, çıkış 2). S2'ye yeniden çıkınca her
 > lisansı yukarıdaki 4. adımla (kuru, dört koşul tutarsa `--apply`) yeniden aç.
+
+> **UYARI — Banka Faz 2 S2a tabanı (banka havalesi onayının şeması, spec
+> 2026-10-10 §14, §15).** S2a göçü (`BankDecisionsS2a`) yalnız genişletir;
+> otomatik geri alma (yukarıdaki workflow) güvenli: eski imajın INSERT'i yeni
+> NOT NULL sütunlarda DB varsayılanına düşer, dar IBAN tekili yerinde kalır.
+> `OrderDeck.LicenseServer/Tools/BankQuestionsCommand.cs` dosyasını İÇERMEYEN
+> bir imajda (etiketin kaynağında
+> `git cat-file -e <sha>:OrderDeck.LicenseServer/Tools/BankQuestionsCommand.cs`
+> başarısızsa o imaj S2a öncesidir) `bank-questions` KOŞMA: tanınmayan komut
+> CLI'a gitmez, ikinci bir sunucu süreci başlatır.
+>
+> O imajdaki müşteri birleştirmesi, kanıtı düşen bağın kesilmesi ve shopper
+> silmesi `Payments.WpfCustomerId`'yi bilmez; geri alma penceresi iki kalıntı
+> bırakır:
+> - Silinen kişinin dekontu eski müşterisine bağlı kalır. İleri dönünce o
+>   pencerede silinenlerin silmesini yeniden uygula. Deploy geri alması
+>   veritabanını geri yüklemez: pencerenin silmeleri imha kaydında eksiksizdir
+>   (salt okunur):
+>   `SELECT DISTINCT SubjectId FROM DataDestructionRecords WHERE [Trigger] = 'shopper-purge' AND OccurredAt >= '<geri alma anı>'`
+>   ("Silmeleri yeniden uygula" 4. adımın özet e-postaları yedek kaynaktır; o
+>   yol yedekten dönüş içindir, orada tablo da yedek anına sarılır). Eski talep
+>   işlenmiş göründüğü için (`HandledAt` dolu, sayfa onu yeniden işlemez) her
+>   ShopperId için `ShopperDeletionRequests`'te yeni talep satırı ekleyip
+>   sayfadan işle.
+> - Telefon kanıtı düşen bağlantının dekontu geçici kopyada kalır ve yanlış
+>   müşteriye çözülür. Elle adımı yok.
+>
+> İkisini de S2b göçü bağdan yeniden türeterek kapatır; o zamana dek sütunu
+> okuyan akış yoktur. Kalıntıyı sayan sorgular (salt okunur, Burak koşar):
+> - Kopyaya bağlı dekont:
+>   `SELECT COUNT(*) FROM Payments p JOIN WpfCustomerProjections c ON c.Id = p.WpfCustomerId WHERE c.MergedIntoId IS NOT NULL`
+> - Müşterili bağlantısı kalmamış dolu dekont:
+>   `SELECT COUNT(*) FROM Payments p WHERE p.WpfCustomerId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ShopperBroadcasterLinks l WHERE l.ShopperId = p.ShopperId AND l.LicenseId = p.LicenseId AND l.WpfCustomerId IS NOT NULL)`
+>
+> İleri dönüşte (silmeler yeniden uygulandıktan sonra) biri 0'dan büyükse
+> kalıntı S2b'yi bekler; S2b'den sonra ikisi de 0 olmalı.
+
+> **Havale soruları (banka havalesi onayı, spec 2026-10-10 §2.7, §14).**
+> Lisansın havale sorularını YALNIZ CLI açar ve kapatır
+> (`Tools/BankQuestionsCommand.cs`); deploy anında hiçbir lisansta açık
+> değildir. Komutlar `--apply` olmadan kurudur: koşulları ve yapılacak
+> değişikliği basar, hiçbir şey yazmaz. Çıkış kodu 0 = tamam, kuru ya da
+> yapılacak bir şey yok; 1 = `--apply`'da koşul tutmuyor ya da eşzamanlı
+> değişiklik (hiçbir şey yazılmadı); 2 = kullanım, bağlantı dizesi ya da
+> bilinmeyen lisans. Yayın penceresi dışında koş (Paz/Pzt/Çar/Per
+> 20:00–01:00 TR değil; prod'a yazım Burak'ın onayıyla).
+>
+> Açılış, önce kuru:
+> `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-questions enable --license <id>`
+> İki koşul da tutuyorsa:
+> `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-questions enable --license <id> --apply`
+> Koşullar: (1) lisansın satış senkronu kipi On; (2) karar katmanı bu sürümde
+> (kod sabiti `DecisionLayerReady`). S2a'da `enable --apply` hep reddeder:
+> kuru koşu "Koşul 2 — karar katmanı bu sürümde: TUTMUYOR" basar.
+> `BankQuestionsSince` ilk açılışta yazılır ve kapatıp açmakla sıfırlanmaz;
+> ondan eski hareketler gölgede kalır.
+>
+> Pilottan önce kapılar (spec §14):
+> - satış senkronu On (koşul 1);
+> - karar katmanı bu sürümde (koşul 2; S4 açar, S3c ya da S3d daha geç
+>   birleşirse son birleşen);
+> - kargo hattı canlı: S3d sunucuda, B-W1'in "Kargo kararı bekleyenler" kartı
+>   WPF'te;
+> - kargo kümesi ölçümü: istek anı son 30 güne ve mod On'dan sonraya düşen
+>   isteklerin kiralı ve `session:` kapsamlı payı (salt okunur sorgu); %80'in
+>   altındaysa pilot açılmadan rakam sahibe;
+> - saklama ve silme (S4) bayraktan önce prod'da;
+> - Faz 2 metni yayında (T1; avukat ve sahip onayı);
+> - `bank-data-cleanup --reset-iban-memory` kuru, sonra `--apply` (gündüz);
+> - yönetici 2FA'sı: pilotu mu yalnız otomatik onayı mı bekleteceği sahip
+>   kararı;
+> - pilot yayıncının veri sorumlusu profili dolu (banka modülü profilsiz
+>   açılmaz).
+>
+> **Havale sorularında sorun — kill switch.** Önce kuru, sonra yazar:
+> `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-questions disable --license <id>`
+> `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-questions disable --license <id> --apply`
+> Koşul ve yapılandırma yok, veri işlemi yok: yalnız bayrak kapanır;
+> `BankQuestionsSince` ve otomatik onay bayrağı korunur, verilmiş kararların
+> geri alınması açık kalır.
 
 ## Masaüstü: satış senkronunu yerelde sıfırlama (≤0.9.10'a dönüş)
 
