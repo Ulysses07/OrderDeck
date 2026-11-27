@@ -112,6 +112,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// karşılaştırılsaydı IG satırına önerilen havalenin TT satırından gelen dekontu Contradicted sayılır, v2'nin çelişkisi sahte şişer,
 /// IBAN da öğrenilmezdi; kural eski satıra uygulansaydı eski ölçüm bloğu deploy anında anlam değiştirirdi. Karşılaştırmayı onay
 /// bağdaştırmasının durumu ve doğrulanmış bağ koşulu, elle eşlemenin durumu ve aynı IBAN'ın yeniden değerlendirme sayacı kullanır.
+/// Kişi <c>GroupId</c>'dir; WPF onu doğrulanmamış kayıt formu telefonuyla da birleştirir. Yanlış grupta yalnız tutar ve zamana
+/// dayanan tek aday bağı da doğrulanmış sayılır, havalenin IBAN'ı dekontun satırına (başka bir insanın) öğrenilir; bağ satıra
+/// yazıldığı için Ayır onu geri almaz, kaldırma siler (S2b planı Karar 4; sahip kararı, PR gövdesi).
 /// Dekont adaylarının <c>taken</c> kümesi, bayat seçim denetimi ve <see cref="LearnIbanAsync"/>'in başka satıra kayıtlı bağı (aynı
 /// kişinin öbür satırındaki bağ da <see cref="ManualMatchIbanOutcome.ConflictOtherCustomer"/>) satır düzeyinde kalır: ikinci bağ dar
 /// tekil indeks <c>(LicenseId, IbanHash)</c> dururken yazılamaz; kişi düzeyine S3b alır.</para>

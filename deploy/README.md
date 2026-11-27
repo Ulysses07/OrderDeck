@@ -648,6 +648,20 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 >   satırı eklenir (`Platform`, `Username` yer tutucu). Silme, S2b yayındayken
 >   yeni talep satırıyla yeniden uygulanır; S2b silmesi K'yı asıl kayda çözer
 >   ve bağlantıyı yine siler.
+>   Bu onarım yalnız merge öncesi listedeki kopyaları kapsar. S2b yayındayken
+>   çözücü kararı ve yeni IBAN bağını iki durumda daha asıl kayda yazar:
+>   bağlantı kanıtlı geçici kopyadaysa (liste geçici kopyayı içermez; S2a
+>   silmesi telefonu boşalttığı için geçici kopyaya eklenen bağlantıyla
+>   yeniden uygulamak kanıtı bulamaz) ve bağlantı listeden sonra bir yarışla
+>   kopyada kaldıysa. Bunlarda tek koruma pencerede shopper silmesinin
+>   uygulanmamasıdır. Uygulandıysa pencerenin silmelerinin dekontlarına
+>   bağlanmış, hâlâ müşterili kararlar listelenir (S2a silmesi bağlantının
+>   Id'sindeki kararı zaten boşalttı; kalan müşteri S2b'nin asıl kayda çözdüğü
+>   ya da taşıdığı kayıttır):
+>   `SELECT DISTINCT pm.LicenseId, pm.ActualWpfCustomerId FROM Payments p JOIN PaymentMatches pm ON pm.PaymentId = p.Id WHERE p.ShopperId IN (<pencerenin silmeleri>) AND pm.ActualWpfCustomerId IS NOT NULL`
+>   Her satır için o lisansta o kaydı gösteren geçici bağlantı satırı aynı
+>   yolla eklenir ve silme yeniden uygulanır; S2b silmesi kaydın bağını,
+>   kararlarını ve projeksiyonunu bulur.
 > - (4) O imajın bağdaştırması, bağlantısı kopyada kalmış kişide kararı (yeni
 >   IBAN'da bağı da) kopyaya yazar. Sayım:
 >   `SELECT (SELECT COUNT(*) FROM PaymentMatches pm JOIN WpfCustomerProjections c ON c.Id = pm.ActualWpfCustomerId AND c.LicenseId = pm.LicenseId WHERE c.MergedIntoId IS NOT NULL AND pm.DecidedAt >= '<geri alma anı>') AS Kararlar, (SELECT COUNT(*) FROM CustomerIbanMemories m JOIN WpfCustomerProjections c ON c.Id = m.WpfCustomerId AND c.LicenseId = m.LicenseId WHERE c.MergedIntoId IS NOT NULL AND m.CreatedAt >= '<geri alma anı>') AS Baglar`

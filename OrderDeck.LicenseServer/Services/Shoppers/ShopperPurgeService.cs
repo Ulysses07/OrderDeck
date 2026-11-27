@@ -318,6 +318,11 @@ public sealed class ShopperPurgeService
         //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:
         //       kanıtın kaynağı o açıklamadır ve silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama,
         //       satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
+        //     - Dışlanan hareket (kod ya da TL/TRY dışı para birimi, PaymentMatcher.IsExcluded) kullanıcı adı aramasına girmez:
+        //       eşleştirici ona öneri ve kullanıcı adı kanıtı yazmaz ("excluded:{neden}"). Açıklaması yalnız silinen bir bağın
+        //       özetinden geliyorsa burada gider, yoksa eşleşmeyen açıklamanın saklamasıyla (BankDataRetentionJob 3. adım,
+        //       30. gün). S2b'den önce TL dışı havale kullanıcı adı önerisi alır ve burada bulunurdu; K-7'nin anlıklığını oraya
+        //       genişletmek sahip kararıdır (S2b planı, PR gövdesi).
         //     Kimlik kümesi adım 3'ün anahtarlarıdır (tasarım §2.5, §12): bağlantının Id'si (K) birleştirmeden sonra kopyada
         //     kalmış olabilir ve S2b göçü kopyadaki bağı onu gösteren kararla birlikte asıl kayda (C) taşır. Yalnız K ile
         //     aransaydı kişinin asıl kaydı silinmez, taşınan bağ ve karar bulunmazdı. Her bağlantı için {K} ∪ {C}; C,
