@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Push;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
@@ -187,6 +188,54 @@ public sealed class PaymentSubmitConcurrencyTests : IAsyncLifetime
         (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().ShopperBroadcasterLinks.AsNoTracking()
                 .SingleAsync(l => l.Id == link.LinkId)).WpfCustomerId
             .Should().Be(link.CustomerId, "bağ yerinde: yalnız shopper koşulu tutmadı");
+    }
+
+    /// <summary>
+    /// (koruma) Bağlantıyı başka kayda TAŞIYAN birleştirme ya da devralma da (<c>CustomerIdentityMerger.RepointReferencesAsync</c>:
+    /// okunan müşteri asıl kaydın kopyası olur, bağlantı asıl kayda gider) çözüm ile kayıt arasında commit olursa koşulu bozar:
+    /// bağlantı artık okunan müşteride değil, kayıttan sonraki denetim dekontun müşterisini boşaltır. Denetim taşımayı kesmeden
+    /// ayırmaz; okuyucunun zinciri izleyeceği kopya Id'si dekontta kalmaz. Bağlantı bağlı kaldığı için hiçbir yol dekontu sonradan
+    /// yeniden türetmez. Yön temkinlidir (S3a'da müşterisi bilinmeyen dekont, fazladan soru), pencere milisaniyelerdir; taşımayı
+    /// kabul etmek S3a'nındır (S2b planı Karar 11).
+    /// </summary>
+    [Fact]
+    public async Task Gonderim_cozdukten_sonra_bag_baska_kayda_tasinirsa_dekont_musterisiz_kalir()
+    {
+        var seed = await SeedAsync();
+        var link = await SeedLinkAsync(seed.ShopperId, seed.LicenseId);
+        var successor = Guid.NewGuid();
+        var moved = false;
+        _factory.Hook.Once(async saving =>
+        {
+            saving.ChangeTracker.Entries<Payment>().Should().Contain(
+                e => e.State == EntityState.Added && e.Entity.WpfCustomerId == link.CustomerId,
+                "kanca gönderimin kaydında, müşteri çözüldükten sonra tetiklenmeli");
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            // Birleştirmenin etkisi: okunan müşteri aynı kimliğin yeni asıl kaydına yönlenir, bağlantı onunla gider.
+            var username = await db.WpfCustomerProjections.Where(c => c.Id == link.CustomerId).Select(c => c.Username).SingleAsync();
+            (await db.WpfCustomerProjections.Where(c => c.Id == link.CustomerId)
+                .ExecuteUpdateAsync(u => u.SetProperty(c => c.MergedIntoId, (Guid?)successor))).Should().Be(1);
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = successor, LicenseId = seed.LicenseId, Platform = "tiktok", Username = username, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+            (await db.ShopperBroadcasterLinks.Where(l => l.Id == link.LinkId)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.WpfCustomerId, (Guid?)successor))).Should().Be(1);
+            moved = true;
+        });
+
+        (await SubmitInOwnScopeAsync(seed.ShopperId, seed.LicenseId, NewPdfHash(), NewReferansNo()))
+            .Error.Should().BeNull();
+
+        moved.Should().BeTrue();
+        (await PaymentCustomerAsync(seed.ShopperId)).Should().BeNull(
+            "bağlantı çözümden sonra başka kayda taşındı; denetim taşımayı kesmeden ayırmaz, dekont temkinli olarak müşterisiz");
+        using var verify = _factory.Services.CreateScope();
+        (await ShopperCustomerResolver.PaymentCustomerAsync(verify.ServiceProvider.GetRequiredService<LicenseDbContext>(),
+                seed.LicenseId, seed.ShopperId, default))
+            .Should().Be(successor, "türetme kuralı bugün yeni asıl kaydı verir; dekont onu sonradan almaz");
     }
 
     // ── Yardımcılar ───────────────────────────────────────────────────────────

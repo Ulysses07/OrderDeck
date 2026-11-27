@@ -100,6 +100,9 @@ public static class ShopperCustomerResolver
     /// koşullu UPDATE'tir: seçilen bağlantı hâlâ okunan müşterideyse ve shopper silinmemişse yazar. Bağı kesen yollar (silme
     /// bağlantıyı siler ve dekontun müşterisini boşaltır; kanıt kaybı bağlantıyı boşaltır) <c>Status</c>'a dokunmaz; koşul
     /// okumada kalsaydı okumadan sonra commit olan kesme geri yazılırdı, okuyucu da geride kalan asıl kaydı ayırt edemezdi.
+    /// Bağlantıyı başka kayda taşıyan birleştirme ya da devralma (<c>CustomerIdentityMerger.RepointReferencesAsync</c>) da
+    /// okumadan sonra commit olursa koşulu bozar: yazım yapılmaz, dekont önceki değerinde kalır (temkinli yön, S2b planı
+    /// Karar 11; <see cref="ClearIfLinkChangedAsync"/>).
     /// Koşul tabloları kilitli okunur: kesme henüz commit olmadıysa yazım onun commit'ini bekler, RCSI ayarından bağımsız (sınıf
     /// özeti; kalan pencere orada). <c>Status</c>'a bakmaz; onu, <c>UpdatedAt</c>'i (<c>payments/since</c> imleci) ve jetonu
     /// yazmaz: araya giren onay yazımı düşürmez. İlişkiselde ham SQL'dir ve izleyiciyi atlar (çağıranlar sonra
@@ -167,9 +170,14 @@ public static class ShopperCustomerResolver
     /// Gönderimin kayıttan sonraki denetimi (S2b planı Karar 11): gönderim müşteriyi kayıttan hemen önce
     /// <see cref="DeriveAsync"/> ile çözer; arada bağı kesen bir yol commit olduysa (silme bağlantıyı siler,
     /// <c>ReproveLinksAsync</c> ve <c>CustomerIdentityMergeJob</c> bağlantıyı boşaltır) <see cref="RederivePaymentsAsync"/>'in
-    /// koşulu artık tutmaz ve dekontun müşterisi boşaltılır. Koşul tabloları kilitli okunur: kesme henüz commit olmadıysa denetim
-    /// onun commit'ini bekler, RCSI ayarından bağımsız (sınıf özeti). Yalnız çözülen müşteriyi hâlâ taşıyan satıra yazar. Yalnız
-    /// ilişkiselde koşar (ham SQL): InMemory'de eşzamanlı yazım yok.
+    /// koşulu artık tutmaz ve dekontun müşterisi boşaltılır. Bağlantıyı başka kayda taşıyan birleştirme ya da devralma da
+    /// (<c>CustomerIdentityMerger.RepointReferencesAsync</c>) koşulu bozar: okunan müşteri artık kopyadır ve okuyucu zinciri
+    /// izleyebilirdi, ama denetim taşımayı kesmeden ayırmaz, dekontun müşterisi yine boşalır. Bağlantı bağlı kaldığı için hiçbir
+    /// yol (geriye dönük eşleştirme, telefon doğrulaması, parola sıfırlama) dekontu sonradan yeniden türetmez; yön temkinlidir
+    /// (S3a'da müşterisi bilinmeyen dekont, fazladan soru), taşımayı kabul etmek S3a'nındır (S2b planı Karar 11). Koşul
+    /// tabloları kilitli okunur: kesme henüz commit olmadıysa denetim onun commit'ini bekler, RCSI ayarından bağımsız (sınıf
+    /// özeti). Yalnız çözülen müşteriyi hâlâ taşıyan satıra yazar. Yalnız ilişkiselde koşar (ham SQL): InMemory'de eşzamanlı
+    /// yazım yok.
     /// </summary>
     public static async Task ClearIfLinkChangedAsync(
         LicenseDbContext db, Guid paymentId, Guid shopperId, DerivedCustomer d, CancellationToken ct)
