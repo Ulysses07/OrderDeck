@@ -114,7 +114,11 @@ public static class BankSubjectScrub
     /// olabilir (karar kalmayınca bu öneri havaleyi kişiye bağlayan tek iz olurdu) ya da silinmeyen bir müşteri olabilir (kişinin
     /// öbür satırı ya da başka bir kişi: öneri yine silinen bağın izidir). Ölçüm silmeden önceki gibidir: durumdan, katmandan ve
     /// gerçek müşteriden okunur (<see cref="PaymentMatchMetrics"/>); öneriden farklı müşteriye elle verilmiş karar (elle eşleme +
-    /// öneri) çelişkiye çevrilir, ölçüm ikisini aynı sayar. <see cref="MatchForCustomer"/>'ın kararlı kolunun eşi.</item>
+    /// öneri) çelişkiye çevrilir, ölçüm ikisini aynı sayar. Tek istisna kanıtın
+    /// <see cref="PaymentMatcher.ReevaluationEvidenceSuffix"/> ekidir: kanıtla gider, sonradan üretilmiş önerinin dekont kararı
+    /// Faz 2 örneklemine geçer. Saklamanın 4. adımı (<see cref="BankDataRetentionJob"/>) açıklaması silinmiş hareketin kanıtını
+    /// bir sonraki koşuda boşaltıp aynı hâle getirirdi (IBAN talebinde kimlik kuralı kanıtı zaten boşaltır): kural en çok zamanı
+    /// öne çeker, son hâl aynıdır. <see cref="MatchForCustomer"/>'ın kararlı kolunun eşi.</item>
     /// </list>
     /// Sürüm kalır: silme yeniden hesap değildir. Öneri ve kanıtı zaten boş satıra yazılmaz. Kalan bağ satır düzeyinde
     /// karşılaştırılır: kalan bağ kişinin başka satırındaysa öneri fazla boşalır (temkinli yön); dar tekil

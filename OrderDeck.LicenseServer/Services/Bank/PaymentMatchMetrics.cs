@@ -37,8 +37,11 @@ public sealed record PlatformStat(string Platform, int Confirmed, int Contradict
 /// <see cref="ReevaluatedReceiptContradicted"/>'te ayrı gösterilir (sayfa kararı da sayılmaz). O öneri çekim anında yoktu: Faz 2'nin
 /// otomatik onayı çekim anında çalışacaksa o satırlar "öneri yok" olurdu; eşik otomatikleştirilecek nüfusu ölçmeli, IBAN katmanının
 /// yüksek isabeti de çelişki oranını aşağı çekip 200'e erken ulaştırırdı. Dekont bağı kanıta dokunmaz, bağlı satırın kanıtı
-/// açıklamasıyla (180 güne kadar) kalır: pencere içinde ek güvenilir. Bilinen sınır: KVKK silmesi kişiye bağlı satırın kanıtını
-/// boşaltır, o satırın eki kaybolur. Genel sayımlar, katman ve platform isabeti değişmez. <see cref="ReevaluatedPending"/>
+/// açıklamasıyla (180 güne kadar) kalır: pencere içinde ek güvenilir. Bilinen sınır: KVKK silmesi hareketin açıklamasını siler;
+/// kanıt kişiye bağlı satırda, IBAN talebinde hareketin her satırında ve silinen bağdan IBAN'dan türeyen iz taşıyan satırda
+/// (kararlı satır da, <see cref="BankSubjectScrub.IbanDerivedProposal"/>) hemen, öbür satırlarda saklamanın 4. adımıyla
+/// (<see cref="BankDataRetentionJob"/>) bir sonraki koşuda boşalır. Eki kaybolan satırın dekont kararı Faz 2 örneklemine geçer.
+/// Genel sayımlar, katman ve platform isabeti değişmez. <see cref="ReevaluatedPending"/>
 /// bekleyen önerilerin sonradan üretilenidir (telafi taramasının geriye dönük doldurması "Bekleyen öneri"yi sıçratır).</para>
 /// <para><b>Süzgeç (tasarım §4.5; S2b).</b> Yalnız karar katmanına girmemiş ya da dekontla kapanmış satırlar sayılır
 /// (<c>Decision ∈ {None, ClosedByReceipt}</c>). Bağlı ödemesinin kaynağı dekont olmayan (<see cref="Payment.Source"/> ≠
