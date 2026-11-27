@@ -160,6 +160,20 @@ public class SqlServerContainerFixture : IAsyncLifetime
     /// gitti (yerel ölçüm: CREATE ~1 sn → ~3,6 sn). CREATE'ten sonra verilse de
     /// hızlı biten bir testin ardından ya da ikinci DB açan bir testte CREATE
     /// arka plandaki silmeye denk gelebilir; o durumda yalnız o silmeyi bekler.
+    ///
+    /// <para><b>RCSI açık, prod'daki gibi.</b> Prod veritabanı ilk kurulumda
+    /// <c>EnsureCreated()</c> ile oluşturuldu (<c>deploy/bootstrap-migration-history.sql</c>);
+    /// EF Core SQL Server'da veritabanını kendisi oluşturunca
+    /// <c>READ_COMMITTED_SNAPSHOT</c>'ı açar (Azure SQL dışında). Prod'da açık olduğu
+    /// 27.11.2026'da sorguyla doğrulandı. Düz <c>CREATE DATABASE</c> onu kapalı
+    /// bırakır: testler o zaman kilitli READ COMMITTED'ı, yani prod'da olmayan bir
+    /// okumayı sınar. RCSI'da okuma commit olmamış bir yazımı beklemez, ifadenin
+    /// başındaki son commit'i okur. UPDATE/DELETE hedef satırları yine U kilidiyle
+    /// en son commit'ten okur; aynı deyimin öbür tabloları (EXISTS, JOIN) ve ayrı bir
+    /// deyimdeki "önce oku, sonra yaz" okuması ise anlık görüntüden okur. Uçuştaki bir
+    /// yazımı beklemesi gereken okuma <c>WITH (READCOMMITTEDLOCK)</c> ister. Ayar
+    /// göçten ve ilk bağlantıdan önce yapılır; veritabanında başka oturum varken
+    /// ALTER bekler.</para>
     /// </summary>
     public async Task<string> CreateDatabaseAsync()
     {
@@ -173,6 +187,8 @@ public class SqlServerContainerFixture : IAsyncLifetime
             // dbName tamamen bizim ürettiğimiz sabit alfabe (harf + hex), dışarıdan
             // veri almıyor; yine de köşeli parantezle sarılıyor.
             cmd.CommandText = $"CREATE DATABASE [{dbName}]";
+            await cmd.ExecuteNonQueryAsync();
+            cmd.CommandText = $"ALTER DATABASE [{dbName}] SET READ_COMMITTED_SNAPSHOT ON";
             await cmd.ExecuteNonQueryAsync();
         }
         finally
