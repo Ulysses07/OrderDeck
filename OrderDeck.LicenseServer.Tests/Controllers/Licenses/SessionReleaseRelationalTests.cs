@@ -3,11 +3,13 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -25,7 +27,11 @@ public sealed class SessionReleaseRelationalTests : IAsyncLifetime
     private static readonly DateTimeOffset StartedAt = new(2026, 10, 12, 18, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset EndedAt = StartedAt.AddHours(2);
 
+    // Eklemenin devrin kilidinde beklediğinin görülmesi için üst sınır (BlockedRequestProbe).
+    private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(30);
+
     private readonly SqlServerContainerFixture _sql;
+    private string _cs = null!;
     private FaultFactory _factory = null!;
     private HttpClient _client = null!;
     private Guid _licenseId;
@@ -35,7 +41,8 @@ public sealed class SessionReleaseRelationalTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _factory = new FaultFactory(await _sql.CreateDatabaseAsync());
+        _cs = await _sql.CreateDatabaseAsync();
+        _factory = new FaultFactory(_cs);
         var (_, customerId, jwt) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         _client = _factory.CreateClient();
         _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
@@ -140,6 +147,39 @@ public sealed class SessionReleaseRelationalTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// DM3, RCSI'da (prod'un yalıtımı): devrin işlemi commit olmamışken gelen ekleme (<c>orders/sync</c> ve
+    /// <c>sales/backfill</c>), oturumu okurken devrin satır kilidinde bekler; commit'ten sonra devir anını görür ve kopyalar.
+    /// Satır sürümlü okuma beklemeden "devredilmemiş" görürdü: devrin sipariş damgası o eklemeden önce koştuğu için sipariş
+    /// damgasız kalır, akışa ancak onarım işiyle (§4.9-b, günde bir) girerdi. Devir işlemi, ekleme onun kilidinde beklediği
+    /// görülene dek (ya da ekleme bitene dek) commit edilmez.
+    /// </summary>
+    [Theory]
+    [InlineData("orders/sync")]
+    [InlineData("sales/backfill")]
+    public async Task Ucustaki_devirle_yarisan_ekleme_commiti_bekler_devir_anini_kopyalar(string endpoint)
+    {
+        var sessionId = Guid.NewGuid();
+        await PushSessionAsync(sessionId, EndedAt, release: false);
+        await using var releaserScope = _factory.Services.CreateAsyncScope();
+        var releaser = releaserScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        await using var release = await releaser.Database.BeginTransactionAsync();
+        (await new SessionReleaser(releaser).ReleaseAsync(_licenseId, [sessionId], DateTimeOffset.UtcNow, default))
+            .Should().Equal(sessionId);
+
+        var push = Task.Run(() => endpoint == "orders/sync" ? PushOrderAsync(sessionId) : BackfillOrderAsync(sessionId));
+        var waited = await BlockedRequestProbe.WaitsOnAsync(
+            _cs, ((SqlConnection)releaser.Database.GetDbConnection()).ServerProcessId, push, WaitLimit);
+        await release.CommitAsync();
+        var orderId = await push.WaitAsync(WaitLimit);
+
+        var session = await SessionAsync(sessionId);
+        session.ReleasedAt.Should().NotBeNull();
+        (await OrderAsync(orderId)).SessionReleasedAt.Should().Be(
+            session.ReleasedAt, "ekleme devrin commit'ini bekleyip devir anını kopyalar");
+        waited.Should().BeTrue("oturum okuması devrin satır kilidinde bekler");
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
     private string Url(string endpoint) => $"/api/v1/licenses/{_licenseId}/{endpoint}";
@@ -183,6 +223,15 @@ public sealed class SessionReleaseRelationalTests : IAsyncLifetime
         var resp = await _client.PostAsJsonAsync(Url("orders/sync"), body);
         resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
         return orderId;
+    }
+
+    /// <summary>Yeni bir siparişi <c>sales/backfill</c> ile (oturumsuz parti) ekler.</summary>
+    private async Task<Guid> BackfillOrderAsync(Guid sessionId)
+    {
+        var item = OrderSyncV2Tests.NewItem(sessionId);
+        var resp = await _client.PostAsJsonAsync(Url("sales/backfill"), SalesBackfillTests.Body(_replicaId, [], [item], []));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        return item.Id;
     }
 
     private async Task<StreamSession> SessionAsync(Guid sessionId)

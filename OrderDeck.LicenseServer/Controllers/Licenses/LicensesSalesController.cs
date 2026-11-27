@@ -380,6 +380,8 @@ public sealed class LicensesSalesController : ControllerBase
         // partide (eksik oturum aynı partide eklenir). Hiçbir lisansta olmayan oturum paketin tamamını reddeder,
         // hiçbir şey yazılmaz. Başka lisansta var olan oturum ise satır başına reddedilir (aşağıda): StreamSessions'ın
         // birincil anahtarı yalnız Id; onu "eksik" sanıp eklemek 500 olurdu ve parti her denemede aynı yerde düşerdi.
+        // Oturumlar kilitli okunur (ReadCommittedLock; orders/sync'in gerekçesi, DM3): uçuştaki bir devrin commit'i
+        // beklenir, ekleme devir anını kopyalar. Okuma işlemden önce, bekleyen istek kilit tutmaz.
         var requestSessionIds = sessions.Select(s => s.Id).ToHashSet();
         var sessionKeys = requestSessionIds
             .Concat(orders.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value))
@@ -387,7 +389,7 @@ public sealed class LicensesSalesController : ControllerBase
             .ToList();
         var serverSessions = sessionKeys.Count == 0
             ? new Dictionary<Guid, StreamSession>()
-            : await _db.StreamSessions
+            : await _db.StreamSessions.WithReadCommittedLock()
                 .Where(s => s.LicenseId == licenseId && sessionKeys.Contains(s.Id))
                 .ToDictionaryAsync(s => s.Id, ct);
         var foreignSessions = await ForeignIdsAsync(
