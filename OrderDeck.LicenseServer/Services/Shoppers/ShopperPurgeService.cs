@@ -324,9 +324,9 @@ public sealed class ShopperPurgeService
         //       satırındaysa öneri IG'yi "IBAN destekli" gösterir. Satır silinen kimliklere ve kullanıcı adı anahtarına bakmadığı
         //       için yukarıdaki kurallara takılmaz; hareketin metni silindiğinden tarama da onu yeniden hesaplamaz, öneri kalırdı.
         //       Kural kimlik kuralından SONRA, özetin kalan bağının müşterisine giden öneriye dokunmadan: kararsız satırda öneri,
-        //       müşterisi silinmiş kararda (kişinin dekontu havaleyi TT'ye bağlamış) yalnız öneri alanları boşalır, ölçüm kalır.
-        //       Açıklama silindiği için yeniden hesap yok. Silinmeyen müşteriye kararlı ve karar katmanındaki satır kalır (Karar 7,
-        //       sahibe soruldu; kararları kişiyle aramak S4).
+        //       kararlı satırda (kişinin dekontu havaleyi TT'ye ya da IG'ye bağlamış; başka bir kişiye karar da) yalnız öneri
+        //       alanları boşalır, karar ve ölçüm kalır. Açıklama silindiği için yeniden hesap yok. Karar katmanındaki satır kalır
+        //       (Karar 7; silmenin o soruyu ne yapacağı S3a'da kararlaştırılır).
         //     - Dışlanan hareket (kod ya da TL/TRY dışı para birimi, PaymentMatcher.IsExcluded) kullanıcı adı aramasına girmez:
         //       eşleştirici ona öneri ve kullanıcı adı kanıtı yazmaz ("excluded:{neden}"). Açıklaması yalnız silinen bir bağın
         //       özetinden geliyorsa burada gider, yoksa eşleşmeyen açıklamanın saklamasıyla (BankDataRetentionJob 3. adım,

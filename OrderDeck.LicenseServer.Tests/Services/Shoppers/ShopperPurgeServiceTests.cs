@@ -1534,8 +1534,9 @@ public sealed class ShopperPurgeServiceTests
         matches[s.ProposedToK].ProposedWpfCustomerId.Should().BeNull();
     }
 
-    // ── S2b planı Karar 7 (sahip kararı 27.11.2026): silinen bağların özetinden gelen havalelerin IBAN'dan türeyen kararsız v2
-    //    önerisi de boşalır; özetin kalan bağının müşterisine giden öneri ve IBAN izi olmayan öneri kalır.
+    // ── S2b planı Karar 7 (sahip kararı 27.11.2026): silinen bağların özetinden gelen havalelerin IBAN'dan türeyen v2 önerisi de
+    //    boşalır (kararsız ve kararlı satırda; karar katmanı hariç); özetin kalan bağının müşterisine giden öneri ve IBAN izi
+    //    olmayan öneri kalır.
 
     /// <summary>Görev 10 sondasının (i) durumu: kişinin IG ve TT satırı aynı grupta, bağ TT'de (özet <c>Hash</c>), shopper'ın
     /// bağlantısı TT'de. Özetten gelen havalenin açıklamasında IG'nin kullanıcı adı var.</summary>
@@ -1576,6 +1577,17 @@ public sealed class ShopperPurgeServiceTests
         db.BankTransactions.Add(tx);
         db.PaymentMatches.Add(row);
         return row;
+    }
+
+    /// <summary>Ölçümün iki kutusu (güncel kişi düzeyi ve satır düzeyi eski): kararlı satırın önerisini boşaltan silme ikisini de
+    /// değiştirmemeli.</summary>
+    private static async Task<(PaymentMatchSummary Current, PaymentMatchSummary Legacy)> MetricsAsync(LicenseDbContext db,
+        Guid licenseId)
+    {
+        var metrics = new PaymentMatchMetrics(db,
+            new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance));
+        return (await metrics.ComputeAsync(licenseId, 30, PaymentMatcher.PersonLevelVersion, CancellationToken.None),
+            await metrics.ComputeAsync(licenseId, 30, null, CancellationToken.None));
     }
 
     [Fact]
@@ -1644,6 +1656,65 @@ public sealed class ShopperPurgeServiceTests
     }
 
     [Fact]
+    public async Task Silinen_bagin_ozetinden_dogan_IBAN_onerisi_kisinin_obur_satirina_kararli_satirda_da_bosalir_olcum_kalir()
+    {
+        // (i) durumunda kişinin dekontu havaleyi IG satırına bağlamış (öneriyi doğrulayan karar). Kararın müşterisi silinmez, silme
+        // satırı kimlik kuralıyla bulmaz: IG'ye giden IBAN destekli öneri silinen bağın izi olarak kalır, kanıtı saklamanın sonraki
+        // koşusunu beklerdi. Sahip kararı (27.11.2026) bunu da kapsar: öneri, IBAN desteği ve kanıt gider; gerçek müşteri, durum,
+        // katman, güven, karar anı ve dekont bağı kalır, ölçümün iki kutusu silmeden önceki gibidir.
+        using var db = NewDb();
+        var s = SeedSiblingBond(db);
+        await db.SaveChangesAsync();
+        var matcher = new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance);
+        var row = await matcher.MatchAsync(s.Tx, default);
+        (row.ProposedWpfCustomerId, row.SupportedByIbanMemory, row.Evidence).Should().Be(
+            ((Guid?)s.Ig, true, "username=ornekmusteri34;iban-memory"), "ön koşul");
+        (row.PaymentId, row.ActualWpfCustomerId, row.DecidedAt, row.Status) =
+            (Guid.NewGuid(), s.Ig, DateTimeOffset.UtcNow.AddHours(-1), PaymentMatchStatus.ConfirmedByHuman);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        var metricsBefore = await MetricsAsync(db, s.License.Id);
+
+        await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.ProposedWpfCustomerId, m.SupportedByIbanMemory, m.Evidence).Should().Be(((Guid?)null, false, (string?)null),
+            "silinen bağdan türeyen öneri yaşayan kararda da gider");
+        m.Should().BeEquivalentTo(before, o => o.Excluding(x => x.ProposedWpfCustomerId).Excluding(x => x.SupportedByIbanMemory)
+            .Excluding(x => x.Evidence).Excluding(x => x.UpdatedAt), "gerçek müşteri, durum, karar anı ve dekont bağı kalır");
+        var metricsAfter = await MetricsAsync(db, s.License.Id);
+        metricsAfter.Current.Should().BeEquivalentTo(metricsBefore.Current, "ölçüm durumdan, katmandan ve gerçek müşteriden okunur");
+        metricsAfter.Legacy.Should().BeEquivalentTo(metricsBefore.Legacy);
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.Target == BankSubjectScrub.LinkedMatchTarget)
+                .Select(r => r.RowCount).ToListAsync())
+            .Should().Equal([1], "önerisi boşalan satır kimlik ve kanıt kaydında");
+        (await db.DataDestructionRecords.AsNoTracking().AnyAsync(r => r.Target == BankSubjectScrub.MatchEvidenceTarget))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Silinen_bagin_ozetinden_dogan_IBAN_onerisi_karar_katmanindaki_satirda_kalir()
+    {
+        // (koruma) Kural karar katmanına dokunmaz (S2b planı Karar 7): o sorunun IBAN destekli önerisi yayıncının önündedir, silmede
+        // ne olacağı S3a'da kararlaştırılır. Satır silmenin öbür kurallarına da takılmaz (ne bağlantının kimliğini ne TT'nin
+        // kullanıcı adını taşır): aynen kalır, kanıtı saklamanın sonraki koşusuna dek durur.
+        using var db = NewDb();
+        var s = SeedSiblingBond(db);
+        var row = SeedRowFromHash(db, s, s.Ig, $"username={BankTextNormalizer.UsernameKey("ornek_musteri34")};iban-memory");
+        row.Layer = PaymentMatchLayer.UsernameInDescription;
+        row.Confidence = PaymentMatcher.BothConfidence;
+        row.SupportedByIbanMemory = true;
+        row.Decision = PaymentMatchDecision.Awaiting;
+        await db.SaveChangesAsync();
+        var before = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == row.Id);
+
+        await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == row.Id)).Should().BeEquivalentTo(before);
+    }
+
+    [Fact]
     public async Task Silinen_bagin_ozetinden_gelen_onerisiz_satirin_IBAN_kaniti_de_bosalir()
     {
         // Satır düzeyi eşleştiricinin (S2b öncesi, sürüm boş) aynı durumda yazdığı satır: kullanıcı adı IG'yi, bağ TT'yi gösterdiği
@@ -1694,6 +1765,7 @@ public sealed class ShopperPurgeServiceTests
     {
         // (koruma) Özetin silinmeyen bağı varsa (dar tekil (LicenseId, IbanHash) S3b'de düşer; InMemory onu uygulamaz, çift bağ
         // tohumlanır) o bağın müşterisine giden öneri bağdan türemiş olsa da kalır: bağ yerinde. Karşılaştırma satır düzeyidir.
+        // Kararsız satırda da, o müşteriye verilmiş kararda da.
         using var db = NewDb();
         var s = SeedSiblingBond(db);
         var keeper = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = s.License.Id, Platform = "instagram",
@@ -1703,15 +1775,23 @@ public sealed class ShopperPurgeServiceTests
             IbanHash = s.Hash, IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow };
         db.CustomerIbanMemories.Add(keeperBond);
         var row = SeedRowFromHash(db, s, keeper.Id, $"username={BankTextNormalizer.UsernameKey("mehmet_k")};iban-memory");
-        row.Layer = PaymentMatchLayer.UsernameInDescription;
-        row.Confidence = PaymentMatcher.BothConfidence;
-        row.SupportedByIbanMemory = true;
+        var decided = SeedRowFromHash(db, s, keeper.Id, $"username={BankTextNormalizer.UsernameKey(keeper.Username)};iban-memory");
+        (decided.ActualWpfCustomerId, decided.Status, decided.DecidedAt, decided.PaymentId) =
+            (keeper.Id, PaymentMatchStatus.ConfirmedByHuman, DateTimeOffset.UtcNow.AddHours(-1), Guid.NewGuid());
+        foreach (var seeded in new[] { row, decided })
+        {
+            seeded.Layer = PaymentMatchLayer.UsernameInDescription;
+            seeded.Confidence = PaymentMatcher.BothConfidence;
+            seeded.SupportedByIbanMemory = true;
+        }
         await db.SaveChangesAsync();
-        var before = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == row.Id);
+        var before = await db.PaymentMatches.AsNoTracking().Where(m => m.Id == row.Id || m.Id == decided.Id)
+            .ToDictionaryAsync(m => m.Id);
 
         await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
 
-        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == row.Id)).Should().BeEquivalentTo(before);
+        (await db.PaymentMatches.AsNoTracking().Where(m => m.Id == row.Id || m.Id == decided.Id).ToDictionaryAsync(m => m.Id))
+            .Should().BeEquivalentTo(before);
         (await db.CustomerIbanMemories.AsNoTracking().Select(b => b.Id).ToListAsync()).Should().Equal([keeperBond.Id],
             "silinen kişinin bağı gider, öbür kişinin bağı kalır");
     }

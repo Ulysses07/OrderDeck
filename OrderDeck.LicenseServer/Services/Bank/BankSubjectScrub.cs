@@ -13,9 +13,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// banka veri talebi aracı (BankSubjectRequestService) aynı kuralları kullanır. Yeniden uygulanabilir (idempotent); kaydetmez.
 /// <para>Hareket: açıklama, gönderen adı ve ham kayıt silinir; tutar, tarih, kısaltılmış IBAN ve tanıma kodu kalır (özetin
 /// silinmesi avukat kararı). Eşleşme: kişinin müşteri kimliği ve gerekçe metni silinir; satır ölçüm kaydı olarak kalır, ölçüm
-/// sonucu durumdan okunur (<see cref="PaymentMatchMetrics"/>). Silinen bağın özetinden gelen hareketin kararsız satırında ve
-/// müşterisi silinmiş kararında IBAN'dan türeyen öneri de gider (<see cref="IbanDerivedProposal"/>): kişi düzeyi eşleştirici bağı
-/// kişinin öbür satırına ve kopyadaki bağı asıl kayda sayar, kimlik kuralı o öneriyi bulmaz. Elle eşleme denetimi: satır kalır,
+/// sonucu durumdan okunur (<see cref="PaymentMatchMetrics"/>). Silinen bağın özetinden gelen hareketin karar katmanına girmemiş
+/// satırında (kararsız ya da kararlı) IBAN'dan türeyen öneri de gider (<see cref="IbanDerivedProposal"/>): kişi düzeyi eşleştirici
+/// bağı kişinin öbür satırına ve kopyadaki bağı asıl kayda sayar, kimlik kuralı o öneriyi bulmaz. Elle eşleme denetimi: satır kalır,
 /// müşteriyi gösteren ayrıntı silinir (<see cref="ManualMatchAudits"/>).</para>
 /// </summary>
 public static class BankSubjectScrub
@@ -101,25 +101,25 @@ public static class BankSubjectScrub
     /// Kişi düzeyi eşleştirici bağı kişinin öbür satırına (aynı <c>GroupId</c>) ve kopyadaki bağı asıl kayda sayar: öneri bağın
     /// müşterisini değil kişinin başka bir kaydını gösterebilir, kimlik kuralı (<see cref="MatchForCustomer"/>) onu bulmaz, öneri
     /// "IBAN destekli" kalırdı. Kimlik kuralından SONRA çağrılır.
-    /// <para>Kural satırda yaşayan karar yokken uygulanır: gerçek müşteri boş (bu silmenin ya da önceki bir KVKK silmesinin
-    /// boşalttığı karar dahil) ve satır karar katmanında değil (Decision ≠ None satırın önerisi yayıncının önündeki sorudur).
-    /// IBAN'dan türeyen iz: katman IBAN hafızası, IBAN desteği ya da kanıtta <c>iban-memory</c>. Kanıt satırın okunduğu hâlinden
-    /// (izlenen satırın özgün değeri) okunur: kimlik kuralı kanıtı önce boşaltır (IBAN talebinde kanıtlı her satırda); boşalmış
-    /// hâlinden okunsaydı izi yalnız kanıtta olan satır kurala girmezdi. Önerilen müşteri özetin silinmeden kalan bir bağının
-    /// müşterisi değilse:</para>
+    /// <para>Kural karar katmanına girmemiş satıra uygulanır: karar katmanındaki satırın önerisi yayıncının önündeki sorudur, silmede
+    /// ne olacağı S3a'da kararlaştırılır. IBAN'dan türeyen iz: katman IBAN hafızası, IBAN desteği ya da kanıtta
+    /// <c>iban-memory</c>. Kanıt satırın okunduğu hâlinden (izlenen satırın özgün değeri) okunur: kimlik kuralı kanıtı önce
+    /// boşaltır (IBAN talebinde kanıtlı her satırda); boşalmış hâlinden okunsaydı izi yalnız kanıtta olan satır kurala girmezdi.
+    /// Önerilen müşteri özetin silinmeden kalan bir bağının müşterisi değilse:</para>
     /// <list type="bullet">
     /// <item>Kararsız satırda (karar anı boş) öneri boşalır: <see cref="MatchForCustomer"/>'ın kararsız öneri kolunun eşi (öneri
     /// yok, katman yok, güven 0, IBAN desteği yok), kanıt da.</item>
-    /// <item>Müşterisi silinmiş kararda (karar anı dolu) yalnız öneri, IBAN desteği ve kanıt boşalır: durum, katman, güven, karar anı
-    /// ve dekont bağı ölçüm için kalır (ölçüm durumdan ve katmandan okunur, <see cref="PaymentMatchMetrics"/>); öneriden farklı
-    /// müşteriye elle verilmiş karar (elle eşleme + öneri) çelişkiye çevrilir. <see cref="MatchForCustomer"/>'ın kararlı kolunun
-    /// eşi. Karar kalmayınca bu öneri havaleyi kişiye bağlayan tek iz olurdu.</item>
+    /// <item>Kararlı satırda (karar anı dolu) yalnız öneri, IBAN desteği ve kanıt boşalır; gerçek müşteri, durum, katman, güven,
+    /// karar anı, dekont bağı ve IBAN doğrulama işareti kalır. Kararın müşterisi bu ya da önceki bir KVKK silmesiyle boşalmış
+    /// olabilir (karar kalmayınca bu öneri havaleyi kişiye bağlayan tek iz olurdu) ya da silinmeyen bir müşteri olabilir (kişinin
+    /// öbür satırı ya da başka bir kişi: öneri yine silinen bağın izidir). Ölçüm silmeden önceki gibidir: durumdan, katmandan ve
+    /// gerçek müşteriden okunur (<see cref="PaymentMatchMetrics"/>); öneriden farklı müşteriye elle verilmiş karar (elle eşleme +
+    /// öneri) çelişkiye çevrilir, ölçüm ikisini aynı sayar. <see cref="MatchForCustomer"/>'ın kararlı kolunun eşi.</item>
     /// </list>
     /// Sürüm kalır: silme yeniden hesap değildir. Öneri ve kanıtı zaten boş satıra yazılmaz. Kalan bağ satır düzeyinde
     /// karşılaştırılır: kalan bağ kişinin başka satırındaysa öneri fazla boşalır (temkinli yön); dar tekil
-    /// <c>(LicenseId, IbanHash)</c> dururken kalan bağ olmaz. Silinmeyen müşteriye kararlı satıra ve karar katmanındaki satıra bu
-    /// kural dokunmaz: önerilerinin kalıntısı Karar 7'de, sahibe soruldu. Gerçek müşterisi dolu satırda karar anı da doludur.
-    /// Yeniden uygulanabilir.
+    /// <c>(LicenseId, IbanHash)</c> dururken kalan bağ olmaz. Gerçek müşterisi dolu satırda karar anı da doludur: kararsız kol
+    /// yalnız karar anı boş satıra uygulanır. Yeniden uygulanabilir.
     /// </summary>
     /// <param name="db">Satırı izleyen bağlam: kanıtın okunduğu hâli oradan.</param>
     /// <param name="remainingBondCustomers">Satırın hareketinin özetinin silinmeden kalan bağlarının müşterileri.</param>
@@ -128,7 +128,7 @@ public static class BankSubjectScrub
     public static string? IbanDerivedProposal(LicenseDbContext db, PaymentMatch match,
         IReadOnlyCollection<Guid> remainingBondCustomers, DateTimeOffset now)
     {
-        if (match.ActualWpfCustomerId is not null || match.Decision != PaymentMatchDecision.None) return null;
+        if (match.Decision != PaymentMatchDecision.None) return null;
         var evidenceAsRead = db.Entry(match).Property(m => m.Evidence).OriginalValue;
         var ibanTrace = match.Layer == PaymentMatchLayer.IbanMemory || match.SupportedByIbanMemory
             || evidenceAsRead?.Contains(IbanMemoryEvidence, StringComparison.Ordinal) == true;
