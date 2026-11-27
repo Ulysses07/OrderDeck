@@ -15,7 +15,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.ShopperLinking;
 /// UPDATE'tir. Seçilen bağlantı hâlâ okunan müşterideyse ve shopper silinmemişse yazar; <c>Status</c>'a bakmaz, onu ve
 /// <c>UpdatedAt</c>'i yazmaz. Yarış okuma kancasıyla sıraya dizilir (<see cref="ReadQueryHook"/>): türetme bağlantıyı okuduktan
 /// sonra, zinciri okumadan önce ayrı bağlamda bir yazım commit olur. InMemory'de komut kancası ve <c>ExecuteUpdate</c> yok.
-/// Değerler üretilir.
+/// İlişkisel yazım ham SQL'dir, InMemory'nin sınadığı LINQ süzgecinden ayrı bir metindir: <c>Source</c> maddesi ve türetilen
+/// müşteri null'ken eşitsizlik burada da sınanır (iki yarışsız test). Değerler üretilir.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -38,8 +39,10 @@ public sealed class PaymentRederivationRelationalTests : IAsyncLifetime
     private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid CustomerId, Guid PaymentId, DateTimeOffset At);
 
     /// <summary>Lisans, telefonu doğrulanmış shopper, asıl kayıt P, shopper'ın P'ye bağlı bağlantısı ve müşterisiz bekleyen
-    /// dekontu (bağ beklerken gönderilmiş).</summary>
-    private async Task<Seed> SeedAsync()
+    /// dekontu (bağ beklerken gönderilmiş). <paramref name="unprovenCopy"/> ise bağ kanıtsız geçici kopyadadır (S2b planı
+    /// Karar 9): bağlantı P'ye birleştirilmiş geçici kopya K'de, P'nin telefonu shopper'ınki değil; dekont P'de (bağ kanıtsız
+    /// kalmadan önce yazılmış).</summary>
+    private async Task<Seed> SeedAsync(bool unprovenCopy = false)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -62,22 +65,47 @@ public sealed class PaymentRederivationRelationalTests : IAsyncLifetime
         var p = new WpfCustomerProjection
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "tiktok", Username = $"u-{Guid.NewGuid():N}",
-            Phone = shopper.Phone, UpdatedAt = now,
+            Phone = unprovenCopy ? TestPhone.NewE164() : shopper.Phone, UpdatedAt = now,
         };
+        var k = unprovenCopy
+            ? new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "tiktok", Username = p.Username, Phone = shopper.Phone,
+                MergedIntoId = p.Id, CreatedByShopper = true, UpdatedAt = now,
+            }
+            : null;
         var link = new ShopperBroadcasterLink
         {
             Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "tiktok", Username = p.Username,
-            WpfCustomerId = p.Id, JoinedAt = now,
+            WpfCustomerId = k?.Id ?? p.Id, JoinedAt = now,
         };
         var at = now.AddDays(-2);
         var payment = new Payment
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, ShopperId = shopper.Id, ReferansNo = $"r-{Guid.NewGuid():N}",
-            Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at,
+            Amount = 10m, PaidAt = at, CreatedAt = at, UpdatedAt = at, WpfCustomerId = k is null ? null : p.Id,
         };
         db.AddRange(customer, license, shopper, p, link, payment);
+        if (k is not null) db.Add(k);
         await db.SaveChangesAsync();
         return new Seed(license.Id, shopper.Id, p.Id, payment.Id, at);
+    }
+
+    /// <summary>Tohumun shopper×lisansına <paramref name="source"/> kaynaklı, müşterisi <paramref name="customerId"/> olan
+    /// bir ödeme ekler; banka satırı onaylıdır (S3b'nin yazacağı biçim).</summary>
+    private async Task<Guid> AddPaymentAsync(Seed s, PaymentSource source, Guid? customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId, ShopperId = s.ShopperId, ReferansNo = $"r-{Guid.NewGuid():N}",
+            Amount = 10m, PaidAt = s.At, CreatedAt = s.At, UpdatedAt = s.At, Source = source, WpfCustomerId = customerId,
+            Status = source == PaymentSource.Bank ? PaymentStatus.Approved : PaymentStatus.Pending,
+        };
+        db.Payments.Add(payment);
+        await db.SaveChangesAsync();
+        return payment.Id;
     }
 
     /// <summary>Türetme bağlantıyı okuduktan sonra, zincirin ilk okumasından hemen önce <paramref name="interleave"/>
@@ -207,5 +235,39 @@ public sealed class PaymentRederivationRelationalTests : IAsyncLifetime
         payment.WpfCustomerId.Should().Be(s.CustomerId);
         payment.Status.Should().Be(PaymentStatus.Approved, "yazım Status'u yazmaz");
         payment.UpdatedAt.Should().Be(s.At, "payments/since imleci UpdatedAt'tir");
+    }
+
+    /// <summary>Yazım yalnız dekonta (<c>Source = Receipt</c>) yazar: aynı shopper×lisansta müşterisiz ve başka müşteride (Q)
+    /// birer dekont, birer banka satırı. Dekontlar P olur, banka satırları değişmez (müşterisi insan kararıdır), dönüş 2.</summary>
+    [Fact]
+    public async Task Yeniden_yazim_yalniz_dekontlara_yazar_banka_satirina_dokunmaz()
+    {
+        // (koruma) Source maddesi kaldırılınca düşer: banka satırları da P olur, dönüş 4.
+        var s = await SeedAsync();
+        var q = Guid.NewGuid();
+        var receiptOfQ = await AddPaymentAsync(s, PaymentSource.Receipt, q);
+        var bankWithoutCustomer = await AddPaymentAsync(s, PaymentSource.Bank, null);
+        var bankOfQ = await AddPaymentAsync(s, PaymentSource.Bank, q);
+
+        var changed = await RederiveAsync(s);
+
+        changed.Should().Be(2);
+        (await PaymentAsync(s.PaymentId)).WpfCustomerId.Should().Be(s.CustomerId);
+        (await PaymentAsync(receiptOfQ)).WpfCustomerId.Should().Be(s.CustomerId);
+        (await PaymentAsync(bankWithoutCustomer)).WpfCustomerId.Should().BeNull("banka satırına yazılmaz");
+        (await PaymentAsync(bankOfQ)).WpfCustomerId.Should().Be(q, "banka satırının müşterisi ezilmez");
+    }
+
+    /// <summary>Bağ kanıtsız geçici kopyada (Karar 9): türetilen müşteri null'dur, dekonttaki P boşalır, dönüş 1. İkinci koşu
+    /// 0 döner: eşitsizlik null-güvenlidir, boş dekont yeniden yazılmaz.</summary>
+    [Fact]
+    public async Task Yeniden_yazim_kanitsiz_gecici_kopyada_dekontu_bosaltir()
+    {
+        // (koruma) Eşitsizlik null'u ayırmazsa (ör. "<> @c OR IS NULL") düşer: null'a yazım olmaz, P kalır.
+        var s = await SeedAsync(unprovenCopy: true);
+
+        (await RederiveAsync(s)).Should().Be(1);
+        (await PaymentAsync(s.PaymentId)).WpfCustomerId.Should().BeNull("kanıtsız geçici kopyada müşteri bilinmez");
+        (await RederiveAsync(s)).Should().Be(0, "boş dekont yeniden yazılmaz");
     }
 }
