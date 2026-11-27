@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -7,6 +8,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
@@ -1590,6 +1592,12 @@ public sealed class ShopperPurgeServiceTests
             await metrics.ComputeAsync(licenseId, 30, null, CancellationToken.None));
     }
 
+    /// <summary>Banka verisi saklama işi, varsayılan sürelerle: 4. adımı açıklaması silinmiş hareketin kanıtını boşaltır.</summary>
+    private static BankDataRetentionJob RetentionJob(LicenseDbContext db)
+        => new(db, Options.Create(new BankOptions()),
+            new AdminJobAlerts(new TestEmailSender(), new ConfigurationBuilder().Build(), NullLogger<AdminJobAlerts>.Instance),
+            NullLogger<BankDataRetentionJob>.Instance);
+
     [Fact]
     public async Task Silinen_bagin_ozetinden_kisinin_obur_satirina_dogan_IBAN_destekli_oneri_de_bosalir()
     {
@@ -1661,7 +1669,8 @@ public sealed class ShopperPurgeServiceTests
         // (i) durumunda kişinin dekontu havaleyi IG satırına bağlamış (öneriyi doğrulayan karar). Kararın müşterisi silinmez, silme
         // satırı kimlik kuralıyla bulmaz: IG'ye giden IBAN destekli öneri silinen bağın izi olarak kalır, kanıtı saklamanın sonraki
         // koşusunu beklerdi. Sahip kararı (27.11.2026) bunu da kapsar: öneri, IBAN desteği ve kanıt gider; gerçek müşteri, durum,
-        // katman, güven, karar anı ve dekont bağı kalır, ölçümün iki kutusu silmeden önceki gibidir.
+        // katman, güven, karar anı, dekont bağı ve IBAN doğrulama işareti kalır, ölçümün iki kutusu silmeden önceki gibidir. İşaret
+        // dolu tohumlanır: boş olsaydı onu boşaltan bir kural da aynı satırı bırakırdı.
         using var db = NewDb();
         var s = SeedSiblingBond(db);
         await db.SaveChangesAsync();
@@ -1669,8 +1678,8 @@ public sealed class ShopperPurgeServiceTests
         var row = await matcher.MatchAsync(s.Tx, default);
         (row.ProposedWpfCustomerId, row.SupportedByIbanMemory, row.Evidence).Should().Be(
             ((Guid?)s.Ig, true, "username=ornekmusteri34;iban-memory"), "ön koşul");
-        (row.PaymentId, row.ActualWpfCustomerId, row.DecidedAt, row.Status) =
-            (Guid.NewGuid(), s.Ig, DateTimeOffset.UtcNow.AddHours(-1), PaymentMatchStatus.ConfirmedByHuman);
+        (row.PaymentId, row.ActualWpfCustomerId, row.DecidedAt, row.IbanConfirmedAt, row.Status) =
+            (Guid.NewGuid(), s.Ig, DateTimeOffset.UtcNow.AddHours(-1), s.Tx.OccurredAt, PaymentMatchStatus.ConfirmedByHuman);
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
         var before = await db.PaymentMatches.AsNoTracking().SingleAsync();
@@ -1681,8 +1690,11 @@ public sealed class ShopperPurgeServiceTests
         var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
         (m.ProposedWpfCustomerId, m.SupportedByIbanMemory, m.Evidence).Should().Be(((Guid?)null, false, (string?)null),
             "silinen bağdan türeyen öneri yaşayan kararda da gider");
+        (m.ActualWpfCustomerId, m.IbanConfirmedAt).Should().Be(((Guid?)s.Ig, (DateTimeOffset?)s.Tx.OccurredAt),
+            "kararı boşaltmayan yol IBAN doğrulama işaretini de bırakır");
         m.Should().BeEquivalentTo(before, o => o.Excluding(x => x.ProposedWpfCustomerId).Excluding(x => x.SupportedByIbanMemory)
-            .Excluding(x => x.Evidence).Excluding(x => x.UpdatedAt), "gerçek müşteri, durum, karar anı ve dekont bağı kalır");
+            .Excluding(x => x.Evidence).Excluding(x => x.UpdatedAt),
+            "gerçek müşteri, durum, karar anı, dekont bağı ve IBAN doğrulama işareti kalır");
         var metricsAfter = await MetricsAsync(db, s.License.Id);
         metricsAfter.Current.Should().BeEquivalentTo(metricsBefore.Current, "ölçüm durumdan, katmandan ve gerçek müşteriden okunur");
         metricsAfter.Legacy.Should().BeEquivalentTo(metricsBefore.Legacy);
@@ -1691,6 +1703,45 @@ public sealed class ShopperPurgeServiceTests
             .Should().Equal([1], "önerisi boşalan satır kimlik ve kanıt kaydında");
         (await db.DataDestructionRecords.AsNoTracking().AnyAsync(r => r.Target == BankSubjectScrub.MatchEvidenceTarget))
             .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Kararli_satirin_kanitiyla_reeval_eki_de_gider_dekont_karari_Faz2_orneklemine_saklamadaki_gibi_gecer()
+    {
+        // Ölçüm eşliğinin tek istisnası (S2b planı Karar 7). Kanıtın ";reeval" eki sonradan üretilmiş önerinin dekont kararını Faz 2
+        // örnekleminden ayırır (PaymentMatchMetrics); kararlı kol kanıtı boşaltınca ek de gider, karar örneklemine geçer. Genel
+        // sayımlar, katman, platform ve eski kutu değişmez. Yeni bir bozulma değildir, zamanı öne çeker: kural bu satıra uzanmadan
+        // önce silme ona dokunmazdı, ama saklamanın 4. adımı açıklaması silinmiş hareketin kanıtını bir sonraki koşuda boşaltıp
+        // aynı hâle getirirdi. Silmeden sonraki hâl saklamanın koşusundan sonra da aynıdır.
+        using var db = NewDb();
+        var s = SeedSiblingBond(db);
+        await db.SaveChangesAsync();
+        var matcher = new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance);
+        var row = await matcher.ReevaluateAsync(s.Tx, default);
+        (row.ProposedWpfCustomerId, row.SupportedByIbanMemory, row.Evidence).Should().Be(((Guid?)s.Ig, true,
+            "username=ornekmusteri34;iban-memory" + PaymentMatcher.ReevaluationEvidenceSuffix), "ön koşul");
+        (row.PaymentId, row.ActualWpfCustomerId, row.DecidedAt, row.Status) =
+            (Guid.NewGuid(), s.Ig, DateTimeOffset.UtcNow.AddHours(-1), PaymentMatchStatus.ConfirmedByHuman);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var before = await MetricsAsync(db, s.License.Id);
+        (before.Current.Confirmed, before.Current.ReceiptConfirmed, before.Current.ReevaluatedReceiptConfirmed).Should().Be(
+            (1, 0, 1), "ön koşul: sonradan üretilmiş önerinin dekont kararı örneklemde değil");
+
+        await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+        var afterPurge = await MetricsAsync(db, s.License.Id);
+        await RetentionJob(db).RunAsync();
+        var afterRetention = await MetricsAsync(db, s.License.Id);
+
+        (afterRetention.Current.Confirmed, afterRetention.Current.ReceiptConfirmed,
+                afterRetention.Current.ReevaluatedReceiptConfirmed).Should().Be((1, 1, 0),
+            "saklama açıklaması silinmiş hareketin kanıtını boşaltır: ek gider, karar örneklemine geçer");
+        afterPurge.Current.Should().BeEquivalentTo(afterRetention.Current, "silme saklamanın varacağı hâle hemen varır");
+        afterPurge.Current.Should().BeEquivalentTo(before.Current, o => o.Excluding(x => x.ReceiptConfirmed)
+            .Excluding(x => x.ReevaluatedReceiptConfirmed).Excluding(x => x.ReceiptDecisions)
+            .Excluding(x => x.ReevaluatedReceiptDecisions).Excluding(x => x.ReceiptContradictionRate),
+            "genel sayımlar, katman ve platform isabeti değişmez");
+        afterPurge.Legacy.Should().BeEquivalentTo(before.Legacy);
     }
 
     [Fact]
