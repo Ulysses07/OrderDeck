@@ -662,6 +662,22 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 >   Her satır için o lisansta o kaydı gösteren geçici bağlantı satırı aynı
 >   yolla eklenir ve silme yeniden uygulanır; S2b silmesi kaydın bağını,
 >   kararlarını ve projeksiyonunu bulur.
+>   S2a imajının iki silmesi IBAN'dan türeyen öneri kuralını (S2b planı
+>   Karar 7) da uygulamaz: silinen bağın özetinden gelen havalenin v2 önerisi
+>   (kişinin öbür satırına ya da asıl kayda, IBAN destekli; müşterisi silinen
+>   kararın önerisi de) kalır. S2b'yle yeniden uygulanan shopper silmesi onu
+>   bulmaz (kural yalnız o koşunun sildiği bağların özetlerine uygulanır, bağ
+>   çoktan silindi); IBAN talebini yeni talep satırıyla yeniden uygulamak
+>   bulur. Sayım (açıklaması pencerede saklamayla giden, bağı yaşam
+>   döngüsüyle silinmiş satırı da sayar):
+>   `SELECT COUNT(*) FROM PaymentMatches pm JOIN BankTransactions t ON t.Id = pm.BankTransactionId WHERE pm.ProposedWpfCustomerId IS NOT NULL AND (pm.Layer = 'IbanMemory' OR pm.SupportedByIbanMemory = 1) AND pm.ActualWpfCustomerId IS NULL AND pm.Decision = 'None' AND t.DescriptionPurgedAt >= '<geri alma anı>' AND NOT EXISTS (SELECT 1 FROM CustomerIbanMemories m WHERE m.LicenseId = pm.LicenseId AND m.IbanHash = t.CounterpartyIbanHash)`
+>   Sıfırdan büyükse S2b yeniden yayınlandıktan sonra aynı süzgeçle onarılır:
+>   kuralın değerleriyle UPDATE (kararsız satırda öneri, katman, güven, IBAN
+>   desteği ve kanıt boşalır, `Proposed` → `NoProposal`; müşterisi silinen
+>   kararda yalnız öneri, IBAN desteği ve kanıt, `ManualOnly` →
+>   `Contradicted`; `MatcherVersion` kalır) ve aynı işlemde
+>   `PaymentMatches.WpfCustomerId+Evidence` imha kaydı. Onarım sorgusu o gün
+>   yazılır, Burak koşar.
 > - (4) O imajın bağdaştırması, bağlantısı kopyada kalmış kişide kararı (yeni
 >   IBAN'da bağı da) kopyaya yazar. Sayım:
 >   `SELECT (SELECT COUNT(*) FROM PaymentMatches pm JOIN WpfCustomerProjections c ON c.Id = pm.ActualWpfCustomerId AND c.LicenseId = pm.LicenseId WHERE c.MergedIntoId IS NOT NULL AND pm.DecidedAt >= '<geri alma anı>') AS Kararlar, (SELECT COUNT(*) FROM CustomerIbanMemories m JOIN WpfCustomerProjections c ON c.Id = m.WpfCustomerId AND c.LicenseId = m.LicenseId WHERE c.MergedIntoId IS NOT NULL AND m.CreatedAt >= '<geri alma anı>') AS Baglar`
