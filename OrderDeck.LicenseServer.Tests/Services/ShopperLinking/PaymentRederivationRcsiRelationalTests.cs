@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
@@ -14,17 +15,20 @@ namespace OrderDeck.LicenseServer.Tests.Services.ShopperLinking;
 /// <c>EnsureCreated()</c> ile oluşturuldu ve EF Core onu oluştururken <c>READ_COMMITTED_SNAPSHOT</c>'ı açar; fikstürün
 /// veritabanında RCSI kapalıdır, burada göçten önce açılır (<see cref="ReadCommittedSnapshot"/>). RCSI açıkken ipucusuz koşul
 /// ifade başındaki anlık görüntüyü okur: bağı kesen işlem commit olmamışken koşan yazım eski bağlantıyı görürdü. Kesen işlem
-/// ayrı bağlantıda açık tutulur; yazım ayrı görevde başlar, işlem 2 sn sonra commit olur. Yazım o ana kadar bitmemeli (koşul
-/// tabloları kilitli okunur, kesen işlemin commit'ini bekler) ve kesmeyi görmeli. RCSI kapalı veritabanında üç test ipucusuz
-/// kodda da geçer (okumalar kilitlidir, kesen işlemin kilidinde bekler); önkoşul bu yüzden her testin başında sınanır.
-/// Değerler üretilir.
+/// ayrı bağlantıda açık tutulur, yazım ayrı görevde başlar. İşlem, yazımın onun kilidinde beklediği görülene dek commit edilmez
+/// (<see cref="WaitsOnCutAsync"/>); yazım beklemeden biterse test düşer. Sabit süre beklenmez: yük altında geç başlayan yazım da
+/// kesen işlem açıkken koşar, commit'ten sonra başlayıp kesmeyi anlık görüntüden görerek boşuna geçemez. Yazım beklemeli (koşul
+/// tabloları kilitli okunur) ve kesmeyi görmeli. Kesen tek koşulu bozar (bağlantıyı siler ya da shopper'a <c>DeletedAt</c>
+/// yazar): dört test iki deyimin dört ipucunu ayrı ayrı sınar. RCSI kapalı veritabanında dört test ipucusuz kodda da geçer
+/// (okumalar kilitlidir, kesen işlemin kilidinde bekler); önkoşul bu yüzden her testin başında sınanır. Değerler üretilir.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
 public sealed class PaymentRederivationRcsiRelationalTests : IAsyncLifetime
 {
-    // Kesen işlemin commit'siz açık kaldığı süre: yazım bu sürede bitmemeli.
-    private static readonly TimeSpan HeldOpen = TimeSpan.FromSeconds(2);
+    // Yazımın kesen işlemin kilidinde beklediğinin görülmesi için üst sınır: bu sürede ne bekleyen ne biten yazım testi düşürür.
+    private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
     private readonly SqlServerContainerFixture _sql;
     private string _connectionString = null!;
@@ -106,13 +110,13 @@ public sealed class PaymentRederivationRcsiRelationalTests : IAsyncLifetime
         (await cutter.ShopperBroadcasterLinks.Where(l => l.Id == s.LinkId).ExecuteDeleteAsync()).Should().Be(1);
 
         var rederive = Task.Run(() => RederiveAsync(s));
-        var finishedWhileOpen = await Task.WhenAny(rederive, Task.Delay(HeldOpen)) == rederive;
+        var waited = await WaitsOnCutAsync(cutter, rederive);
         await cut.CommitAsync();
         var changed = await rederive.WaitAsync(TimeSpan.FromSeconds(30));
 
         changed.Should().Be(0);
         (await PaymentCustomerAsync(s.PaymentId)).Should().BeNull("bağlantı silindi; dekonta yazılmaz");
-        finishedWhileOpen.Should().BeFalse("koşul kilitli okunur: yazım kesen işlemin commit'ini bekler");
+        waited.Should().BeTrue("koşul kilitli okunur: yazım kesen işlemin kilidinde bekler");
     }
 
     /// <summary>Kesen işlem shopper'a <c>DeletedAt</c> yazar (hesap silme talebinin etkisi; bağlantı yerinde), commit etmez.
@@ -131,14 +135,14 @@ public sealed class PaymentRederivationRcsiRelationalTests : IAsyncLifetime
             .ExecuteUpdateAsync(u => u.SetProperty(x => x.DeletedAt, now))).Should().Be(1);
 
         var rederive = Task.Run(() => RederiveAsync(s));
-        var finishedWhileOpen = await Task.WhenAny(rederive, Task.Delay(HeldOpen)) == rederive;
+        var waited = await WaitsOnCutAsync(cutter, rederive);
         await cut.CommitAsync();
         var changed = await rederive.WaitAsync(TimeSpan.FromSeconds(30));
 
         changed.Should().Be(0);
         (await PaymentCustomerAsync(s.PaymentId)).Should().BeNull("hesap silindi; dekonta yazılmaz");
         (await LinkCustomerAsync(s.LinkId)).Should().Be(s.CustomerId, "bağ yerinde: yalnız shopper koşulu tutmadı");
-        finishedWhileOpen.Should().BeFalse("koşul kilitli okunur: yazım kesen işlemin commit'ini bekler");
+        waited.Should().BeTrue("koşul kilitli okunur: yazım kesen işlemin kilidinde bekler");
     }
 
     /// <summary>Gönderim müşteriyi P'ye çözdü ve dekontu P ile kaydetti; kayıttan sonraki denetimden önce kesen işlem
@@ -157,18 +161,75 @@ public sealed class PaymentRederivationRcsiRelationalTests : IAsyncLifetime
         (await cutter.ShopperBroadcasterLinks.Where(l => l.Id == s.LinkId).ExecuteDeleteAsync()).Should().Be(1);
 
         var check = Task.Run(() => ClearIfLinkChangedAsync(s, derived!.Value));
-        var finishedWhileOpen = await Task.WhenAny(check, Task.Delay(HeldOpen)) == check;
+        var waited = await WaitsOnCutAsync(cutter, check);
         await cut.CommitAsync();
         await check.WaitAsync(TimeSpan.FromSeconds(30));
 
         (await PaymentCustomerAsync(s.PaymentId)).Should().BeNull(
             "bağlantı çözümden sonra silindi; dekont kesilen bağın müşterisinde kalmaz");
-        finishedWhileOpen.Should().BeFalse("koşul kilitli okunur: denetim kesen işlemin commit'ini bekler");
+        waited.Should().BeTrue("koşul kilitli okunur: denetim kesen işlemin kilidinde bekler");
+    }
+
+    /// <summary>Gönderim müşteriyi P'ye çözdü ve dekontu P ile kaydetti; kayıttan sonraki denetimden önce kesen işlem
+    /// shopper'a <c>DeletedAt</c> yazar (hesap silme talebinin etkisi; bağlantı yerinde), commit etmez. Yalnız shopper koşulu
+    /// tutmaz; denetim kesen işlemin commit'ini bekler, silinmiş hesabı görür ve dekontun müşterisini boşaltır. İpucusuz shopper
+    /// koşulu silinmemiş hesabı görür, dekont purge'e kadar silinen hesabın bağının müşterisinde kalırdı.</summary>
+    [Fact]
+    public async Task Gonderim_denetimi_commit_olmamis_hesap_silmesini_bekler()
+    {
+        // (koruma) Kod bu ipucunu taşır: denetimin shopper koşulundan ipucu kaldırılınca bu test düşer.
+        await RcsiShouldBeOnAsync();
+        var s = await SeedAsync(paymentCarriesCustomer: true);
+        var derived = await DeriveAsync(s);
+        derived.Should().Be(new DerivedCustomer(s.CustomerId, s.LinkId, s.CustomerId), "gönderimin çözümü kesmeden önce");
+        await using var cutterScope = _factory.Services.CreateAsyncScope();
+        var cutter = cutterScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        await using var cut = await cutter.Database.BeginTransactionAsync();
+        var now = DateTimeOffset.UtcNow;
+        (await cutter.Shoppers.Where(x => x.Id == s.ShopperId)
+            .ExecuteUpdateAsync(u => u.SetProperty(x => x.DeletedAt, now))).Should().Be(1);
+
+        var check = Task.Run(() => ClearIfLinkChangedAsync(s, derived!.Value));
+        var waited = await WaitsOnCutAsync(cutter, check);
+        await cut.CommitAsync();
+        await check.WaitAsync(TimeSpan.FromSeconds(30));
+
+        (await PaymentCustomerAsync(s.PaymentId)).Should().BeNull(
+            "hesap çözümden sonra silindi; dekont silinen hesabın bağının müşterisinde kalmaz");
+        (await LinkCustomerAsync(s.LinkId)).Should().Be(s.CustomerId, "bağ yerinde: yalnız shopper koşulu tutmadı");
+        waited.Should().BeTrue("koşul kilitli okunur: denetim kesen işlemin kilidinde bekler");
     }
 
     /// <summary>Önkoşul: testin sınadığı okuma satır sürümlüdür, RCSI kapalı veritabanında test bir şey kanıtlamaz.</summary>
     private async Task RcsiShouldBeOnAsync()
         => (await ReadCommittedSnapshot.IsOnAsync(_connectionString)).Should().BeTrue("önkoşul: veritabanında RCSI açık");
+
+    /// <summary>
+    /// Yazım (<paramref name="write"/>) sürerken bu veritabanında kesen işlemin oturumunun (<paramref name="cutter"/>'ın
+    /// bağlantısı) kilidinde bekleyen bir istek görülürse true (<c>sys.dm_exec_requests.blocking_session_id</c>; sorgu
+    /// <c>DB_ID()</c> ile bu veritabanına daralır, <see cref="AppLockWaiterProbe"/> deseni). Yazım beklemeden biterse ya da
+    /// <see cref="WaitLimit"/> dolarsa false. Kesen işlem commit edilmeden çağrılır: görülen bekleme, yazımın kesmenin commit'ini
+    /// beklediğidir.
+    /// </summary>
+    private async Task<bool> WaitsOnCutAsync(LicenseDbContext cutter, Task write)
+    {
+        var cutterSession = ((SqlConnection)cutter.Database.GetDbConnection()).ServerProcessId;
+        var deadline = DateTimeOffset.UtcNow + WaitLimit;
+        await using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(*) FROM sys.dm_exec_requests
+            WHERE blocking_session_id = @cutter AND database_id = DB_ID()
+            """;
+        cmd.Parameters.AddWithValue("@cutter", cutterSession);
+        while (!write.IsCompleted && DateTimeOffset.UtcNow < deadline)
+        {
+            if ((int)(await cmd.ExecuteScalarAsync())! > 0) return true;
+            await Task.Delay(PollInterval);
+        }
+        return false;
+    }
 
     private async Task<int> RederiveAsync(Seed s)
     {
