@@ -18,8 +18,8 @@ namespace OrderDeck.LicenseServer.Tests.Pages.Public;
 
 /// <summary>
 /// Kayıt formundaki ZORUNLU KVKK aydınlatma onayı (sahip kararı 2026-10-13):
-/// açık rıza değil, "aydınlatma metnini ve Gizlilik Politikası'nı okudum"
-/// beyanı. Yetkili kapı sunucu — kutu işaretli gelmeyen gönderim kayıt açmaz,
+/// açık rıza değil, "yukarıdaki bilgilendirmeyi okudum" beyanı (kvkk-2026-10-21'e
+/// kadar "aydınlatma metnini ve Gizlilik Politikası'nı okudum"). Yetkili kapı sunucu — kutu işaretli gelmeyen gönderim kayıt açmaz,
 /// girilen veri ekranda kalır; kabul edilen gönderim onayın zamanını ve metin
 /// sürümünü taşır.
 /// </summary>
@@ -27,8 +27,10 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 {
     private const string KvkkField = "Input.KvkkAcknowledged";
     private const string VersionField = "Input.KvkkTextVersion";
-    private const string RequiredMessage = "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
-    private const string OutdatedMessage = "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
+    /// <summary>Hata mesajları onay etiketiyle ("Yukarıdaki bilgilendirmeyi okudum") aynı kelimeleri kullanır: müşteri
+    /// işaretlemesi istenen kutuyu mesajdan tanısın (KVKK ön inceleme v2 incelemesi).</summary>
+    private const string RequiredMessage = "Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.";
+    private const string OutdatedMessage = "Yukarıdaki bilgilendirme güncellendi; yeniden okuyup onayla.";
     /// <summary>Politikanın web sayfası. Form artık oraya gitmiyor; metin
     /// formun içindeki kutuda (sahip kararı 2026-10-13).</summary>
     private const string PolicyPagePath = "orderdeckapp.com/gizlilik-politikasi";
@@ -489,7 +491,7 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 
         var label = Tag(html, "<label class=\"check\">\\s*<input[^>]*name=\"Input\\.KvkkAcknowledged\".*?</label>");
         var text = Regex.Replace(WebUtility.HtmlDecode(Regex.Replace(label, "<[^>]+>", "")), "\\s+", " ").Trim();
-        text.Should().Be("Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. *");
+        text.Should().Be("Yukarıdaki bilgilendirmeyi okudum. *");
         label.Should().Contain("<span class=\"req\">*</span>", "zorunluluk diğer alanlarla aynı işaretle görünür");
 
         // Yer: aydınlatma paragrafı → Gizlilik Politikası kutusu → onay; bal
@@ -512,6 +514,31 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         var formEnd = html.IndexOf("</form>", StringComparison.Ordinal);
         Regex.Match(html[..formEnd], "<input name=\"Input\\.KvkkAcknowledged\" type=\"hidden\" value=\"false\"")
             .Success.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// İsteğe bağlı açık rıza kutuları (WhatsApp, SMS) kendi başlıklarının altında, zorunlu "okudum" beyanından görsel olarak
+    /// ayrı durur (KVKK ön inceleme notu §4.5 Seçenek 2): müşteri zorunlu kutuyu bir izin, izin kutularını zorunlu sanmasın.
+    /// Sıra: başlık → izin kutuları → aydınlatma paragrafı → politika kutusu → "okudum".
+    /// </summary>
+    [Fact]
+    public async Task Istege_bagli_izinler_kendi_basliginin_altinda_okudum_beyanindan_ayri_durur()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+
+        var heading = Tag(html, "<div class=\"section-label\">[^<]*</div>(?=\\s*<label class=\"check\">\\s*<input[^>]*name=\"Input\\.WhatsAppConsent\")");
+        WebUtility.HtmlDecode(Regex.Replace(heading, "<[^>]+>", "")).Trim().Should().Be("İsteğe bağlı izinler");
+
+        var headingAt = html.IndexOf(heading, StringComparison.Ordinal);
+        var paragraphAt = html.IndexOf("<p class=\"kvkk\">", StringComparison.Ordinal);
+        var acknowledgementAt = html.IndexOf(KvkkInputTag(html), StringComparison.Ordinal);
+        headingAt.Should().BeLessThan(html.IndexOf("name=\"Input.WhatsAppConsent\"", StringComparison.Ordinal));
+        html.IndexOf("name=\"Input.WhatsAppConsent\"", StringComparison.Ordinal).Should().BeLessThan(paragraphAt,
+            "izin kutuları başlığın altında, aydınlatma paragrafından önce");
+        paragraphAt.Should().BeLessThan(acknowledgementAt);
+        html[headingAt..acknowledgementAt].Should().NotContain("name=\"Input.KvkkAcknowledged\"",
+            "zorunlu beyan izin başlığının altına girmemeli");
     }
 
     /// <summary>
@@ -553,7 +580,7 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         boxText.Should().Contain("1. Toplanan veriler")
             .And.Contain("1.3. Kayıt formu ile toplanan alıcı bilgileri")
             .And.Contain("10. İletişim");
-        boxText.Should().Contain("support@orderdeckapp.com", "at-işareti &#64; ile yazılı, tarayıcıda @ görünmeli");
+        boxText.Should().Contain("musa@emarglobal.com", "at-işareti &#64; ile yazılı, tarayıcıda @ görünmeli");
 
         // Eski davranış geri gelmesin.
         html.Should().NotContain(PolicyPagePath, "politika sayfasına giden bağlantı kalmadı");
@@ -677,10 +704,10 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Metin_degisirse_surum_de_degismeli()
     {
-        const string ExpectedVersion = "kvkk-2026-10-19";
-        const string ExpectedFormSha256 = "462FFB4368F84CB451C157BA1B93BA6C3E94C02F5274435825F6CF217BCB9994";
-        const string ExpectedPolicyBoxSha256 = "910746E0100C613B8AD8BB6A1AC39DE6C6210D301B8451CD445EAEFAE324573D";
-        const string ExpectedPolicySourceSha256 = "AE77FB9BECDDBDD0B86DFCAC7858B4BFA970FE12F3930CBABB7CDC1FBC4B43FE";
+        const string ExpectedVersion = "kvkk-2026-10-21";
+        const string ExpectedFormSha256 = "4457F355669947E438D13F053F6A9263C2576F14EA06B3D05DC35E4435BD297E";
+        const string ExpectedPolicyBoxSha256 = "BA5421C56009A03B2039A77E1F55C03AD9EDAF670EEAB9A43EB7F66CB87F2E62";
+        const string ExpectedPolicySourceSha256 = "FDD2ADD051CD8A9ED984FFCE4D5E76F31941C3873B1BFC7437BC6CFFA7361010";
 
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();

@@ -192,7 +192,7 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
         // Hata kutusunun içinde aranıyor: aynı cümle istemci kapısının JS'inde de var.
         System.Text.RegularExpressions.Regex.Match(html, "<span[^>]*id=\"kvkkErr\"[^>]*>([^<]*)</span>")
             .Groups[1].Value.Trim()
-            .Should().Be("Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.");
+            .Should().Be("Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.");
         html.Should().Contain("linked-chip", "ret bağlı kimliği tüketmemeli");
         (await LatestAsync(customerId)).Should().BeNull();
     }
