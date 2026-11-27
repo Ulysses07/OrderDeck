@@ -1609,6 +1609,41 @@ public sealed class ShopperPurgeServiceTests
     }
 
     [Fact]
+    public async Task Silinen_bagin_ozetinden_dogan_IBAN_onerisi_kararin_musterisi_bosalan_satirda_da_bosalir()
+    {
+        // (i) durumunda kişinin dekontu havaleyi TT satırına bağlamış (dekont bağdaştırması kişi düzeyinde öneriyi doğrular). Kimlik
+        // kuralı kararın müşterisini (TT) boşaltır; durum, katman, güven, karar anı ve dekont bağı ölçüm için kalır. IG'ye giden
+        // IBAN destekli öneri kalsaydı havaleyi kişiye bağlayan tek iz o olurdu (IG'nin projeksiyonu silinmez): o da boşalır. S2b'den
+        // önce bu satır satır düzeyinde "çelişki, öneri yok" olurdu.
+        using var db = NewDb();
+        var s = SeedSiblingBond(db);
+        await db.SaveChangesAsync();
+        var matcher = new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance);
+        var row = await matcher.MatchAsync(s.Tx, default);
+        (row.ProposedWpfCustomerId, row.SupportedByIbanMemory).Should().Be(((Guid?)s.Ig, true), "ön koşul");
+        var paymentId = Guid.NewGuid();
+        var decidedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        (row.PaymentId, row.ActualWpfCustomerId, row.DecidedAt, row.IbanConfirmedAt, row.Status) =
+            (paymentId, s.Tt, decidedAt, s.Tx.OccurredAt, PaymentMatchStatus.ConfirmedByHuman);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await Build(db).Service.PurgeAsync(s.Shopper.Id, default);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (m.ActualWpfCustomerId, m.IbanConfirmedAt, m.ProposedWpfCustomerId, m.SupportedByIbanMemory, m.Evidence).Should().Be(
+            ((Guid?)null, (DateTimeOffset?)null, (Guid?)null, false, (string?)null),
+            "kararın müşterisi de silinen bağdan türeyen öneri de gider");
+        (m.Status, m.Layer, m.Confidence, m.DecidedAt, m.PaymentId, m.MatcherVersion).Should().Be(
+            (PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, PaymentMatcher.BothConfidence,
+                (DateTimeOffset?)decidedAt, (Guid?)paymentId, (int?)PaymentMatcher.PersonLevelVersion),
+            "ölçüm durumdan ve katmandan okunur");
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.Target == BankSubjectScrub.LinkedMatchTarget)
+                .Select(r => r.RowCount).ToListAsync())
+            .Should().Equal([1], "satır bir kez sayılır");
+    }
+
+    [Fact]
     public async Task Silinen_bagin_ozetinden_gelen_onerisiz_satirin_IBAN_kaniti_de_bosalir()
     {
         // Satır düzeyi eşleştiricinin (S2b öncesi, sürüm boş) aynı durumda yazdığı satır: kullanıcı adı IG'yi, bağ TT'yi gösterdiği

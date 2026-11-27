@@ -221,12 +221,15 @@ public sealed class BankSubjectRequestService
     /// <item>Eşleşme satırında bu IBAN'ın bağlı olduğu her müşterinin kimliği ve kanıt silinir
     /// (<see cref="BankSubjectScrub.MatchForCustomer"/>); bağ yoksa yalnız kanıt — gönderen ile ödemesi sayılan müşteri farklı kişi
     /// olabilir (karar 7).</item>
-    /// <item>Ardından aynı hareketlerin kararsız satırında IBAN'dan türeyen öneri de silinir
+    /// <item>Ardından aynı hareketlerin satırlarında IBAN'dan türeyen öneri de silinir
     /// (<see cref="BankSubjectScrub.IbanDerivedProposal"/>; S2b planı Karar 7, sahip kararı 27.11.2026): kişi düzeyi eşleştirici
     /// bağı kişinin öbür satırına ve kopyadaki bağı asıl kayda sayar, öneri bağın müşterisini göstermediği için bir üstteki kurala
-    /// takılmazdı. Talep özetin bütün bağlarını siler, kalan bağ yoktur. Satır yeniden hesaplanmaz, öneri yok kalır: aynı silme
-    /// hareketlerin açıklamasını da siler, yeniden değerlendirme (<see cref="PaymentMatchReconciler.ReevaluateUndecidedAsync"/>)
-    /// açıklaması silinmiş harekete dokunmaz. İnsan kararlı ve karar katmanındaki satır kalır (kararları kişiyle aramak S4).</item>
+    /// takılmazdı. Kararsız satırda öneri boşalır; müşterisi bir üstteki kuralla (ya da önceki bir silmeyle) boşalmış kararda yalnız
+    /// öneri, IBAN desteği ve kanıt (ölçüm kalır). IBAN izi kanıtın okunduğu hâlinden okunur. Talep özetin bütün bağlarını siler,
+    /// kalan bağ yoktur. Satır yeniden hesaplanmaz, öneri yok kalır: aynı silme hareketlerin açıklamasını da siler, yeniden
+    /// değerlendirme (<see cref="PaymentMatchReconciler.ReevaluateUndecidedAsync"/>) açıklaması silinmiş harekete dokunmaz.
+    /// Silinmeyen müşteriye kararlı ve karar katmanındaki satırın önerisi kalır (Karar 7, sahibe soruldu); kararları kişiyle
+    /// aramak S4.</item>
     /// <item>Kararın müşterisi boşalan havalenin elle eşleme denetim satırında o müşterinin (ve ona birleştirilmiş kopyaların)
     /// kimliği silinir (<see cref="BankSubjectScrub.ManualMatchAudit"/>); kişinin başka havalelerinin satırı kalır (talep bu IBAN'ın
     /// verisidir).</item>
@@ -308,10 +311,11 @@ public sealed class BankSubjectRequestService
         foreach (var m in linked)
             foreach (var c in customers) BankSubjectScrub.MatchForCustomer(m, c, now);
         foreach (var m in evidenceOnly) BankSubjectScrub.MatchEvidence(m, now);
-        // S2b planı Karar 7: kimlik kuralından SONRA aynı hareketlerin bütün satırlarında IBAN'dan türeyen kararsız öneri de gider
-        // (kişinin öbür satırına ya da kopyadaki bağın asıl kaydına giden öneri kimlik kuralına takılmaz). Talep özetin bütün
-        // bağlarını siler: kalan bağ yok. Açıklama da silindiği için satır yeniden hesaplanmaz, öneri yok kalır.
-        var ibanDerived = matches.Select(m => (Match: m, Target: BankSubjectScrub.IbanDerivedProposal(m, [], now)))
+        // S2b planı Karar 7: kimlik kuralından SONRA aynı hareketlerin bütün satırlarında IBAN'dan türeyen öneri de gider
+        // (kişinin öbür satırına ya da kopyadaki bağın asıl kaydına giden öneri kimlik kuralına takılmaz): kararsız satırda ve
+        // kimlik kuralının müşterisini boşalttığı kararda. İz kanıtın okunduğu hâlinden: kimlik kuralı kanıtı az önce boşalttı.
+        // Talep özetin bütün bağlarını siler: kalan bağ yok. Açıklama da silindiği için satır yeniden hesaplanmaz, öneri yok kalır.
+        var ibanDerived = matches.Select(m => (Match: m, Target: BankSubjectScrub.IbanDerivedProposal(_db, m, [], now)))
             .Where(x => x.Target is not null).ToList();
         foreach (var a in audits) BankSubjectScrub.ManualMatchAudit(a);
 

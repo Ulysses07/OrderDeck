@@ -318,13 +318,15 @@ public sealed class ShopperPurgeService
         //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:
         //       kanıtın kaynağı o açıklamadır ve silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama,
         //       satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
-        //     - Silinen hafıza özetinden gelen hareketin kararsız satırında IBAN'dan türeyen öneri de boşalır
+        //     - Silinen hafıza özetinden gelen hareketin satırında IBAN'dan türeyen öneri de boşalır
         //       (BankSubjectScrub.IbanDerivedProposal; S2b planı Karar 7, sahip kararı 27.11.2026). Kişi düzeyi eşleştirici bağı
         //       kişinin öbür satırına (aynı GroupId) ve kopyadaki bağı asıl kayda sayar: bağ TT satırında, kullanıcı adı IG
         //       satırındaysa öneri IG'yi "IBAN destekli" gösterir. Satır silinen kimliklere ve kullanıcı adı anahtarına bakmadığı
         //       için yukarıdaki kurallara takılmaz; hareketin metni silindiğinden tarama da onu yeniden hesaplamaz, öneri kalırdı.
-        //       Kural kimlik kuralından SONRA, özetin kalan bağının müşterisine giden öneriye dokunmadan; açıklama silindiği için
-        //       yeniden hesap yok. İnsan kararlı ve karar katmanındaki satır kalır (kararları kişiyle aramak S4).
+        //       Kural kimlik kuralından SONRA, özetin kalan bağının müşterisine giden öneriye dokunmadan: kararsız satırda öneri,
+        //       müşterisi silinmiş kararda (kişinin dekontu havaleyi TT'ye bağlamış) yalnız öneri alanları boşalır, ölçüm kalır.
+        //       Açıklama silindiği için yeniden hesap yok. Silinmeyen müşteriye kararlı ve karar katmanındaki satır kalır (Karar 7,
+        //       sahibe soruldu; kararları kişiyle aramak S4).
         //     - Dışlanan hareket (kod ya da TL/TRY dışı para birimi, PaymentMatcher.IsExcluded) kullanıcı adı aramasına girmez:
         //       eşleştirici ona öneri ve kullanıcı adı kanıtı yazmaz ("excluded:{neden}"). Açıklaması yalnız silinen bir bağın
         //       özetinden geliyorsa burada gider, yoksa eşleşmeyen açıklamanın saklamasıyla (BankDataRetentionJob 3. adım,
@@ -579,10 +581,13 @@ public sealed class ShopperPurgeService
     /// olabilir. Kimliği 3b kuralı boşaltır; o bağ da
     /// <see cref="ScrubLateIbanMemoriesAsync"/> ile silinir, kaydı ayrıca yazılır.</para>
     ///
-    /// <para>3b'nin IBAN'dan türeyen öneri kuralının yazdığı satırlar da tazelenir;
-    /// kural ilk okumanın ve geç bağların özetlerinden gelen hareketlerin
-    /// satırlarına yeniden uygulanır (<see cref="ScrubIbanDerivedProposalsAsync"/>),
-    /// yalnız yeni bulunan satırın kaydı ayrıca yazılır.</para>
+    /// <para>3b'nin IBAN'dan türeyen öneri kuralının yazdığı satırlar da tazelenir
+    /// ve kimlik kuralı onlara da uygulanır: eşzamanlı yazan onları silinen kişiye
+    /// bağlamış olabilir (ters yön). İlk denemenin okuyup yazmadığı eşleşme
+    /// satırları izleyiciden ayrılır, yeniden sorgu onları taze okur. Kural ilk
+    /// okumanın ve geç bağların özetlerinden gelen hareketlerin satırlarına yeniden
+    /// uygulanır (<see cref="ScrubIbanDerivedProposalsAsync"/>), yalnız yeni bulunan
+    /// satırın kaydı ayrıca yazılır.</para>
     ///
     /// <para>Aynısı sipariş metni boşaltması için (ayar açıkken, adım 3a):
     /// <see cref="Order.SyncVersion"/> jetondur ve eşzamanlı bir
@@ -636,10 +641,17 @@ public sealed class ShopperPurgeService
                     continue;
                 ScrubMatch(m, bank.PurgedCustomers, now);
             }
-            // IBAN'dan türeyen öneri kuralının satırları da tazelenir; kural aşağıda yeniden uygulanır
-            // (ScrubIbanDerivedProposalsAsync). Kimlik kuralının satırı yukarıda tazelendi, ikinci kez tazelenmez.
+            // IBAN'dan türeyen öneri kuralının satırları da tazelenir ve 3b kuralı onlara da uygulanır: eşzamanlı yazan (dekont
+            // bağdaştırması, elle eşleme) satırı silinen kişiye bağlamış olabilir ("Ters yön"); kural yeniden uygulanabilir, bu
+            // özetlerin açıklaması zaten siliniyor. Öneri kuralı aşağıda yeniden uygulanır (ScrubIbanDerivedProposalsAsync).
+            // Kimlik kuralının satırı yukarıda tazelendi, ikinci kez tazelenmez.
             foreach (var m in bank.IbanDerived.Where(m => !bank.Matches.Contains(m)))
-                await _db.Entry(m).ReloadAsync(ct);
+            {
+                var entry = _db.Entry(m);
+                await entry.ReloadAsync(ct);
+                if (entry.State == EntityState.Detached) continue;
+                ScrubMatch(m, bank.PurgedCustomers, now);
+            }
             foreach (var t in bank.Transactions)
             {
                 var entry = _db.Entry(t);
@@ -670,6 +682,14 @@ public sealed class ShopperPurgeService
                 if (entry.State == EntityState.Detached) continue;
                 BankSubjectScrub.ManualMatchAudit(a);
             }
+            // İlk denemenin okuyup yazmadığı eşleşme satırları izleyicide okundukları hâliyle durur; öneri kuralının yeniden sorgusu
+            // onları DB'den tazelemezdi (kimlik çözümlemesi), arada IBAN'dan türeyen öneri almış satır bayat görünürdü. Bekleyen
+            // yazısı olmayan bu girdiler ayrılır, sorgu taze okur (PaymentMatchReconciler.ReevaluateUndecidedAsync deseni).
+            // Yukarıda tazelenen satırlar ayrılmaz: değerleri tazedir ve yeniden sorgu onları aynı örnekle döndürür (kayıt bir kez).
+            var refreshed = bank.Matches.Concat(bank.IbanDerived).ToHashSet();
+            foreach (var entry in _db.ChangeTracker.Entries<PaymentMatch>()
+                         .Where(e => e.State == EntityState.Unchanged && !refreshed.Contains(e.Entity)).ToList())
+                entry.State = EntityState.Detached;
             var late = await ScrubLateIbanMemoriesAsync(bank, record, now, ct);
             await ScrubIbanDerivedProposalsAsync(bank, late.Bonds, record, now, ct);
             await ScrubLateManualMatchAuditsAsync(bank, record, ct);

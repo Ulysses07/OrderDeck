@@ -238,6 +238,182 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Yalniz_IBAN_turevli_satirla_carpisan_silme_tazeleyip_tamamlanir()
+    {
+        // (i) durumunda kimlik kuralının satırı yok: çakışan tek eşleşme IBAN'dan türeyen öneri kuralının yazdığı satır. Silme satırı
+        // okuduktan sonra yeniden değerlendirme aynı öneriyi yeniden yazar (jeton ilerler). Yeniden deneme o satırı da kapsar:
+        // tazelenir, kural yeniden uygulanır, silme tamamlanır; imha kaydı ilk okumanınkidir.
+        var s = await SeedSiblingBondAsync();
+        var reeval = new BeforeMatchUpdate(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            var m = await other.PaymentMatches.SingleAsync(x => x.Id == s.RowId);
+            m.Evidence += PaymentMatcher.ReevaluationEvidenceSuffix;
+            m.UpdatedAt = DateTimeOffset.UtcNow;
+            await other.SaveChangesAsync();
+        });
+        await using var db = NewDb(reeval);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        reeval.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        var row = await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.RowId);
+        (row.Status, row.ProposedWpfCustomerId, row.Layer, row.Confidence, row.SupportedByIbanMemory, row.Evidence).Should().Be(
+            (PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, 0m, false, (string?)null));
+        (await verify.Shoppers.AsNoTracking().SingleAsync(x => x.Id == s.ShopperId)).FullName.Should().Be("[Silindi]");
+        (await verify.CustomerIbanMemories.AsNoTracking().CountAsync(m => m.LicenseId == s.LicenseId)).Should().Be(0);
+        (await verify.DataDestructionRecords.AsNoTracking()
+                .Where(r => r.SubjectId == s.ShopperId && r.Target == BankSubjectScrub.LinkedMatchTarget).Select(r => r.RowCount)
+                .ToListAsync())
+            .Should().Equal([1]);
+    }
+
+    [Fact]
+    public async Task Eszamanli_bag_IBAN_onerili_satiri_silinen_kisiye_baglarsa_yeniden_deneme_karari_ve_oneriyi_bosaltir()
+    {
+        // (i) durumunda silme satırları okuduktan sonra dekont bağdaştırması IBAN önerili satırı (T0) silinen kişinin TT satırına
+        // bağlar; aynı anda telafi taraması aynı özetten gelen öteki havalenin bağdan önce hesaplanmış satırını (T1) IBAN destekli
+        // öneriyle yeniden yazar. Yeniden deneme T0'a kimlik kuralını da uygular (kararın müşterisi gider; durum, karar anı ve
+        // dekont bağı ölçüm için kalır; silinen bağdan türeyen öneri boşalır) ve ilk denemenin okuyup yazmadığı T1'i taze okur:
+        // izleyicideki hâliyle okunsaydı IBAN izi görünmez, öneri kalırdı. T1'in kaydı yeniden denemenin ayrı satırıdır.
+        var s = await SeedSiblingBondAsync();
+        var t1 = await SeedUsernameRowFromHashAsync(s);
+        var paymentId = Guid.NewGuid();
+        var race = new BeforeMatchUpdate(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            var now = DateTimeOffset.UtcNow;
+            var t0 = await other.PaymentMatches.SingleAsync(x => x.Id == s.RowId);
+            (t0.PaymentId, t0.ActualWpfCustomerId, t0.DecidedAt, t0.IbanConfirmedAt, t0.Status, t0.UpdatedAt) =
+                (paymentId, s.Tt, now, now, PaymentMatchStatus.ConfirmedByHuman, now);
+            var row1 = await other.PaymentMatches.SingleAsync(x => x.Id == t1);
+            (row1.SupportedByIbanMemory, row1.Confidence, row1.Evidence, row1.UpdatedAt) = (true, PaymentMatcher.BothConfidence,
+                $"{row1.Evidence};iban-memory{PaymentMatcher.ReevaluationEvidenceSuffix}", now);
+            await other.SaveChangesAsync();
+        });
+        await using var db = NewDb(race);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        race.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        var rows = await verify.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        var decided = rows[s.RowId];
+        (decided.ActualWpfCustomerId, decided.IbanConfirmedAt, decided.ProposedWpfCustomerId, decided.SupportedByIbanMemory,
+                decided.Evidence)
+            .Should().Be(((Guid?)null, (DateTimeOffset?)null, (Guid?)null, false, (string?)null),
+                "eşzamanlı kararın silinen müşterisi de silinen bağdan türeyen öneri de gider");
+        (decided.Status, decided.Layer, decided.PaymentId).Should().Be(
+            (PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, (Guid?)paymentId),
+            "eşzamanlı yazanın dekont bağı ve ölçüm sonucu kalır");
+        decided.DecidedAt.Should().NotBeNull();
+        (rows[t1].Status, rows[t1].ProposedWpfCustomerId, rows[t1].Layer, rows[t1].SupportedByIbanMemory, rows[t1].Evidence)
+            .Should().Be((PaymentMatchStatus.NoProposal, (Guid?)null, PaymentMatchLayer.None, false, (string?)null),
+                "yeniden deneme eşzamanlı yazılmış IBAN önerisini taze okur");
+        (await verify.DataDestructionRecords.AsNoTracking()
+                .Where(r => r.SubjectId == s.ShopperId && r.Target == BankSubjectScrub.LinkedMatchTarget).Select(r => r.RowCount)
+                .ToListAsync())
+            .Should().BeEquivalentTo(new[] { 1, 1 }, "ilk okumanın satırı ve yeniden denemenin bulduğu ayrı satırlarda");
+    }
+
+    /// <summary>S2b planı Karar 7'nin (i) durumu: kişinin IG ve TT satırı aynı grupta, bağ TT'de, shopper'ın bağlantısı TT'de;
+    /// özetten gelen havalenin satırı (<c>RowId</c>) IG'ye IBAN destekli v2 önerisi. Silmenin kimlik kuralı satırı bulmaz (ne
+    /// bağlantının kimliğini ne TT'nin kullanıcı adını taşır), yalnız IBAN'dan türeyen öneri kuralı yazar.</summary>
+    private sealed record SiblingBond(Guid ShopperId, Guid LicenseId, Guid Ig, Guid Tt, string Hash, Guid RowId);
+
+    private const string SiblingUsername = "ornek_musteri34";
+
+    private async Task<SiblingBond> SeedSiblingBondAsync()
+    {
+        await using var db = NewDb(interceptor: null);
+        var now = DateTimeOffset.UtcNow;
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(), Email = $"p-{Guid.NewGuid():N}@example.com", Name = "Yayinci",
+            PasswordHash = $"h-{Guid.NewGuid():N}", CreatedAt = now,
+        };
+        var license = new License
+        {
+            Id = Guid.NewGuid(), CustomerId = customer.Id, LicenseKey = $"purge-{Guid.NewGuid():N}", SkuCode = "STD",
+            ActivationSlots = 1, IssuedAt = now, ExpiresAt = now.AddDays(30),
+        };
+        var shopper = new Shopper
+        {
+            Id = Guid.NewGuid(), FullName = "Ornek Musteri", Phone = TestPhone.NewE164(), PasswordHash = $"h-{Guid.NewGuid():N}",
+            Address = "-", CreatedAt = now, UpdatedAt = now,
+        };
+        var group = $"G-{Guid.NewGuid():N}";
+        var ig = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "instagram", Username = SiblingUsername, GroupId = group,
+            UpdatedAt = now,
+        };
+        var tt = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "tiktok", Username = "baska_hesap77", GroupId = group,
+            UpdatedAt = now,
+        };
+        var hash = NewIbanHash();
+        var txId = Guid.NewGuid();
+        var row = new PaymentMatch
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, BankTransactionId = txId, ProposedWpfCustomerId = ig.Id,
+            Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.BothConfidence, SupportedByIbanMemory = true,
+            Evidence = $"username={BankTextNormalizer.UsernameKey(SiblingUsername)};iban-memory", Status = PaymentMatchStatus.Proposed,
+            MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = now, UpdatedAt = now,
+        };
+        db.Customers.Add(customer);
+        db.Licenses.Add(license);
+        db.Shoppers.Add(shopper);
+        db.WpfCustomerProjections.AddRange(ig, tt);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "tiktok", Username = tt.Username,
+            WpfCustomerId = tt.Id, JoinedAt = now,
+        });
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, WpfCustomerId = tt.Id, IbanHash = hash, IbanMasked = "TR12…345",
+            LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = now.AddDays(-1),
+        });
+        db.BankTransactions.Add(IncomingFrom(license.Id, txId, hash));
+        db.PaymentMatches.Add(row);
+        await db.SaveChangesAsync();
+        return new SiblingBond(shopper.Id, license.Id, ig.Id, tt.Id, hash, row.Id);
+    }
+
+    /// <summary>Aynı özetten gelen öteki havale ve bağdan önce hesaplanmış satırı: IG'ye yalnız kullanıcı adıyla öneri, IBAN izi
+    /// yok (silmenin IBAN kuralı ona yazmaz).</summary>
+    private async Task<Guid> SeedUsernameRowFromHashAsync(SiblingBond s)
+    {
+        await using var db = NewDb(interceptor: null);
+        var at = DateTimeOffset.UtcNow.AddDays(-2);
+        var txId = Guid.NewGuid();
+        var row = new PaymentMatch
+        {
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId, BankTransactionId = txId, ProposedWpfCustomerId = s.Ig,
+            Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.UsernameConfidence,
+            Evidence = $"username={BankTextNormalizer.UsernameKey(SiblingUsername)}", Status = PaymentMatchStatus.Proposed,
+            MatcherVersion = PaymentMatcher.PersonLevelVersion, CreatedAt = at, UpdatedAt = at,
+        };
+        db.BankTransactions.Add(IncomingFrom(s.LicenseId, txId, s.Hash));
+        db.PaymentMatches.Add(row);
+        await db.SaveChangesAsync();
+        return row.Id;
+    }
+
+    private static BankTransaction IncomingFrom(Guid licenseId, Guid txId, string hash) => new()
+    {
+        Id = txId, LicenseId = licenseId, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
+        BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 120m, Currency = "TL",
+        OccurredAt = DateTimeOffset.UtcNow.AddDays(-3), Description = $"HAVALE {SiblingUsername}", CounterpartyName = "Ad Soyad",
+        CounterpartyIbanHash = hash, CounterpartyIbanMasked = "TR12…345", TransactionCode = "FT", FetchedAt = DateTimeOffset.UtcNow,
+    };
+
+    [Fact]
     public async Task Eszamanli_budanan_denetim_satiriyla_carpisan_silme_tazeleyip_tamamlanir()
     {
         // KVKK silmesi elle eşleme denetiminde kişinin kimliğini de boşaltır (Ö-14), yani denetim satırı da kaydedilir. Silme
