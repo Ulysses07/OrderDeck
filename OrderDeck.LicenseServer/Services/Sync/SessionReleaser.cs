@@ -20,7 +20,10 @@ namespace OrderDeck.LicenseServer.Services.Sync;
 /// <c>orders/sync</c> güncellemesiyle de çakışmaz (o yol <c>SessionReleasedAt</c> yazmaz).</para>
 ///
 /// <para><b>Kalan pencere.</b> Devirle yarışan bir sipariş eklemesi oturumu devredilmemiş okuyup damgasız
-/// eklenebilir; onu onarım işi kapatır (§4.9-b, DM3).</para>
+/// eklenebilir; onu onarım işi kapatır (§4.9-b, DM3). Eklemeler (<c>orders/sync</c>, <c>sales/backfill</c>) oturumu
+/// kilitli okur (<see cref="Data.ReadCommittedLock"/>; prod'da RCSI açık): devir oturuma yazdıktan sonra okuyan ekleme
+/// commit'i bekler ve devir anını kopyalar. Pencere yalnız oturumu devirden önce okuyup siparişini devrin damgasından
+/// sonra ekleyen istektir.</para>
 ///
 /// <para><b>İşlem.</b> Çağıranın açık işlemi varsa onun içinde koşar (uç, kendi yazımlarıyla devri tek işlemde
 /// tutar); yoksa kendi işlemini açar. InMemory'de ne işlem ne <c>ExecuteUpdate</c> var: aynı kural izlenen

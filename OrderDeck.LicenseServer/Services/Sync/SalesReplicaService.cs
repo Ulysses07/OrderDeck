@@ -346,8 +346,15 @@ public sealed class SalesReplicaService
         return silent;
     }
 
+    /// <summary>
+    /// Lisansın modu, kilitli okunur (<see cref="ReadCommittedLock"/>). <c>sales-sync disable</c>/<c>enable</c> modu tek
+    /// işlemde yazar ve satır kilidini işlem sonuna kadar tutar: modu bundan sonra okuyan istek commit'i bekleyip yeni modu
+    /// görmeli (<see cref="Tools.SalesSync"/>'in sözleşmesi). Prod'da RCSI açık; ipucusuz okuma beklemeden eski modu
+    /// görür, istek kapanan modun kipinde koşardı. Lisans satırına seyrek ve kısa işlemlerle yazılır (CLI, yönetici,
+    /// panel ayarları), bekleme yalnız onlar sürerken olur. Çağıranlar işlem açmadan okur.
+    /// </summary>
     private async Task<LicenseMode> ReadModeAsync(Guid licenseId, CancellationToken ct) =>
-        await _db.Licenses.AsNoTracking()
+        await _db.Licenses.WithReadCommittedLock().AsNoTracking()
             .Where(l => l.Id == licenseId)
             .Select(l => new LicenseMode(l.SalesSyncMode, l.SalesSyncModeChangedAt))
             .SingleAsync(ct);

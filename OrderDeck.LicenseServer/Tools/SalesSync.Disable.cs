@@ -28,7 +28,8 @@ namespace OrderDeck.LicenseServer.Tools;
 /// <list type="number">
 ///   <item>Koşullu UPDATE: <c>SalesSyncMode = 0</c>, <c>SalesSyncModeChangedAt</c> = şimdi, yalnız mod hâlâ 1 ise.
 ///   Satır bulunmazsa (eşzamanlı bir <c>disable</c>) geri alınır, 1. Lisans satırının kilidi işlem sonuna kadar
-///   tutulur: modu bundan sonra okuyan komut ve kira istekleri commit'i bekler ve Off görür.</item>
+///   tutulur: modu bundan sonra okuyan komut ve kira istekleri commit'i bekler ve Off görür. Prod'da RCSI açık; bunu
+///   <see cref="SalesReplicaService"/>'in kilitli mod okuması sağlar (satır sürümlü okuma beklemeden On görürdü).</item>
 ///   <item>Shipped olmayan dosyalar izlenerek yüklenir ve plan bu satırlarla (önceki bir kuru koşuya güvenmeden)
 ///   kurulup basılır. Sahibi değişen dosyada <c>OriginReplicaId</c> = yeni sahip, <c>Version + 1</c>,
 ///   <c>UpdatedAt</c> = şimdi; <c>ChangeSeq</c> (rowversion) ilerler, her istemci yeni değeri <c>disable</c> turunun son

@@ -32,6 +32,9 @@ namespace OrderDeck.LicenseServer.Tests.Tools;
 [Trait("Category", "Testcontainers")]
 public sealed class SalesSyncDisableRelationalTests : IAsyncLifetime
 {
+    // Komutun lisans satırının kilidinde beklediğinin görülmesi için üst sınır (BlockedRequestProbe).
+    private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(30);
+
     private readonly SqlServerContainerFixture _sql;
     private string _cs = null!;
     private RelationalApiFactory _factory = null!;
@@ -235,6 +238,47 @@ public sealed class SalesSyncDisableRelationalTests : IAsyncLifetime
             after[id].Should().BeEquivalentTo(shipmentsBefore[id], Columns);
         (await LicenseAsync(seed.LicenseId)).SalesSyncModeChangedAt.Should().Be(
             licenseBefore.SalesSyncModeChangedAt, "mod değişim anını CLI yazmadı");
+    }
+
+    /// <summary>
+    /// RCSI'da (prod'un yalıtımı) sınıf dokümanının 1. maddesi: <c>--apply</c>'ın koşullu UPDATE'i commit olmamışken gelen
+    /// komut, modu okurken lisans satırının kilidinde bekler, commit'ten sonra Off görür: 409 <c>mode-off</c>, hiçbir şey
+    /// yazılmaz. Satır sürümlü okuma beklemeden On'u görür ve komut, mod kapanırken On kipinde uygulanırdı. İşlemin ilk
+    /// adımı ayrı bağlantıda kurulur (aynı UPDATE); komut onun kilidinde beklediği görülene dek commit edilmez.
+    /// </summary>
+    [Fact]
+    public async Task Disable_commit_olmadan_gelen_komut_bekler_ve_mode_off_alir()
+    {
+        // Komut ucunun sürüm kapısı açık: kapı kapalıyken her komut mod denetiminden sonra client-update-required alır ve
+        // On'u gören istek de uygulanmaz; burada uygulanırdı.
+        await using var commands = new CommandsFactory(_cs);
+        var kit = await Kit.CreateAsync(commands);
+        // Devredilmiş yayın: mod On'da sunucu birim yazıcısıdır, iptal komutu uygulanabilir (canlıda session-live alırdı).
+        var order = await kit.SeedOrderAsync(await kit.SeedSessionAsync(Kit.Phase.Released));
+        await using var disabler = new SqlConnection(_cs);
+        await disabler.OpenAsync();
+        await using var disable = (SqlTransaction)await disabler.BeginTransactionAsync();
+        await using (var update = disabler.CreateCommand())
+        {
+            update.Transaction = disable;
+            update.CommandText = """
+                UPDATE Licenses SET SalesSyncMode = 0, SalesSyncModeChangedAt = SYSDATETIMEOFFSET()
+                WHERE Id = @id AND SalesSyncMode = 1
+                """;
+            update.Parameters.AddWithValue("@id", kit.LicenseId);
+            (await update.ExecuteNonQueryAsync()).Should().Be(1);
+        }
+
+        var send = Task.Run(() => kit.SendAsync(kit.Cancel(Guid.NewGuid(), "customer", order)));
+        var waited = await BlockedRequestProbe.WaitsOnAsync(_cs, disabler.ServerProcessId, send, WaitLimit);
+        await disable.CommitAsync();
+        var response = await send.WaitAsync(WaitLimit);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict, await response.Content.ReadAsStringAsync());
+        (await Kit.ProblemAsync(response)).GetProperty("title").GetString().Should().Be("mode-off");
+        (await kit.OrderAsync(order.Id)).CancelledAt.Should().BeNull("mod kapanırken komut On kipinde uygulanmaz");
+        (await kit.LogsAsync()).Should().BeEmpty();
+        waited.Should().BeTrue("mod okuması lisans satırının kilidinde commit'i bekler");
     }
 
     /// <summary>Yeniden yazılacak bir dosya kaydetmeden önce başka bir yazımla değişirse sürüm jetonu çarpar: işlem —
@@ -556,6 +600,16 @@ public sealed class SalesSyncDisableRelationalTests : IAsyncLifetime
     private static string U(DateTimeOffset at) => at.ToString("u", System.Globalization.CultureInfo.InvariantCulture);
 
     // ── Kancalar ──────────────────────────────────────────────────────────────
+
+    /// <summary>Aynı veritabanında komut ucunun sürüm kapısı açık fabrika (<c>SalesSync:MinClientVersion</c>; kitin
+    /// User-Agent'ı geçer, <see cref="Controllers.Licenses.SalesSyncConfiguredApiFactory"/>'nin değeri).</summary>
+    private sealed class CommandsFactory(string connectionString) : RelationalApiFactory(connectionString)
+    {
+        protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
+        {
+            ["SalesSync:MinClientVersion"] = Controllers.Licenses.SalesSyncConfiguredApiFactory.MinClientVersion,
+        };
+    }
 
     /// <summary>Okuyucusuz komut kancası: <c>when</c>'i tutan ilk komutun hemen öncesinde <c>before</c>'u bir kez
     /// koşturur.</summary>

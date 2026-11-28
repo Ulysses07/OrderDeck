@@ -31,10 +31,12 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// SQL / ExecuteUpdate yazımını <c>GroupIdWriteConventionTests</c> yasaklar.
 ///
 /// <para><b>Numara izlemesinin hakemi yok</b> (§4.13, §5.5). "Bu kayıttan sonra g'de canlı asıl üye kaldı mı" kararı
-/// <c>base.SaveChanges</c>'ten önce, kilitsiz okunur: senkronda açık işlem yok, işlerin işlemi READ COMMITTED. 1. maddenin
-/// bakiye jetonu yalnız bakiye satırının yazımını hakemler, bu kararı değil. Kalan pencere: g'nin kalan canlı üyelerini
-/// eşzamanlı iki kayıt ayrı ayrı ayırırsa (iki PC'nin senkronu; senkron ile bir iş) ikisi de okumasını öbürünün
-/// UPDATE'inden önce yapabilir. Her biri öbür üyeyi g'de canlı görür, hiçbiri silinmiş üyeyi taşımaz: silinmiş üye g'de
+/// <c>base.SaveChanges</c>'ten önce, kilitsiz okunur: senkronda açık işlem yok, işlerin işlemi READ COMMITTED. Prod'da RCSI
+/// açık (27.11.2026'da doğrulandı): okuma uçuştaki bir yazımı beklemez, son commit'i görür. 1. maddenin bakiye jetonu yalnız
+/// bakiye satırının yazımını hakemler, bu kararı değil. Kalan pencere: g'nin kalan canlı üyelerini eşzamanlı iki kayıt ayrı
+/// ayrı ayırırsa (iki PC'nin senkronu; senkron ile bir iş) ikisi de okumasını öbürünün commit'inden önce yapabilir
+/// (kilitli READ COMMITTED'da pencere öbürünün UPDATE'ine kadardı; RCSI onu o kaydın işleminin sonuna uzatır). Her biri
+/// öbür üyeyi g'de canlı görür, hiçbiri silinmiş üyeyi taşımaz: silinmiş üye g'de
 /// canlı üyesiz kalır ve kişinin havuzundan düşer (K3 o kişide bozulur; hiçbir sıralı yürütme bu sonucu vermez). Kanca
 /// bunu görmez, günlüğe yazmaz; para silinmiş üyenin satırında kalır, <c>verify</c>'ın §7.3-4 "grubunda canlı asıl üye
 /// kalmamış" kalemi sayar (Ayır'ın sonucundan ayırt edilemez). Ters yön — son canlı üye ayrılırken eşzamanlı bir kayıt

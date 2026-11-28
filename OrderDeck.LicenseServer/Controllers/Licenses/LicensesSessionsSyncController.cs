@@ -583,14 +583,17 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
         // Oturum başına devir anı (ekleme onu kopyalar, DM3), sahiplik (başka kopyanın canlı yayınına v2 eklemesi
         // reddedilir) ve hâl (K5). Güncellenen siparişin oturumu sunucu satırınınkidir — SessionId güncellemede
-        // yazılmaz (K1); paketteki değer bayat olabilir.
+        // yazılmaz (K1); paketteki değer bayat olabilir. Kilitli okunur (ReadCommittedLock): prod'da RCSI açık ve
+        // satır sürümlü okuma, oturuma yazmış ama commit olmamış bir devri beklemeden "devredilmemiş" görür; devrin
+        // sipariş damgası bu eklemeden önce koştuysa sipariş damgasız kalır (SessionReleaser'ın kalan penceresi
+        // devrin işleminin sonuna uzardı). Okuma işlem açılmadan yapılır, bekleyen istek kilit tutmaz.
         var sessionKeys = sessionIds
             .Concat(existing.Values.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value))
             .Distinct()
             .ToList();
         var sessions = sessionKeys.Count == 0
             ? new Dictionary<Guid, SessionFacts>()
-            : await _db.StreamSessions
+            : await _db.StreamSessions.WithReadCommittedLock()
                 .Where(s => sessionKeys.Contains(s.Id) && s.LicenseId == licenseId)
                 .Select(s => new SessionFacts(s.Id, s.EndedAt, s.ReleasedAt, s.OwnerReplicaId, s.ForceEndedBy))
                 .ToDictionaryAsync(s => s.Id, ct);

@@ -998,8 +998,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     /// <summary>
     /// Havuz kipinde apply'ın oynatma Lookup'ı (ön oynatma ya da çekimden sonraki son Lookup) kilitlenme kurbanı
-    /// (1205) oldu: oynatma <c>PoolBalanceAsync</c> ile CustomerBalances'ı okur ve yazarların X kilidinin arkasında
-    /// kalabilir; bu okuma <c>DrawAsync</c>'in korunan denemesinin dışında. Hiçbir şey yazılmadı → 503
+    /// (1205) oldu: oynatma <c>PoolBalanceAsync</c> ile CustomerBalances'ı okur; kilitli READ COMMITTED'da yazarların X
+    /// kilidinin arkasında kalabilirdi (prod'da RCSI açık, 27.11.2026: okuma beklemez, bu dal güvence olarak kalır); bu
+    /// okuma <c>DrawAsync</c>'in korunan denemesinin dışında. Hiçbir şey yazılmadı → 503
     /// <c>balance-busy</c>, WPF aynı anahtarla yeniden dener (500 değil; panel iptalinin üyelik okumasıyla aynı karar,
     /// plan fark 18k). Servis bu kaynakta bir şey yazmadığı için ayırt edici satır burada.
     /// </summary>
